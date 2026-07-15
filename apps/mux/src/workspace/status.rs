@@ -198,6 +198,10 @@ fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<A
         .collect()
 }
 
+/// Map tmux pane liveness to agent state.
+///
+/// Alive ⇒ [`AgentState::Running`] even if the tool is mid-setup. Kira does
+/// not parse pane contents for readiness (operator-managed; see README).
 fn agent_state_from_pane(pane: &PaneInfo) -> AgentState {
     if !pane.pane_dead {
         AgentState::Running

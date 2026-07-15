@@ -75,7 +75,7 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         force: bool,
     },
-    /// Deliver a prompt to an agent pane.
+    /// Deliver a prompt to a live agent pane (does not wait for TUI readiness).
     Send {
         project_id: String,
         agent_id: String,
