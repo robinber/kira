@@ -80,6 +80,7 @@ pub(crate) fn print_agents_table(output: &AgentsOutput) {
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentCapabilitiesOutput {
     pub agent: String,
+    pub label: String,
     pub capabilities: Vec<String>,
     pub state: AgentRunState,
 }
@@ -88,6 +89,7 @@ impl From<&AgentInfo> for AgentCapabilitiesOutput {
     fn from(agent: &AgentInfo) -> Self {
         Self {
             agent: agent.id.clone(),
+            label: agent.label.clone(),
             capabilities: agent.capabilities.clone(),
             state: agent.state,
         }

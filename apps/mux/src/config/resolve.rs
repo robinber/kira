@@ -154,6 +154,7 @@ fn resolve_single_agent(
         .label
         .clone()
         .or_else(|| template.map(template_label))
+        .filter(|label| !label.is_empty())
         .unwrap_or_else(|| agent.id.clone());
     let mode = agent
         .mode
@@ -597,6 +598,36 @@ mod tests {
             &["--full-auto".to_string()],
         )
         .or_panic();
+    }
+
+    #[test]
+    fn empty_label_falls_back_to_agent_id() {
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: Some(String::new()),
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+        };
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            None,
+            Path::new("/tmp/kira-test-root"),
+            EnvResolutionMode::Deferred,
+        )
+        .or_panic();
+
+        assert_eq!(
+            resolved.label, "alpha",
+            "empty label must fall back to the id, not render as `alpha ()`"
+        );
     }
 
     #[cfg(unix)]
