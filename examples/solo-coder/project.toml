@@ -1,0 +1,24 @@
+# Solo Coder — kira-mux project config
+#
+# Copy this file to ~/.config/kira-mux/projects/solo-coder.toml and edit
+# `root` to point at a real project directory before running:
+#
+#     kira-mux open solo-coder
+#
+# No Postgres required for this example.
+
+id = "solo-coder"
+name = "Solo Coder"
+root = "~/projects/my-app"
+layout = "side-by-side"
+
+[[agents]]
+id = "coder"
+label = "Coder"
+command = "codex"
+
+[[agents]]
+id = "tests"
+label = "Tests"
+mode = "shell"
+shell_command = "npm test -- --watch"
