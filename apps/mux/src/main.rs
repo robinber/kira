@@ -34,7 +34,6 @@ fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
         Some(
             KiraMuxError::UnknownAgentId(_)
             | KiraMuxError::UnknownGroupName(_)
-            | KiraMuxError::MissingArgument(_)
             | KiraMuxError::ConfigValidation(_)
             | KiraMuxError::KillAborted,
         ) => ExitCode::from(2),

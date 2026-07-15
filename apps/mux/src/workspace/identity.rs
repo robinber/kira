@@ -5,7 +5,9 @@ use crate::model::ResolvedProject;
 /// Derive the managed tmux session name for a resolved project/profile pair.
 #[must_use]
 pub(crate) fn session_name(project: &ResolvedProject) -> String {
-    let digest = Sha256::digest(project.root.display().to_string().as_bytes());
+    // Hash the raw OS bytes, not a lossy `display()` rendering: two roots
+    // differing only in non-UTF-8 bytes must not share a session name.
+    let digest = Sha256::digest(project.root.as_os_str().as_encoded_bytes());
     let hex = hex::encode(digest);
     format!(
         "{}-{}-{}-{}",
@@ -29,12 +31,13 @@ mod tests {
 
     #[test]
     fn session_name_uses_prefix_id_profile_and_root_hash_prefix() {
-        // `test_project()` has prefix="ai", id="test", profile="default" and
-        // root="/tmp/test-project". sha256("/tmp/test-project") starts with
-        // "b71e47fd", and the session name uses only the first 8 hex chars.
+        // `test_project()` has prefix="kira", id="test", profile="default"
+        // and root="/tmp/test-project". sha256("/tmp/test-project") starts
+        // with "b71e47fd", and the session name uses only the first 8 hex
+        // chars.
         let project = test_project();
 
-        assert_eq!(session_name(&project), "ai-test-default-b71e47fd");
+        assert_eq!(session_name(&project), "kira-test-default-b71e47fd");
     }
 
     #[test]
@@ -60,8 +63,8 @@ mod tests {
     #[test]
     fn window_target_joins_session_and_window_with_a_colon() {
         assert_eq!(
-            window_target("ai-test-default-b71e47fd", "agents"),
-            "ai-test-default-b71e47fd:agents"
+            window_target("kira-test-default-b71e47fd", "agents"),
+            "kira-test-default-b71e47fd:agents"
         );
     }
 
@@ -72,7 +75,7 @@ mod tests {
 
         assert_eq!(
             window_target(&session, &project.window_name),
-            "ai-test-default-b71e47fd:agents"
+            "kira-test-default-b71e47fd:agents"
         );
     }
 }

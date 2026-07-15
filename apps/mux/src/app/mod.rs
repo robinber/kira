@@ -14,7 +14,7 @@ use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
 use crate::tmux::TmuxClient;
 
-const DEFAULT_CONFIG: &str = r#"session_prefix = "ai"
+const DEFAULT_CONFIG: &str = r#"session_prefix = "kira"
 default_layout = "auto"
 window_name = "agents"
 remain_on_exit = "failed"
@@ -51,9 +51,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             profile,
             json,
         } => workspace_cmds::cmd_status(&project_id, profile.as_deref(), json),
-        CommandKind::Agents(args) => {
-            agent_cmds::cmd_agents_dispatch(agent_cmds::resolve_agents_args(args)?)
-        }
+        CommandKind::Agents(args) => agent_cmds::cmd_agents_dispatch(args.command),
         CommandKind::Restart {
             project_id,
             agent_id,

@@ -224,7 +224,7 @@ mod tests {
             layout: Layout::Auto,
             main_pane_ratio: 50,
             window_name: "agents".to_string(),
-            session_prefix: "ai".to_string(),
+            session_prefix: "kira".to_string(),
             default_shell: "/bin/sh".to_string(),
             remain_on_exit: RemainOnExit::Failed,
             tmux_bin: "tmux".to_string(),
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn topology_guard_logs_failure_reason_on_rollback() {
         let fake = FakeTmux::new();
-        fake.add_session("ai-test");
+        fake.add_session("kira-test");
         let logs = SharedLogBuffer::default();
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -272,11 +272,11 @@ mod tests {
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            let mut guard = TopologyGuard::new(&fake, "ai-test");
+            let mut guard = TopologyGuard::new(&fake, "kira-test");
             guard.mark_failed("simulated topology failure");
         });
 
-        assert!(!fake.session_exists("ai-test").or_panic());
+        assert!(!fake.session_exists("kira-test").or_panic());
 
         let output = logs.contents();
         assert!(output.contains("ERROR"));
