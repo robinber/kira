@@ -19,7 +19,7 @@ pub(crate) struct Cli {
     pub(crate) command: CommandKind,
 }
 
-/// Product-A command surface.
+/// CLI command surface.
 #[derive(Debug, Subcommand)]
 pub(crate) enum CommandKind {
     /// Create or repair the workspace and attach.

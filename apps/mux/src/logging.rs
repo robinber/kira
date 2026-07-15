@@ -49,7 +49,7 @@ where
 
 /// Render an environment variable without exposing its raw value.
 #[must_use]
-pub fn redact_env_value(key: &str, value: &str) -> String {
+pub(crate) fn redact_env_value(key: &str, value: &str) -> String {
     if value.is_empty() {
         format!("{key}=<empty>")
     } else {
