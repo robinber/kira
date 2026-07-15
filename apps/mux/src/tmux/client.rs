@@ -300,17 +300,7 @@ impl TmuxClient {
     {
         let output = self.output(args)?;
         if !output.status.success() {
-            let message = command_error(&output);
-            if is_missing_session_message(&message) {
-                return Err(TmuxError::MissingSession(target.to_string()).into());
-            }
-            if is_missing_target_message(&message) {
-                return Err(TmuxError::MissingTarget(target.to_string()).into());
-            }
-            if is_no_server_message(&message) {
-                return Err(TmuxError::NoServer(message).into());
-            }
-            return Err(TmuxError::CommandFailure(message).into());
+            return Err(failed_tmux_status(target, &output));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -447,14 +437,17 @@ impl TmuxClient {
         let display_output =
             self.output(["display-message", "-p", "-t", &window_target, &display_fmt])?;
         if !display_output.status.success() {
-            return Ok(Some(WorkspaceSummarySnapshot::default()));
+            // Missing window/target is drift (caller maps); transport / command
+            // failures must not become an empty snapshot that classifies as
+            // FingerprintMismatch.
+            return Err(failed_tmux_status(&window_target, &display_output));
         }
         let metadata = parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
 
         let pane_fmt = format!("#{{pane_dead}}\t#{{{PANE_AGENT_ID}}}");
         let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
         if !pane_output.status.success() {
-            return Ok(Some(WorkspaceSummarySnapshot::default()));
+            return Err(failed_tmux_status(&window_target, &pane_output));
         }
         let panes = stdout_lines(&pane_output)
             .iter()
@@ -468,6 +461,23 @@ impl TmuxClient {
             window_role: metadata.window_role,
             panes,
         }))
+    }
+}
+
+/// Map a failed tmux subprocess status into a typed error.
+///
+/// Missing targets stay distinguishable from generic command failures so
+/// callers can classify drift vs hard errors.
+fn failed_tmux_status(target: &str, output: &Output) -> anyhow::Error {
+    let message = command_error(output);
+    if is_missing_session_message(&message) {
+        TmuxError::MissingSession(target.to_string()).into()
+    } else if is_missing_target_message(&message) {
+        TmuxError::MissingTarget(target.to_string()).into()
+    } else if is_no_server_message(&message) {
+        TmuxError::NoServer(message).into()
+    } else {
+        TmuxError::CommandFailure(message).into()
     }
 }
 
@@ -512,7 +522,22 @@ fn non_empty(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_trailing_semicolon, parse_display_message_line, parse_pane_summary_line};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    use super::{
+        escape_trailing_semicolon, failed_tmux_status, parse_display_message_line,
+        parse_pane_summary_line,
+    };
+    use crate::tmux::TmuxError;
+
+    fn failed_output(stderr: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(256),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
 
     #[test]
     fn escape_trailing_semicolon_escapes_final_separator() {
@@ -554,5 +579,44 @@ mod tests {
         let pane = parse_pane_summary_line("0\t");
         assert!(!pane.pane_dead);
         assert_eq!(pane.agent_id, None);
+    }
+
+    #[test]
+    fn failed_tmux_status_maps_missing_window_to_missing_target() {
+        let error = failed_tmux_status("s:agents", &failed_output("can't find window: agents"));
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingTarget(_))
+        ));
+    }
+
+    #[test]
+    fn failed_tmux_status_maps_missing_session_to_missing_session() {
+        let error = failed_tmux_status("s:agents", &failed_output("can't find session: s"));
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingSession(_))
+        ));
+    }
+
+    #[test]
+    fn failed_tmux_status_maps_generic_failure_to_command_failure() {
+        let error = failed_tmux_status("s:agents", &failed_output("server unexpectedly closed"));
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::CommandFailure(_))
+        ));
+    }
+
+    #[test]
+    fn failed_tmux_status_maps_no_server() {
+        let error = failed_tmux_status(
+            "s:agents",
+            &failed_output("no server running on /tmp/tmux-1000/default"),
+        );
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::NoServer(_))
+        ));
     }
 }
