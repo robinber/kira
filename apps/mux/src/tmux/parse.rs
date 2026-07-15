@@ -65,7 +65,7 @@ pub(super) fn is_no_server_message(message: &str) -> bool {
 
 pub(super) fn map_spawn_error(error: std::io::Error, tmux_bin: &str) -> anyhow::Error {
     if error.kind() == std::io::ErrorKind::NotFound {
-        crate::error::AiMuxError::MissingDependency(format!("tmux binary not found: {tmux_bin}"))
+        crate::error::KiraMuxError::MissingDependency(format!("tmux binary not found: {tmux_bin}"))
             .into()
     } else {
         anyhow::Error::new(error).context(format!("failed to run tmux command via {tmux_bin}"))
@@ -83,7 +83,7 @@ mod tests {
         command_error, is_missing_session_message, is_no_server_message, map_spawn_error,
         normalize_args, parse_pane_line, stdout_lines,
     };
-    use crate::error::AiMuxError;
+    use crate::error::KiraMuxError;
     use crate::test_support::{TestOptionExt, TestResultExt};
 
     fn output(stdout: &str, stderr: &str, status_code: i32) -> Output {
@@ -276,11 +276,11 @@ mod tests {
     #[test]
     fn map_spawn_error_maps_not_found_to_missing_dependency() {
         let error = map_spawn_error(io::Error::from(io::ErrorKind::NotFound), "tmux_bin");
-        let error = error.downcast_ref::<AiMuxError>().or_panic();
+        let error = error.downcast_ref::<KiraMuxError>().or_panic();
 
         assert!(matches!(
             error,
-            AiMuxError::MissingDependency(message)
+            KiraMuxError::MissingDependency(message)
                 if message == "tmux binary not found: tmux_bin"
         ));
     }

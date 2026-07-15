@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Result, bail};
 
 use crate::config::{AgentMode, Layout, RemainOnExit};
-use crate::domain::{ResolvedAgent, ResolvedProject};
+use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::{WINDOW_ROLE, WINDOW_ROLE_AGENTS};
 use crate::tmux::{PaneInfo, TmuxAdapter};
 
@@ -571,7 +571,6 @@ pub(crate) fn test_project() -> ResolvedProject {
         ],
         fingerprint: "abc123".to_string(),
         groups: BTreeMap::new(),
-        orchestration: None,
     }
 }
 

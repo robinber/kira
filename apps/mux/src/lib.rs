@@ -15,7 +15,6 @@ pub(crate) mod inspector;
 pub(crate) mod interaction;
 pub mod logging;
 pub mod model;
-pub use model as domain;
 pub(crate) mod output;
 pub mod paths;
 pub(crate) mod prompt;
@@ -24,7 +23,7 @@ pub(crate) mod test_support;
 pub mod tmux;
 pub(crate) mod workspace;
 
-pub use error::{AiMuxError, WorkspaceDriftReason};
+pub use error::{KiraMuxError, WorkspaceDriftReason};
 
 /// Parse CLI args and run the selected command.
 ///

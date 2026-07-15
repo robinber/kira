@@ -1,5 +1,5 @@
 use crate::config::AgentMode;
-use crate::domain::ResolvedAgent;
+use crate::model::ResolvedAgent;
 
 const DOUBLE_ENTER_TOOLS: &[&str] = &["codex", "claude", "opencode", "qwen", "grok"];
 const SEND_KEYS_TEXT_TOOLS: &[&str] = &["opencode"];
@@ -14,7 +14,20 @@ pub(crate) fn infer_submit_behavior(
     agent: &ResolvedAgent,
     pane_command: Option<&str>,
 ) -> SubmitBehavior {
-    let effective_basename = pane_command.filter(|cmd| *cmd != "__shell__").or_else(|| {
+    match effective_basename(agent, pane_command) {
+        Some(name) if DOUBLE_ENTER_TOOLS.contains(&name) => SubmitBehavior::DoubleEnter,
+        _ if pane_command == Some("__shell__") && shell_command_needs_double_enter(agent) => {
+            SubmitBehavior::DoubleEnter
+        }
+        _ => SubmitBehavior::SingleEnter,
+    }
+}
+
+fn effective_basename<'a>(
+    agent: &'a ResolvedAgent,
+    pane_command: Option<&'a str>,
+) -> Option<&'a str> {
+    pane_command.filter(|cmd| *cmd != "__shell__").or_else(|| {
         if agent.mode != AgentMode::Direct {
             return None;
         }
@@ -22,15 +35,7 @@ pub(crate) fn infer_submit_behavior(
             .command
             .as_deref()
             .map(|cmd| cmd.rsplit('/').next().unwrap_or(cmd))
-    });
-
-    match effective_basename {
-        Some(name) if DOUBLE_ENTER_TOOLS.contains(&name) => SubmitBehavior::DoubleEnter,
-        _ if pane_command == Some("__shell__") && shell_command_needs_double_enter(agent) => {
-            SubmitBehavior::DoubleEnter
-        }
-        _ => SubmitBehavior::SingleEnter,
-    }
+    })
 }
 
 fn shell_command_needs_double_enter(agent: &ResolvedAgent) -> bool {
@@ -54,16 +59,7 @@ fn contains_tool(command: &str, tools: &[&str]) -> bool {
 }
 
 pub(super) fn needs_send_keys_for_text(agent: &ResolvedAgent, pane_command: Option<&str>) -> bool {
-    let effective_basename = pane_command.filter(|cmd| *cmd != "__shell__").or_else(|| {
-        if agent.mode != AgentMode::Direct {
-            return None;
-        }
-        agent
-            .command
-            .as_deref()
-            .map(|cmd| cmd.rsplit('/').next().unwrap_or(cmd))
-    });
-    match effective_basename {
+    match effective_basename(agent, pane_command) {
         Some(name) => SEND_KEYS_TEXT_TOOLS.contains(&name),
         None if pane_command == Some("__shell__") => agent
             .shell_command

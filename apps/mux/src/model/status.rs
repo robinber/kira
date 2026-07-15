@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::domain::ResolvedProject;
 use crate::inspector::{InspectedWorkspace, WorkspaceTopology};
+use crate::model::ResolvedProject;
 
 /// Lifecycle state of a managed tmux workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -22,7 +22,7 @@ pub enum ProjectState {
 }
 
 /// Runtime state of a single agent pane inside a workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentState {
     /// The pane is running normally.

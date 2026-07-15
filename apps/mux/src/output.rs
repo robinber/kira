@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::domain::{
+use crate::model::{
     AgentInfo, AgentRunState, AgentState, AgentsOutput, ProjectState, ProjectStatus, ProjectSummary,
 };
 
@@ -35,7 +35,7 @@ pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
         println!("State:   {}", project_state_label(&status.state));
         println!();
         for agent in &status.agents {
-            println!("  {:<16} {}", agent.id, agent_state_label(&agent.state));
+            println!("  {:<16} {}", agent.id, agent_state_label(agent.state));
         }
     }
 
@@ -154,7 +154,7 @@ fn project_state_label(state: &ProjectState) -> &'static str {
     }
 }
 
-fn agent_state_label(state: &AgentState) -> &'static str {
+fn agent_state_label(state: AgentState) -> &'static str {
     match state {
         AgentState::Running => "running",
         AgentState::ExitedClean => "exited (0)",

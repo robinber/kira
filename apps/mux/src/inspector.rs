@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 
-use crate::domain::{ResolvedAgent, ResolvedProject};
 use crate::error::WorkspaceDriftReason;
+use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
     WINDOW_ROLE_AGENTS,

@@ -1,10 +1,7 @@
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 
-use crate::agent_io::{SubmitBehavior, infer_submit_behavior};
 use crate::config::{AgentMode, Layout};
-use crate::domain::{ResolvedAgent, ResolvedProject};
+use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
 
@@ -117,43 +114,6 @@ pub(super) fn launch_agent(
     project: &ResolvedProject,
     agent: &ResolvedAgent,
 ) -> Result<()> {
-    launch_agent_inner(tmux, pane_id, project, agent, None)
-}
-
-/// Launch an agent pane with an extra argument appended to the command.
-///
-/// Only direct-mode agents are supported; shell-mode agents are rejected
-/// because the orchestrator prompt cannot be safely injected into an
-/// arbitrary shell command string.
-#[cfg(test)]
-pub(super) fn launch_agent_with_extra_arg(
-    tmux: &dyn TmuxAdapter,
-    pane_id: &str,
-    project: &ResolvedProject,
-    agent: &ResolvedAgent,
-    extra_arg: &str,
-) -> Result<()> {
-    if agent.mode == AgentMode::Shell {
-        return Err(crate::error::AiMuxError::OrchestratorShellModeUnsupported {
-            agent_id: agent.id.clone(),
-        }
-        .into());
-    }
-    launch_agent_inner(tmux, pane_id, project, agent, Some(extra_arg))
-}
-
-/// Prompts whose byte length **exceeds** this threshold are delivered via
-/// `paste_then_submit_text` after respawn; shorter prompts travel as a
-/// trailing argv argument.
-const ORCH_PROMPT_PASTE_THRESHOLD_BYTES: usize = 4 * 1024;
-
-fn launch_agent_inner(
-    tmux: &dyn TmuxAdapter,
-    pane_id: &str,
-    project: &ResolvedProject,
-    agent: &ResolvedAgent,
-    extra_arg: Option<&str>,
-) -> Result<()> {
     let env_overrides = agent
         .env
         .iter()
@@ -163,7 +123,7 @@ fn launch_agent_inner(
         .iter()
         .map(|(key, value)| crate::logging::redact_env_value(key, value))
         .collect::<Vec<_>>();
-    let mut command = match agent.mode {
+    let command = match agent.mode {
         AgentMode::Direct => {
             let mut parts = vec![agent.command.clone().context("missing agent command")?];
             parts.extend(agent.args.clone());
@@ -179,30 +139,12 @@ fn launch_agent_inner(
         ],
     };
 
-    let oversize_prompt = extra_arg.filter(|arg| arg.len() > ORCH_PROMPT_PASTE_THRESHOLD_BYTES);
-    let inline_prompt = if oversize_prompt.is_some() {
-        None
-    } else {
-        extra_arg.filter(|arg| !arg.is_empty())
-    };
-
-    if let Some(arg) = inline_prompt {
-        command.push(arg.to_string());
-    }
-
-    let prompt_delivery = if oversize_prompt.is_some() {
-        "post_launch_paste"
-    } else {
-        "argv_inline"
-    };
-
     tracing::debug!(
         project_id = project.id.as_str(),
         agent_id = agent.id.as_str(),
         pane_id,
         cwd = %agent.cwd.display(),
         env = ?redacted_env,
-        prompt_delivery,
         "launching agent pane"
     );
 
@@ -217,33 +159,22 @@ fn launch_agent_inner(
         tmux.set_pane_option(pane_id, PANE_AGENT_COMMAND, &basename)?;
     }
 
-    if let Some(prompt) = oversize_prompt {
-        crate::tmux::paste_then_submit_text(tmux, pane_id, prompt)?;
-
-        // `paste_then_submit_text` always sends exactly one Enter; codex /
-        // claude / qwen / opencode TUIs need a second Enter to actually
-        // submit. Mirror the policy that `agent_io::send::paste_and_submit`
-        // applies on the regular send path so oversize launches are not
-        // left with the prompt sitting unsubmitted in the input field.
-        let pane_command = tmux.get_pane_option(pane_id, PANE_AGENT_COMMAND)?;
-        if infer_submit_behavior(agent, pane_command.as_deref()) == SubmitBehavior::DoubleEnter {
-            std::thread::sleep(Duration::from_millis(200));
-            tmux.send_keys(pane_id, &["Enter"])?;
-        }
-    }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use tracing_subscriber::fmt::MakeWriter;
 
-    use super::{ORCH_PROMPT_PASTE_THRESHOLD_BYTES, TopologyGuard};
-    use crate::test_support::{FakeTmux, TestOptionExt, TestResultExt};
+    use super::TopologyGuard;
+    use crate::config::{AgentMode, Layout, RemainOnExit};
+    use crate::model::{ResolvedAgent, ResolvedProject};
+    use crate::test_support::{FakeOp, FakeTmux, TestResultExt};
     use crate::tmux::TmuxAdapter;
 
     #[derive(Clone, Default)]
@@ -276,31 +207,22 @@ mod tests {
         }
     }
 
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    use crate::config::AgentMode;
-    use crate::domain::{ResolvedAgent, ResolvedProject};
-    use crate::error::AiMuxError;
-    use crate::test_support::FakeOp;
-
     fn direct_agent() -> ResolvedAgent {
         ResolvedAgent {
-            id: "orch-1".to_string(),
-            label: "Orch".to_string(),
+            id: "coder".to_string(),
+            label: "Coder".to_string(),
             mode: AgentMode::Direct,
             command: Some("codex".to_string()),
             shell_command: None,
             args: vec!["--profile".to_string(), "fast".to_string()],
             cwd: PathBuf::from("/tmp"),
             env: BTreeMap::new(),
-            capabilities: vec!["orchestrator".to_string()],
+            capabilities: vec![],
             prompt_template: None,
         }
     }
 
     fn minimal_project() -> ResolvedProject {
-        use crate::config::{Layout, RemainOnExit};
         ResolvedProject {
             id: "test".to_string(),
             profile_id: "default".to_string(),
@@ -316,59 +238,11 @@ mod tests {
             agents: vec![direct_agent()],
             fingerprint: "abc123".to_string(),
             groups: BTreeMap::new(),
-            orchestration: None,
         }
     }
 
     #[test]
-    fn launch_with_extra_arg_appends_to_command() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let agent = &project.agents[0];
-
-        super::launch_agent_with_extra_arg(&fake, "%0", &project, agent, "hello orchestrator")
-            .or_panic();
-
-        let ops = fake.ops();
-        let Some(FakeOp::RespawnPane { command, .. }) = ops
-            .iter()
-            .find(|op| matches!(op, FakeOp::RespawnPane { .. }))
-        else {
-            panic!("expected a RespawnPane op");
-        };
-        assert_eq!(
-            command,
-            &vec![
-                "codex".to_string(),
-                "--profile".to_string(),
-                "fast".to_string(),
-                "hello orchestrator".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn launch_with_extra_arg_rejects_shell_mode() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let mut agent = direct_agent();
-        agent.mode = AgentMode::Shell;
-        agent.command = None;
-        agent.shell_command = Some("codex --full-auto".to_string());
-
-        let err = super::launch_agent_with_extra_arg(&fake, "%0", &project, &agent, "hello")
-            .err_or_panic();
-        assert!(
-            matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::OrchestratorShellModeUnsupported { .. })
-            ),
-            "expected OrchestratorShellModeUnsupported, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn launch_agent_normal_does_not_append_extra_arg() {
+    fn launch_agent_respawns_with_command_and_args() {
         let fake = FakeTmux::new();
         let project = minimal_project();
         let agent = &project.agents[0];
@@ -388,8 +262,7 @@ mod tests {
                 "codex".to_string(),
                 "--profile".to_string(),
                 "fast".to_string(),
-            ],
-            "normal launch_agent must not append extra args"
+            ]
         );
     }
 
@@ -417,153 +290,5 @@ mod tests {
         assert!(output.contains("rolling back partial session after topology failure"));
         assert!(output.contains("reason="));
         assert!(output.contains("simulated topology failure"));
-    }
-
-    #[test]
-    fn launch_with_small_extra_arg_uses_argv_path() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let agent = &project.agents[0];
-        let small_prompt = "x".repeat(100);
-
-        super::launch_agent_with_extra_arg(&fake, "%0", &project, agent, &small_prompt).or_panic();
-
-        let ops = fake.ops();
-        let respawn = ops
-            .iter()
-            .find_map(|op| match op {
-                FakeOp::RespawnPane { command, .. } => Some(command.clone()),
-                _ => None,
-            })
-            .or_panic();
-        assert!(
-            respawn.last().is_some_and(|s| s == &small_prompt),
-            "small prompt must travel via argv: {respawn:?}"
-        );
-        assert!(
-            !ops.iter().any(|op| matches!(op, FakeOp::PasteText { .. })),
-            "no paste expected for small prompt"
-        );
-    }
-
-    #[test]
-    fn launch_with_extra_arg_at_threshold_uses_argv_path() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let agent = &project.agents[0];
-        let prompt = "x".repeat(ORCH_PROMPT_PASTE_THRESHOLD_BYTES);
-
-        super::launch_agent_with_extra_arg(&fake, "%0", &project, agent, &prompt).or_panic();
-
-        let ops = fake.ops();
-        let respawn = ops
-            .iter()
-            .find_map(|op| match op {
-                FakeOp::RespawnPane { command, .. } => Some(command.clone()),
-                _ => None,
-            })
-            .or_panic();
-        assert!(
-            respawn.last().is_some_and(|s| s == &prompt),
-            "exactly-at-threshold prompt must still go via argv (boundary is `>` not `>=`)"
-        );
-        assert!(
-            !ops.iter().any(|op| matches!(op, FakeOp::PasteText { .. })),
-            "no paste expected at the threshold boundary"
-        );
-    }
-
-    #[test]
-    fn launch_with_oversize_extra_arg_pastes_after_spawn() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let agent = &project.agents[0];
-        let oversize = "x".repeat(ORCH_PROMPT_PASTE_THRESHOLD_BYTES + 1);
-
-        super::launch_agent_with_extra_arg(&fake, "%0", &project, agent, &oversize).or_panic();
-
-        let ops = fake.ops();
-
-        let respawn = ops
-            .iter()
-            .find_map(|op| match op {
-                FakeOp::RespawnPane { command, .. } => Some(command.clone()),
-                _ => None,
-            })
-            .or_panic();
-        assert_eq!(
-            respawn,
-            vec![
-                "codex".to_string(),
-                "--profile".to_string(),
-                "fast".to_string()
-            ],
-            "oversize prompt must NOT travel via argv"
-        );
-
-        let paste_idx = ops
-            .iter()
-            .position(|op| matches!(op, FakeOp::PasteText { text, .. } if text == &oversize))
-            .or_panic();
-        let respawn_idx = ops
-            .iter()
-            .position(|op| matches!(op, FakeOp::RespawnPane { .. }))
-            .or_panic();
-        assert!(
-            respawn_idx < paste_idx,
-            "respawn must precede paste (respawn={respawn_idx}, paste={paste_idx})"
-        );
-
-        assert!(
-            ops.iter()
-                .any(|op| matches!(op, FakeOp::SendKeys { keys, .. } if keys == &vec!["Enter".to_string()])),
-            "oversize path must submit Enter after paste"
-        );
-    }
-
-    #[test]
-    fn launch_with_oversize_extra_arg_sends_double_enter_for_codex_family() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let agent = &project.agents[0];
-        let oversize = "x".repeat(ORCH_PROMPT_PASTE_THRESHOLD_BYTES + 1);
-
-        super::launch_agent_with_extra_arg(&fake, "%0", &project, agent, &oversize).or_panic();
-
-        let ops = fake.ops();
-        let enter_indices: Vec<usize> = ops
-            .iter()
-            .enumerate()
-            .filter_map(|(i, op)| match op {
-                FakeOp::SendKeys { keys, .. } if keys == &vec!["Enter".to_string()] => Some(i),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            enter_indices.len(),
-            2,
-            "codex-family oversize launch must send DoubleEnter; got ops: {ops:?}"
-        );
-    }
-
-    #[test]
-    fn launch_oversize_with_shell_mode_still_rejected_before_size_check() {
-        let fake = FakeTmux::new();
-        let project = minimal_project();
-        let mut agent = direct_agent();
-        agent.mode = AgentMode::Shell;
-        agent.command = None;
-        agent.shell_command = Some("codex --full-auto".to_string());
-        let oversize = "x".repeat(ORCH_PROMPT_PASTE_THRESHOLD_BYTES + 1);
-
-        let err = super::launch_agent_with_extra_arg(&fake, "%0", &project, &agent, &oversize)
-            .err_or_panic();
-        assert!(
-            matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::OrchestratorShellModeUnsupported { .. })
-            ),
-            "shell-mode rejection must fire before any size check: {err:?}"
-        );
     }
 }

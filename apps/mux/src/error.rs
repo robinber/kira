@@ -8,7 +8,7 @@ use crate::config::ConfigError;
 
 /// Domain errors surfaced to the CLI exit-code layer.
 #[derive(Debug, Error)]
-pub enum AiMuxError {
+pub enum KiraMuxError {
     /// The requested project ID does not exist.
     #[error("unknown project id: {0}")]
     UnknownProjectId(String),
@@ -21,48 +21,6 @@ pub enum AiMuxError {
     /// A required CLI argument was omitted after higher-level parsing.
     #[error("{0}")]
     MissingArgument(String),
-    /// An orchestrator profile must resolve to exactly one agent in V1.
-    #[error("orchestrator profile '{profile}' must contain exactly one agent, found {count}")]
-    InvalidOrchestratorProfile {
-        /// Profile that failed validation.
-        profile: String,
-        /// Number of resolved agents in that profile.
-        count: usize,
-    },
-    /// The selected agent is not the only agent in the orchestrator profile.
-    #[error(
-        "orchestrator profile '{profile}' contains agent '{actual}', not requested agent '{requested}'"
-    )]
-    OrchestratorAgentMismatch {
-        /// Profile being launched.
-        profile: String,
-        /// Requested agent ID.
-        requested: String,
-        /// Actual single agent ID in the profile.
-        actual: String,
-    },
-    /// The selected agent is missing the required orchestrator capability.
-    #[error("agent '{agent_id}' is not an orchestrator; add capability 'orchestrator'")]
-    AgentNotOrchestrator {
-        /// Agent that failed validation.
-        agent_id: String,
-    },
-    /// V1 only supports direct-mode orchestrator launch.
-    #[error(
-        "agent '{agent_id}' uses shell mode; orchestrator start/restart supports direct mode only"
-    )]
-    OrchestratorShellModeUnsupported {
-        /// Agent that failed validation.
-        agent_id: String,
-    },
-    /// Start refused to replace a running orchestrator pane.
-    #[error(
-        "orchestrator pane for agent '{agent_id}' is already running; use restart to replace it"
-    )]
-    OrchestratorPaneActive {
-        /// Agent whose pane is active.
-        agent_id: String,
-    },
     /// Project or global configuration failed validation.
     #[error("config validation error: {0}")]
     ConfigValidation(#[from] ConfigError),

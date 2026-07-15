@@ -1,8 +1,8 @@
 use anyhow::{Result, bail};
 
-use crate::domain::{ResolvedAgent, ResolvedProject};
-use crate::error::{AiMuxError, WorkspaceDriftReason};
+use crate::error::{KiraMuxError, WorkspaceDriftReason};
 use crate::inspector;
+use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::{PANE_AGENT_ID, WINDOW_ROLE, WINDOW_ROLE_AGENTS};
 use crate::tmux::{PaneInfo, TmuxAdapter};
 use crate::workspace::{session_name, window_target};
@@ -16,23 +16,23 @@ pub(super) fn resolve_managed_pane(
         .agents
         .iter()
         .find(|a| a.id == agent_id)
-        .ok_or_else(|| AiMuxError::UnknownAgentId(agent_id.to_string()))?;
+        .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
 
     let session = session_name(project);
     if !inspector::session_exists(tmux, &session)? {
-        return Err(AiMuxError::SessionAbsent.into());
+        return Err(KiraMuxError::SessionAbsent.into());
     }
 
     let window_target = window_target(&session, &project.window_name);
     let Ok(window_role) = tmux.get_window_option(&window_target, WINDOW_ROLE) else {
-        return Err(AiMuxError::Drifted {
+        return Err(KiraMuxError::Drifted {
             project_id: project.id.clone(),
             reason: WorkspaceDriftReason::ManagedWindowMissing,
         }
         .into());
     };
     if window_role.as_deref() != Some(WINDOW_ROLE_AGENTS) {
-        return Err(AiMuxError::Drifted {
+        return Err(KiraMuxError::Drifted {
             project_id: project.id.clone(),
             reason: WorkspaceDriftReason::WindowMetadataMismatch,
         }
@@ -74,8 +74,8 @@ mod tests {
             "resolve_managed_pane should fail when the session is absent",
         );
         assert!(matches!(
-            err.downcast_ref::<AiMuxError>(),
-            Some(AiMuxError::SessionAbsent)
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::SessionAbsent)
         ));
     }
 
@@ -89,8 +89,8 @@ mod tests {
             "resolve_managed_pane should fail for an unknown agent",
         );
         assert!(matches!(
-            err.downcast_ref::<AiMuxError>(),
-            Some(AiMuxError::UnknownAgentId(_))
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::UnknownAgentId(_))
         ));
     }
 
@@ -128,8 +128,8 @@ mod tests {
         );
         assert!(
             matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::Drifted {
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Drifted {
                     reason: WorkspaceDriftReason::WindowMetadataMismatch,
                     ..
                 })
@@ -273,8 +273,8 @@ mod tests {
         );
         assert!(
             matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::Drifted {
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Drifted {
                     reason: WorkspaceDriftReason::WindowMetadataMismatch,
                     ..
                 })
@@ -303,8 +303,8 @@ mod tests {
         );
         assert!(
             matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::Drifted {
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Drifted {
                     reason: WorkspaceDriftReason::WindowMetadataMismatch,
                     ..
                 })
@@ -335,8 +335,8 @@ mod tests {
         );
         assert!(
             matches!(
-                err.downcast_ref::<AiMuxError>(),
-                Some(AiMuxError::Drifted {
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Drifted {
                     reason: WorkspaceDriftReason::WindowMetadataMismatch,
                     ..
                 })
