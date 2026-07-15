@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
-use crate::domain::ResolvedProject;
+use crate::model::ResolvedProject;
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
 
@@ -16,9 +16,8 @@ pub(crate) struct PreparedPrompt {
 /// tmux.
 ///
 /// Fails fast on pane resolution so callers still see `SessionAbsent`,
-/// `UnknownAgentId`, and dead-pane errors before persisting any journal
-/// intent. Delivery happens separately through [`send_rendered_prompt`],
-/// so callers can order the journal write before the tmux side effect.
+/// `UnknownAgentId`, and dead-pane errors before delivery. Call
+/// [`send_rendered_prompt`] separately to paste the rendered text.
 pub(crate) fn prepare_prompt(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
@@ -100,7 +99,7 @@ pub(crate) fn send_rendered_prompt(
 fn paste_and_submit(
     tmux: &dyn TmuxAdapter,
     pane: &crate::tmux::PaneInfo,
-    agent: &crate::domain::ResolvedAgent,
+    agent: &crate::model::ResolvedAgent,
     final_prompt: &str,
 ) -> Result<()> {
     let pane_command = tmux.get_pane_option(&pane.pane_id, PANE_AGENT_COMMAND)?;
@@ -304,8 +303,8 @@ mod tests {
         let project = crate::test_support::test_project();
         let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
         assert!(matches!(
-            err.downcast_ref::<crate::error::AiMuxError>(),
-            Some(crate::error::AiMuxError::SessionAbsent)
+            err.downcast_ref::<crate::error::KiraMuxError>(),
+            Some(crate::error::KiraMuxError::SessionAbsent)
         ));
     }
 
@@ -462,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn send_prompt_without_bus_delivers_exactly_once() {
+    fn send_prompt_delivers_exactly_once() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
@@ -483,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn outbox_records_rendered_prompt_not_raw() {
+    fn prepared_prompt_uses_rendered_template_not_raw() {
         let fake = crate::test_support::FakeTmux::new();
         let mut project = crate::test_support::test_project();
         project.agents[0].prompt_template =

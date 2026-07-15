@@ -3,7 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use super::error::ConfigError;
-use crate::domain::{ResolvedAgent, ResolvedProject};
+use crate::model::{ResolvedAgent, ResolvedProject};
 
 type Result<T> = std::result::Result<T, ConfigError>;
 use super::fingerprint::{
@@ -63,7 +63,6 @@ pub(crate) fn resolve_project(
         agents,
         fingerprint,
         groups: project.groups,
-        orchestration: project.orchestration,
     })
 }
 

@@ -1,11 +1,11 @@
 use anyhow::Result;
 
 use crate::config::EnvResolutionMode;
-use crate::domain::{
-    AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
-};
 use crate::inspector::{
     self, RawWorkspacePane, RawWorkspaceSnapshot, SharedTopology, WorkspaceTopology,
+};
+use crate::model::{
+    AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
 };
 use crate::paths::AppPaths;
 use crate::tmux::{PaneInfo, TmuxAdapter, TmuxClient};
@@ -18,20 +18,7 @@ pub(crate) fn project_status(
     let (state, agents) = match inspector::inspect(tmux, project)? {
         WorkspaceTopology::Absent => (
             ProjectState::Stopped,
-            project
-                .agents
-                .iter()
-                .map(|agent| AgentStatus {
-                    id: agent.id.clone(),
-                    state: AgentState::MissingPane,
-                    label: Some(agent.label.clone()),
-                    command: agent
-                        .command
-                        .clone()
-                        .or_else(|| agent.shell_command.clone()),
-                    pane_id: None,
-                })
-                .collect(),
+            offline_agent_statuses(project, AgentState::MissingPane),
         ),
         WorkspaceTopology::Healthy(w) | WorkspaceTopology::Degraded(w) => {
             let is_degraded = w.panes.iter().any(|p| p.pane.pane_dead);
@@ -59,20 +46,7 @@ pub(crate) fn project_status(
         }
         WorkspaceTopology::Drifted { .. } => (
             ProjectState::Drifted,
-            project
-                .agents
-                .iter()
-                .map(|agent| AgentStatus {
-                    id: agent.id.clone(),
-                    state: AgentState::Error,
-                    label: Some(agent.label.clone()),
-                    command: agent
-                        .command
-                        .clone()
-                        .or_else(|| agent.shell_command.clone()),
-                    pane_id: None,
-                })
-                .collect(),
+            offline_agent_statuses(project, AgentState::Error),
         ),
     };
 
@@ -149,6 +123,23 @@ fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<Pro
         SharedTopology::Degraded { .. } => ProjectState::Degraded,
         SharedTopology::Drifted { .. } => ProjectState::Drifted,
     })
+}
+
+fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<AgentStatus> {
+    project
+        .agents
+        .iter()
+        .map(|agent| AgentStatus {
+            id: agent.id.clone(),
+            state,
+            label: Some(agent.label.clone()),
+            command: agent
+                .command
+                .clone()
+                .or_else(|| agent.shell_command.clone()),
+            pane_id: None,
+        })
+        .collect()
 }
 
 fn agent_state_from_pane(pane: &PaneInfo) -> AgentState {

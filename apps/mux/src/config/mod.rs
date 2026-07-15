@@ -8,7 +8,4 @@ mod resolve;
 
 pub use error::ConfigError;
 pub use load::{load_project, load_projects};
-pub use model::{
-    AgentMode, AgentTemplate, EnvResolutionMode, GlobalConfig, Layout, LivenessConfig,
-    OrchestrationConfig, RemainOnExit,
-};
+pub use model::{AgentMode, AgentTemplate, EnvResolutionMode, GlobalConfig, Layout, RemainOnExit};
