@@ -186,7 +186,8 @@ refuses **dead** panes; it will happily paste into a setup UI.
 2. In the attached pane, accept prompts until the normal chat/input is ready.
 3. Detach (`Ctrl-b d`).
 4. `kira-mux send <project> <agent> "…"` — task text goes to the agent, not setup.
-5. Optional: `kira-mux capture …` to read the reply.
+5. Read the reply with `kira-mux capture …`, or use `send … --wait` to block
+   until the pane settles and print the capture on stdout (agent-to-agent).
 
 If you `start` + `send` immediately on a brand-new interactive agent, the prompt
 can land in the wrong UI. That is expected with this contract, not a silent
@@ -197,13 +198,16 @@ bug.
 `send --wait` polls the pane after delivery and prints the captured output on
 stdout once it settles. The condition is **pane stability, not a formal done
 signal**, in two phases: the pane must first *change* after the submit (the
-reply started), then stay unchanged for a few seconds. A pane that dies
-mid-wait fails (exit 6); an internal hard timeout (~10 min, no CLI flag)
-aborts with exit 7 and writes the last capture to stderr.
+reply started), then stay unchanged for a few seconds. A pane that dies or
+vanishes mid-wait (killed window / missing target) fails with exit **6**; an
+internal hard timeout (~10 min, no CLI flag) aborts with exit **7** and writes
+the last capture to stderr (stdout stays reserved for confirmed-stable output).
 
 Known limits: a reply streamed with pauses longer than the stability window
-can be cut short, and a pane that keeps redrawing (clocks, watchers) or a
-reply that fully renders before the first poll both end in the hard timeout.
+can be cut short; a pane that keeps redrawing (clocks, watchers) never
+stabilizes and hits the hard timeout; a reply that fully renders *before* the
+post-submit baseline is rare but ends in the hard timeout as well (no activity
+observed).
 
 ## Layout
 
