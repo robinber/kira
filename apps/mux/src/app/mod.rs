@@ -68,12 +68,14 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             prompt,
             profile,
             no_template,
+            wait,
         } => agent_cmds::cmd_send(
             &project_id,
             profile.as_deref(),
             &agent_id,
             &prompt,
             no_template,
+            wait,
         ),
         CommandKind::Capture {
             project_id,

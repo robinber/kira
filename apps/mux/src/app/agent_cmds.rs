@@ -77,10 +77,37 @@ pub(super) fn cmd_send(
     agent_id: &str,
     prompt: &str,
     no_template: bool,
+    wait: bool,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_id, profile, ResolutionMode::Deferred)?;
     crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
-    Ok(())
+    if !wait {
+        return Ok(());
+    }
+    match crate::agent_io::wait_for_stable_output(
+        &tmux,
+        &project,
+        agent_id,
+        &crate::agent_io::WaitOptions::default(),
+    ) {
+        Ok(captured) => {
+            print_pane_text(&captured);
+            Ok(())
+        }
+        Err(error) => {
+            // On timeout the caller still gets the partial output, on stderr
+            // so stdout stays reserved for confirmed-stable captures.
+            if let Some(KiraMuxError::WaitTimeout { last_capture, .. }) =
+                error.downcast_ref::<KiraMuxError>()
+            {
+                eprint!("{last_capture}");
+                if !last_capture.ends_with('\n') {
+                    eprintln!();
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn cmd_capture(
@@ -95,10 +122,15 @@ pub(super) fn cmd_capture(
     if json {
         output::print_json(&capture)?;
     } else {
-        print!("{}", capture.output);
-        if !capture.output.ends_with('\n') {
-            println!();
-        }
+        print_pane_text(&capture.output);
     }
     Ok(())
+}
+
+/// Print captured pane text, guaranteeing a trailing newline.
+fn print_pane_text(output: &str) {
+    print!("{output}");
+    if !output.ends_with('\n') {
+        println!();
+    }
 }

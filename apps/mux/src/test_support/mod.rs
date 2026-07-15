@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -95,6 +95,25 @@ struct FakePane {
     options: BTreeMap<String, String>,
     dead: bool,
     content: String,
+    /// Scripted capture sequence: each `capture_pane` call pops the front
+    /// into `content`, so tests can drive a changing pane deterministically.
+    queued_contents: VecDeque<String>,
+    /// When set, the pane is marked dead once this many `capture_pane`
+    /// calls have been observed — simulates a crash mid-wait.
+    dies_after_captures: Option<usize>,
+}
+
+impl FakePane {
+    fn new(pane_id: &str, dead: bool) -> Self {
+        Self {
+            pane_id: pane_id.to_string(),
+            options: BTreeMap::new(),
+            dead,
+            content: String::new(),
+            queued_contents: VecDeque::new(),
+            dies_after_captures: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,12 +209,7 @@ impl FakeTmux {
             session.windows.get_mut(window_name),
             format!("missing fake window '{window_name}' in session '{session_name}'"),
         );
-        window.panes.push(FakePane {
-            pane_id: pane_id.to_string(),
-            options: BTreeMap::new(),
-            dead,
-            content: String::new(),
-        });
+        window.panes.push(FakePane::new(pane_id, dead));
     }
 
     pub(crate) fn set_session_opt(&self, session: &str, key: &str, value: &str) {
@@ -254,18 +268,38 @@ impl FakeTmux {
         }
     }
 
-    pub(crate) fn set_pane_content(&self, pane_id: &str, content: &str) {
+    fn with_pane_mut(&self, pane_id: &str, apply: impl FnOnce(&mut FakePane)) {
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         for session in sessions.values_mut() {
             for window in session.windows.values_mut() {
                 for pane in &mut window.panes {
                     if pane.pane_id == pane_id {
-                        pane.content = content.to_string();
+                        apply(pane);
                         return;
                     }
                 }
             }
         }
+    }
+
+    pub(crate) fn set_pane_content(&self, pane_id: &str, content: &str) {
+        self.with_pane_mut(pane_id, |pane| pane.content = content.to_string());
+    }
+
+    /// Script the next `capture_pane` results for `pane_id`: each call pops
+    /// one entry into the pane content; once drained, the content freezes on
+    /// the last entry.
+    pub(crate) fn queue_pane_contents(&self, pane_id: &str, contents: &[&str]) {
+        self.with_pane_mut(pane_id, |pane| {
+            pane.queued_contents
+                .extend(contents.iter().map(ToString::to_string));
+        });
+    }
+
+    /// Mark `pane_id` dead after `captures` calls to `capture_pane`,
+    /// simulating an agent that crashes mid-wait.
+    pub(crate) fn set_pane_dies_after_captures(&self, pane_id: &str, captures: usize) {
+        self.with_pane_mut(pane_id, |pane| pane.dies_after_captures = Some(captures));
     }
 
     fn record_text_op(&self, op: FakeOp, pane_id: &str, text: &str) {
@@ -383,12 +417,7 @@ impl TmuxAdapter for FakeTmux {
             format!("missing fake window '{window_name}' in session '{session_name}'"),
         );
         let idx = window.panes.len();
-        window.panes.push(FakePane {
-            pane_id: format!("%{idx}"),
-            options: BTreeMap::new(),
-            dead: false,
-            content: String::new(),
-        });
+        window.panes.push(FakePane::new(&format!("%{idx}"), false));
         Ok(())
     }
 
@@ -551,11 +580,20 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn capture_pane(&self, pane_id: &str, history_limit: usize) -> Result<String> {
-        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for session in sessions.values() {
-            for window in session.windows.values() {
-                for pane in &window.panes {
+        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        for session in sessions.values_mut() {
+            for window in session.windows.values_mut() {
+                for pane in &mut window.panes {
                     if pane.pane_id == pane_id {
+                        if let Some(next) = pane.queued_contents.pop_front() {
+                            pane.content = next;
+                        }
+                        if let Some(remaining) = &mut pane.dies_after_captures {
+                            *remaining = remaining.saturating_sub(1);
+                            if *remaining == 0 {
+                                pane.dead = true;
+                            }
+                        }
                         let lines: Vec<&str> = pane.content.lines().collect();
                         if lines.len() > history_limit {
                             return Ok(lines[lines.len() - history_limit..].join("\n") + "\n");
