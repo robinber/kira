@@ -14,12 +14,15 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     /// Parsing a TOML config file failed.
-    #[error("failed to parse config file {path}: {source}")]
+    ///
+    /// `reason` is a safe diagnostic (parser message + location) and never
+    /// includes TOML source excerpts, which may contain secrets.
+    #[error("failed to parse config file {path}: {reason}")]
     FileParse {
         /// Path that failed to parse.
         path: PathBuf,
-        /// Underlying TOML parse error.
-        source: toml::de::Error,
+        /// Safe diagnostic: parser message plus line/column when known.
+        reason: String,
     },
     /// Canonicalizing or expanding a path failed.
     #[error("failed to resolve path {path}: {source}")]
@@ -208,4 +211,113 @@ pub enum ConfigError {
         /// Number of failed project files / profiles.
         count: usize,
     },
+}
+
+impl ConfigError {
+    /// Build a [`Self::FileParse`] that is safe to log and print.
+    ///
+    /// The TOML crate's default `Display` embeds the offending source line.
+    /// That can leak secrets from malformed literal env values into `list`,
+    /// `list --json`, and default warn logs. This constructor keeps the
+    /// parser message and line/column when available, without any excerpt.
+    pub(crate) fn file_parse(path: PathBuf, input: &str, error: &toml::de::Error) -> Self {
+        Self::FileParse {
+            path,
+            reason: safe_toml_parse_reason(error, input),
+        }
+    }
+}
+
+/// Format a TOML parse error without source excerpts.
+fn safe_toml_parse_reason(error: &toml::de::Error, input: &str) -> String {
+    let message = error.message();
+    match error.span() {
+        Some(span) if !input.is_empty() => {
+            let (line, column) = line_column_at(input.as_bytes(), span.start);
+            format!("{message} (at line {line}, column {column})")
+        }
+        _ => message.to_string(),
+    }
+}
+
+/// Convert a byte offset into 1-based line and column (column counts chars).
+fn line_column_at(input: &[u8], byte_offset: usize) -> (usize, usize) {
+    if input.is_empty() {
+        return (1, 1);
+    }
+
+    let safe_index = byte_offset.min(input.len().saturating_sub(1));
+    let column_offset = byte_offset.saturating_sub(safe_index);
+
+    let line_start = input[..safe_index]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |nl| nl + 1);
+
+    let mut line = 1usize;
+    for &b in &input[..line_start] {
+        if b == b'\n' {
+            line += 1;
+        }
+    }
+
+    let column = std::str::from_utf8(&input[line_start..=safe_index])
+        .map_or_else(|_| safe_index - line_start + 1, |s| s.chars().count())
+        + column_offset;
+
+    (line, column.max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigError, line_column_at, safe_toml_parse_reason};
+
+    const SENTINEL: &str = "super-secret-value-do-not-leak";
+
+    #[test]
+    fn safe_toml_parse_reason_omits_source_excerpt_and_secret() {
+        let input = format!("env = {{ TOKEN = \"{SENTINEL}\n");
+        let Err(error) = toml::from_str::<toml::Table>(&input) else {
+            panic!("expected parse failure");
+        };
+
+        let raw = error.to_string();
+        assert!(
+            raw.contains(SENTINEL),
+            "precondition: toml Display must embed the source line, got: {raw}"
+        );
+
+        let reason = safe_toml_parse_reason(&error, &input);
+        assert!(
+            !reason.contains(SENTINEL),
+            "safe reason must not include the secret: {reason}"
+        );
+        assert!(
+            !reason.contains('|'),
+            "safe reason must not look like a source excerpt: {reason}"
+        );
+        assert!(
+            reason.contains("line") && reason.contains("column"),
+            "location should be preserved: {reason}"
+        );
+
+        let display = ConfigError::file_parse("/tmp/leak.toml".into(), &input, &error).to_string();
+        assert!(
+            !display.contains(SENTINEL),
+            "FileParse Display must not leak secret: {display}"
+        );
+        assert!(
+            display.contains("failed to parse config file"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn line_column_at_counts_newlines() {
+        let input = b"a\nbc\nd";
+        assert_eq!(line_column_at(input, 0), (1, 1));
+        assert_eq!(line_column_at(input, 2), (2, 1));
+        assert_eq!(line_column_at(input, 4), (2, 3));
+        assert_eq!(line_column_at(input, 5), (3, 1));
+    }
 }
