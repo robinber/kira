@@ -40,7 +40,9 @@ fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
         Some(KiraMuxError::MissingDependency(_)) => ExitCode::from(3),
         Some(KiraMuxError::Drifted { .. }) => ExitCode::from(4),
         Some(KiraMuxError::SessionAbsent) => ExitCode::from(5),
-        Some(KiraMuxError::Degraded(_)) => ExitCode::from(6),
+        // Dead pane and post-launch degradation both mean the workspace exists
+        // but is not fully healthy — scripts can treat exit 6 as "repair me".
+        Some(KiraMuxError::DeadPane(_) | KiraMuxError::Degraded(_)) => ExitCode::from(6),
         None => ExitCode::FAILURE,
     }
 }
@@ -66,5 +68,11 @@ mod tests {
             reason: kira_mux::WorkspaceDriftReason::FingerprintMismatch,
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::from(4));
+    }
+
+    #[test]
+    fn dead_pane_maps_to_exit_code_6() {
+        let err = anyhow::Error::new(KiraMuxError::DeadPane("alpha".into()));
+        assert_eq!(exit_code_for_error(&err), ExitCode::from(6));
     }
 }

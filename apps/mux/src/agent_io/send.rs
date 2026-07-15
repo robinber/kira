@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
+use crate::error::KiraMuxError;
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
@@ -20,8 +21,8 @@ const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 ///
 /// # Errors
 ///
-/// Fails when the session is absent, the agent is unknown, the pane is dead,
-/// or tmux rejects the delivery.
+/// Fails when the session is absent, the workspace is drifted, the agent is
+/// unknown, the pane is dead, or tmux rejects the delivery.
 pub(crate) fn send_prompt(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
@@ -31,7 +32,7 @@ pub(crate) fn send_prompt(
 ) -> Result<String> {
     let (pane, agent) = resolve_managed_pane(tmux, project, agent_id)?;
     if pane.pane_dead {
-        bail!("cannot send to dead pane for agent '{agent_id}'");
+        return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
     }
 
     let final_prompt = render_final_prompt(tmux, project, agent_id, prompt, no_template);
@@ -258,7 +259,10 @@ mod tests {
         setup_session_with_dead_panes(&fake, &project, &[0]);
 
         let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
-        assert!(err.to_string().contains("dead pane"));
+        assert!(matches!(
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::DeadPane(id)) if id == "alpha"
+        ));
         assert!(fake.ops().is_empty());
     }
 
@@ -268,8 +272,8 @@ mod tests {
         let project = crate::test_support::test_project();
         let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
         assert!(matches!(
-            err.downcast_ref::<crate::error::KiraMuxError>(),
-            Some(crate::error::KiraMuxError::SessionAbsent)
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::SessionAbsent)
         ));
     }
 
