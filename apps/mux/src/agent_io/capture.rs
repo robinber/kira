@@ -24,7 +24,7 @@ pub(crate) fn capture_output(
     agent_id: &str,
     lines: usize,
 ) -> Result<PaneCapture> {
-    let (pane, _agent) = resolve_managed_pane(tmux, project, agent_id)?;
+    let (pane, _agent, _topology) = resolve_managed_pane(tmux, project, agent_id)?;
     let output = tmux.capture_pane(&pane.pane_id, lines)?;
 
     Ok(PaneCapture {
