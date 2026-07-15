@@ -55,7 +55,7 @@ Search before adding logic for:
 - path normalization, symlink, or project-root checks;
 - config validation and env resolution;
 - retry/backoff/timeout constants;
-- msgbus or adapter error mapping;
+- adapter or subprocess error mapping;
 - JSON/text output rendering;
 - tmux output parsing and drift detection.
 
@@ -84,7 +84,7 @@ changed. Critical surfaces include:
 - config loading, validation, resolution, and fingerprints;
 - tmux parsing, workspace lifecycle, drift detection, and pane resolution;
 - command dispatch and exit-code behavior;
-- msgbus-backed read/write paths;
+- config load/resolve and tmux mutation paths;
 - orchestrator watcher and agent I/O paths;
 - TUI terminal setup/teardown and state transitions.
 

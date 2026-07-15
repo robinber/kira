@@ -5,7 +5,6 @@
 #
 #     kira-mux open solo-coder
 #
-# No Postgres required for this example.
 
 id = "solo-coder"
 name = "Solo Coder"

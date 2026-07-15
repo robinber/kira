@@ -4,27 +4,49 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Rust MSRV](https://img.shields.io/badge/rust-1.97.0%2B-orange.svg)](./rust-toolchain.toml)
 
-**Kira is a local tmux multi-agent workspace tool.**  
-Configure agents in TOML, open a session, send prompts, watch panes, take over.
+**Kira is a local tmux multi-agent workspace tool.**
 
-No Postgres. No workflow engine. No skill-driven orchestrator.
+Define coding agents in TOML, open a managed tmux session, send prompts, capture
+pane output, and take over any pane with the muscle memory you already have.
 
-> The experimental multi-agent workflow stack (event log, canonical memory,
-> orchestrator skills) lives frozen at
-> [`robinber/kira-archive`](https://github.com/robinber/kira-archive).
+No daemon. No cloud. No database. Just your machine, tmux, and the agents you
+already run.
+
+## Why
+
+Most agent runners hide workers behind opaque processes. When something goes
+sideways, you cannot see the pane, scroll back, or type into the session.
+
+Kira does the opposite:
+
+- **tmux is the UI.** Each agent is a real pane you can attach to, watch, and
+  hijack.
+- **Config is local and boring.** XDG TOML under `~/.config/kira-mux/`.
+- **The CLI is small.** Launch, inspect, send, capture, restart, kill.
 
 ## Quick start
 
-**Prerequisites:** Rust `1.97.0` (see `rust-toolchain.toml`), nightly rustfmt,
-`tmux` 3.3+, [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny).
+**Prerequisites**
+
+- Rust `1.97.0` (pinned in [`rust-toolchain.toml`](./rust-toolchain.toml))
+- Nightly rustfmt: `rustup toolchain install nightly --profile minimal --component rustfmt`
+- [`tmux`](https://github.com/tmux/tmux) 3.3+
+- [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) (for the full quality gate)
+
+**Install**
 
 ```bash
 git clone https://github.com/robinber/kira
 cd kira
 cargo install --path apps/mux
+```
 
+**First run**
+
+```bash
 kira-mux init
-# edit ~/.config/kira-mux/projects/example.toml → set root + agents
+# edit ~/.config/kira-mux/projects/example.toml
+# set `root` to a real project path and adjust agents
 
 kira-mux open example
 kira-mux send example assistant "review the auth module"
@@ -33,24 +55,68 @@ kira-mux status example
 kira-mux kill example --yes
 ```
 
+See [`examples/solo-coder/`](./examples/solo-coder) for a ready-made project
+config.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `init` | Write default XDG config |
-| `open` / `start` / `attach` | Workspace lifecycle |
-| `list` / `status` / `agents` | Inspect projects and panes |
-| `send` / `capture` | Deliver a prompt / read pane output |
-| `restart` / `kill` | Repair or stop a session |
+| `open` | Create or repair the workspace and attach |
+| `start` | Create or repair without attaching |
+| `attach` | Attach to an existing session |
+| `list` | List configured projects |
+| `status` | Live workspace / agent state |
+| `agents` | Inspect agents (list, capabilities, groups) |
+| `send` | Deliver a prompt to an agent pane |
+| `capture` | Capture recent pane output |
+| `restart` | Restart one agent, or all panes |
+| `kill` | Tear down the managed session |
 
-## Quality baseline
+## Configuration sketch
 
-Same strict Rust floor as before:
+`~/.config/kira-mux/projects/my-app.toml`:
 
-- workspace lints: `unsafe` denied, `unwrap`/`expect`/`todo` denied, pedantic on
+```toml
+id = "my-app"
+name = "My App"
+root = "~/projects/my-app"
+layout = "side-by-side"
+
+[[agents]]
+id = "coder"
+label = "Coder"
+command = "codex"
+
+[[agents]]
+id = "tests"
+label = "Tests"
+mode = "shell"
+shell_command = "npm test -- --watch"
+```
+
+- `mode = "direct"` (default) runs `command` (+ optional `args`)
+- `mode = "shell"` runs `shell_command` through the configured shell
+- Profiles (`[profiles.<name>]`) select alternate agent layouts for the same
+  project when you need more than one workspace shape
+
+## Layout
+
+```text
+apps/mux/       kira-mux CLI (config, tmux, workspace, agent I/O)
+examples/       sample project configs
+.agents/        agent coding contracts (rust-strict)
+```
+
+## Development
+
+Quality floor is intentional and strict:
+
+- workspace lints: `unsafe` denied, `unwrap` / `expect` / `todo` denied, pedantic on
 - `cargo +nightly fmt`, clippy `-D warnings`, rustdoc `-D warnings`
-- `cargo deny` advisories / licenses / sources
-- `just check` runs the full gate
+- `cargo deny` for advisories, licenses, and sources
+- CI on push and pull requests (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 
 ```bash
 just check
@@ -62,15 +128,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 cargo deny check advisories licenses sources
 ```
 
-Agent coding policy: [`.agents/skills/rust-strict/`](.agents/skills/rust-strict/)
-and [`AGENTS.md`](AGENTS.md).
+Agent coding policy: [`AGENTS.md`](./AGENTS.md) and
+[`.agents/skills/rust-strict/`](./.agents/skills/rust-strict/).
 
-## Layout
+## Status
 
-```text
-apps/mux/     kira-mux binary (config, tmux, workspace, agent I/O)
-examples/     sample project configs
-```
+Kira is early, single-maintainer software. The CLI and config schema may still
+change. Issues and small PRs are welcome; large redesigns should start as a
+discussion.
 
 ## License
 

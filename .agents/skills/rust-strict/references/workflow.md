@@ -21,7 +21,7 @@ cargo test --workspace --all-features
 
 Cargo aliases (`.cargo/config.toml`) provide shorthand: `lint`, `lint-app`, `doc-all`, `deny-all`, `test-all`. The Justfile provides `fmt-check` and `check`.
 
-Repository CI is currently manual-only via `.github/workflows/ci.yml`. It runs Rust format, clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny, a general workspace test lane excluding mux/msgbus, then dedicated mux and msgbus test lanes.
+Repository CI (`.github/workflows/ci.yml`) runs on push and pull requests: Rust format, clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny, and workspace tests.
 
 When reporting verification, copy the exact command shape and scope: package, workspace/member selection, target (`--lib`, `--bin`, tests), feature set, and whether doctests or dependency-policy checks were included.
 

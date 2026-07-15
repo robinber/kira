@@ -1,16 +1,19 @@
 # AGENTS.md
 
-Machine-facing contract for coding agents in this repository.
+Machine-facing contract for coding agents working in this repository.
 
 ## Product
 
-Kira (product A) is a **local tmux multi-agent workspace** CLI.
+Kira is a **local tmux multi-agent workspace** CLI (`kira-mux`).
 
-In scope: XDG config, tmux sessions/panes, send/capture, status/restart/kill.  
-Out of scope: Postgres, message bus, workflow engine, canonical memory,
-skill-driven orchestrator, meta-monitoring.
+In scope:
 
-Historical product-B code is archived at `robinber/kira-archive`.
+- XDG config (global + per-project TOML)
+- tmux session / window / pane lifecycle
+- prompt send and pane capture
+- status, list, agents, restart, kill
+
+Keep the product small. Prefer a clear CLI over new subsystems.
 
 ## Load order
 
@@ -24,15 +27,15 @@ Historical product-B code is archived at `robinber/kira-archive`.
 - Cargo workspace, `resolver = "3"`, edition `2024`, Rust `1.97.0`.
 - Single member: `apps/mux` (`kira-mux`).
 - Lint policy lives in root `Cargo.toml` `[workspace.lints]` — do not weaken it.
-- Nightly only for `cargo +nightly fmt`; stable from `rust-toolchain.toml` otherwise.
+- Nightly only for `cargo +nightly fmt`; otherwise use the pinned stable toolchain.
 
 ## Working rules
 
-- Smallest change that satisfies the request.
+- Make the smallest change that satisfies the request.
 - Self-check: would a senior engineer call this overcomplicated? If yes, simplify.
 - Denied in non-test code (workspace lints): `unsafe`, `unwrap`, `expect`,
   `panic!`, `todo!`, `unimplemented!`, `dbg!`.
-- `thiserror` in libraries, `anyhow` at the binary/orchestration edge.
+- `thiserror` in libraries, `anyhow` at the binary edge.
 - Secrets stay out of logs and fingerprints.
 
 ## Commands
@@ -51,13 +54,10 @@ Only claim a command passed if you ran it and checked its output.
 
 ## `kira-mux` map
 
-- `src/cli/` — clap surface (product A only)
+- `src/cli/` — clap surface
 - `src/app/` — command handlers
-- `src/config/` — XDG load/resolve/validate
+- `src/config/` — XDG load / resolve / validate
 - `src/tmux/` — tmux adapter
 - `src/workspace/` — session lifecycle
 - `src/agent_io/` — send + capture
-- `src/model/` — resolved project/status types
-
-Do not reintroduce workflow, msgbus, or orchestrator command groups without an
-explicit operator decision.
+- `src/model/` — resolved project / status types
