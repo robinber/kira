@@ -393,6 +393,82 @@ fn status_and_list_report_stopped_before_any_start() {
 }
 
 #[test]
+fn list_json_surfaces_invalid_project_configs_and_exits_2() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+
+    // Unknown field — deny_unknown_fields rejects the whole file.
+    write_file(
+        &bed.projects_dir().join("mystery.toml"),
+        r#"
+id = "mystery"
+root = "/tmp/mystery"
+nope = true
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+    );
+
+    // Malformed TOML — no usable body.
+    write_file(
+        &bed.projects_dir().join("garbage.toml"),
+        "id = [\nnot toml\n",
+    );
+
+    let list = bed.kira(&["list", "--json"]);
+    assert_eq!(
+        exit_code(&list),
+        2,
+        "list must exit 2 when configs are broken, stderr: {:?}",
+        stderr_of(&list)
+    );
+
+    // stdout is still one valid JSON document with both healthy and broken rows.
+    let value = parse_json(&list);
+    let rows = value
+        .as_array()
+        .unwrap_or_else(|| panic!("list --json must be an array, got: {value}"));
+
+    let good = rows.iter().find(|row| row["id"] == "it");
+    assert!(
+        good.is_some_and(|row| row["state"] == "stopped"),
+        "valid project still listed, got: {value}"
+    );
+
+    let mystery = rows.iter().find(|row| row["id"] == "mystery");
+    assert!(
+        mystery.is_some_and(|row| {
+            row["state"] == "config_error"
+                && row["error"].as_str().is_some_and(|e| !e.is_empty())
+                && row["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("mystery.toml"))
+        }),
+        "unknown-field project must surface as config_error, got: {value}"
+    );
+
+    let garbage = rows.iter().find(|row| {
+        row["state"] == "config_error"
+            && row["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("garbage.toml"))
+    });
+    assert!(
+        garbage.is_some(),
+        "malformed TOML must surface as config_error, got: {value}"
+    );
+
+    // stderr carries the aggregate message; details stay on stdout JSON.
+    assert!(
+        stderr_of(&list).contains("failed to load"),
+        "got stderr: {:?}",
+        stderr_of(&list)
+    );
+}
+
+#[test]
 fn init_writes_config_files_and_never_clobbers_them() {
     let bed = TestBed::new();
 

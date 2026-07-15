@@ -7,5 +7,5 @@ mod model;
 mod resolve;
 
 pub use error::ConfigError;
-pub(crate) use load::{load_project, load_projects};
+pub(crate) use load::{ProjectConfigFailure, load_project, load_projects};
 pub(crate) use model::{AgentMode, Layout, RemainOnExit, ResolutionMode};

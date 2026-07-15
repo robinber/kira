@@ -44,10 +44,10 @@ pub(crate) fn project_status(
 
 pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
     let paths = AppPaths::from_env()?;
-    let projects = crate::config::load_projects(&paths, ResolutionMode::Deferred)?;
+    let loaded = crate::config::load_projects(&paths, ResolutionMode::Deferred)?;
 
     let mut summaries = Vec::new();
-    for project in projects {
+    for project in loaded.projects {
         let tmux = TmuxClient::from_env(project.tmux_bin.clone());
         let state = match summarize_project(&tmux, &project) {
             Ok(state) => state,
@@ -67,10 +67,39 @@ pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
             root: project.root.display().to_string(),
             state,
             agent_count: project.agents.len(),
+            path: None,
+            error: None,
         });
     }
 
+    for failure in loaded.failures {
+        summaries.push(summary_from_config_failure(failure));
+    }
+
+    // Stable order: valid projects first (file sort order from loader), then
+    // failures by path / id so JSON diffs stay readable.
+    summaries.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.profile_id.cmp(&b.profile_id))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
     Ok(summaries)
+}
+
+fn summary_from_config_failure(failure: crate::config::ProjectConfigFailure) -> ProjectSummary {
+    ProjectSummary {
+        id: failure
+            .project_id
+            .unwrap_or_else(|| "<unknown>".to_string()),
+        profile_id: failure.profile_id.unwrap_or_else(|| "-".to_string()),
+        name: String::new(),
+        root: String::new(),
+        state: ProjectState::ConfigError,
+        agent_count: 0,
+        path: Some(failure.path.display().to_string()),
+        error: Some(failure.error),
+    }
 }
 
 fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<ProjectState> {
