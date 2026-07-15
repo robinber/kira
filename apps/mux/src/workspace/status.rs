@@ -9,7 +9,9 @@ use crate::model::{
     AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
 };
 use crate::paths::AppPaths;
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxClient};
+use crate::tmux::{
+    PaneInfo, PaneSummary, TmuxAdapter, TmuxClient, TmuxError, WorkspaceSummarySnapshot,
+};
 use crate::workspace::session_name;
 
 pub(crate) fn project_status(
@@ -73,10 +75,25 @@ pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
 
 fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<ProjectState> {
     let session = session_name(project);
-    let snapshot = tmux.snapshot_summary(&session, &project.window_name)?;
+    match tmux.snapshot_summary(&session, &project.window_name) {
+        Ok(snapshot) => Ok(project_state_from_snapshot(project, snapshot.as_ref())),
+        Err(error) => match classified_summary_error(&error) {
+            Some(state) => Ok(state),
+            None => Err(error),
+        },
+    }
+}
 
+/// Classify a successful `snapshot_summary` payload for `list`.
+///
+/// `None` means no session (or no server) — stopped. A present snapshot is
+/// fed through the shared topology classifier so list/status agree on drift.
+fn project_state_from_snapshot(
+    project: &ResolvedProject,
+    snapshot: Option<&WorkspaceSummarySnapshot>,
+) -> ProjectState {
     let Some(snap) = snapshot else {
-        return Ok(ProjectState::Stopped);
+        return ProjectState::Stopped;
     };
 
     let shared = inspector::classify_snapshot(
@@ -89,7 +106,7 @@ fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<Pro
             panes: snap
                 .panes
                 .iter()
-                .map(|pane| RawWorkspacePane {
+                .map(|pane: &PaneSummary| RawWorkspacePane {
                     agent_id: pane.agent_id.as_deref(),
                     pane_dead: pane.pane_dead,
                 })
@@ -97,11 +114,24 @@ fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<Pro
         },
     );
 
-    Ok(match shared {
+    match shared {
         SharedTopology::Healthy { .. } => ProjectState::Running,
         SharedTopology::Degraded { .. } => ProjectState::Degraded,
         SharedTopology::Drifted { .. } => ProjectState::Drifted,
-    })
+    }
+}
+
+/// Map typed tmux failures from `snapshot_summary` to a list state.
+///
+/// Returns `None` when the error is not classifiable (transport / generic
+/// command failure) so the caller can surface `ProjectState::Error` instead
+/// of lying with a false Drifted.
+fn classified_summary_error(error: &anyhow::Error) -> Option<ProjectState> {
+    match error.downcast_ref::<TmuxError>() {
+        Some(TmuxError::NoServer(_) | TmuxError::MissingSession(_)) => Some(ProjectState::Stopped),
+        Some(TmuxError::MissingTarget(_)) => Some(ProjectState::Drifted),
+        Some(TmuxError::CommandFailure(_)) | None => None,
+    }
 }
 
 fn live_agent_statuses(workspace: &InspectedWorkspace) -> Vec<AgentStatus> {
@@ -146,5 +176,146 @@ fn agent_state_from_pane(pane: &PaneInfo) -> AgentState {
         AgentState::ExitedClean
     } else {
         AgentState::ExitedFailed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
+
+    #[test]
+    fn classified_summary_error_maps_missing_target_to_drifted() {
+        let error = TmuxError::MissingTarget("s:agents".into()).into();
+        assert_eq!(
+            classified_summary_error(&error),
+            Some(ProjectState::Drifted)
+        );
+    }
+
+    #[test]
+    fn classified_summary_error_maps_missing_session_to_stopped() {
+        let error = TmuxError::MissingSession("s".into()).into();
+        assert_eq!(
+            classified_summary_error(&error),
+            Some(ProjectState::Stopped)
+        );
+    }
+
+    #[test]
+    fn classified_summary_error_maps_no_server_to_stopped() {
+        let error = TmuxError::NoServer("no server running on /tmp/tmux".into()).into();
+        assert_eq!(
+            classified_summary_error(&error),
+            Some(ProjectState::Stopped)
+        );
+    }
+
+    #[test]
+    fn classified_summary_error_leaves_command_failure_unclassified() {
+        let error = TmuxError::CommandFailure("server unexpectedly closed".into()).into();
+        assert_eq!(classified_summary_error(&error), None);
+    }
+
+    #[test]
+    fn classified_summary_error_leaves_untyped_errors_unclassified() {
+        let error = anyhow::anyhow!("io transport glitch");
+        assert_eq!(classified_summary_error(&error), None);
+    }
+
+    #[test]
+    fn project_state_from_snapshot_none_is_stopped() {
+        let project = crate::test_support::test_project();
+        assert_eq!(
+            project_state_from_snapshot(&project, None),
+            ProjectState::Stopped
+        );
+    }
+
+    #[test]
+    fn project_state_from_snapshot_healthy_is_running() {
+        let project = crate::test_support::test_project();
+        let snap = WorkspaceSummarySnapshot {
+            fingerprint: Some(project.fingerprint.clone()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
+            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
+            panes: vec![
+                PaneSummary {
+                    pane_dead: false,
+                    agent_id: Some("alpha".into()),
+                },
+                PaneSummary {
+                    pane_dead: false,
+                    agent_id: Some("beta".into()),
+                },
+            ],
+        };
+        assert_eq!(
+            project_state_from_snapshot(&project, Some(&snap)),
+            ProjectState::Running
+        );
+    }
+
+    #[test]
+    fn project_state_from_snapshot_dead_pane_is_degraded() {
+        let project = crate::test_support::test_project();
+        let snap = WorkspaceSummarySnapshot {
+            fingerprint: Some(project.fingerprint.clone()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
+            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
+            panes: vec![
+                PaneSummary {
+                    pane_dead: true,
+                    agent_id: Some("alpha".into()),
+                },
+                PaneSummary {
+                    pane_dead: false,
+                    agent_id: Some("beta".into()),
+                },
+            ],
+        };
+        assert_eq!(
+            project_state_from_snapshot(&project, Some(&snap)),
+            ProjectState::Degraded
+        );
+    }
+
+    #[test]
+    fn project_state_from_snapshot_empty_default_is_drifted_not_error() {
+        // A *successful* empty payload (e.g. untagged session) is real drift.
+        // Command failures must not reach here as Default — that was the bug.
+        let project = crate::test_support::test_project();
+        let snap = WorkspaceSummarySnapshot::default();
+        assert_eq!(
+            project_state_from_snapshot(&project, Some(&snap)),
+            ProjectState::Drifted
+        );
+    }
+
+    #[test]
+    fn project_state_from_snapshot_fingerprint_mismatch_is_drifted() {
+        let project = crate::test_support::test_project();
+        let snap = WorkspaceSummarySnapshot {
+            fingerprint: Some("wrong".into()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
+            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
+            panes: vec![
+                PaneSummary {
+                    pane_dead: false,
+                    agent_id: Some("alpha".into()),
+                },
+                PaneSummary {
+                    pane_dead: false,
+                    agent_id: Some("beta".into()),
+                },
+            ],
+        };
+        assert_eq!(
+            project_state_from_snapshot(&project, Some(&snap)),
+            ProjectState::Drifted
+        );
     }
 }
