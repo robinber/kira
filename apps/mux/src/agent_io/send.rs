@@ -20,6 +20,11 @@ const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 /// Render the final prompt for `agent_id` and deliver it to the agent's
 /// managed pane. Returns the rendered prompt that was sent.
 ///
+/// Delivery requires a **live** pane only. Kira does not wait for the agent
+/// TUI to be input-ready (trust dialogs, logins, …). Operators bootstrap
+/// interactive tools via `open` / attach before unattended `send` — see the
+/// README “Running vs input-ready” section.
+///
 /// # Errors
 ///
 /// Fails when the session is absent, the workspace is drifted, the agent is
@@ -32,6 +37,7 @@ pub(crate) fn send_prompt(
     no_template: bool,
 ) -> Result<String> {
     let (pane, agent, topology) = resolve_managed_pane(tmux, project, agent_id)?;
+    // Gate: process liveness only — not application readiness.
     if pane.pane_dead {
         return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
     }
@@ -100,6 +106,8 @@ fn paste_and_submit(
 
 #[cfg(test)]
 mod tests {
+    // Readiness is operator-managed: these tests only assert dead-pane /
+    // topology gates. There is intentionally no “wait until TUI idle” path.
     use super::*;
     use crate::test_support::{FakeOp, TestResultExt, setup_session_with_dead_panes};
     use crate::workspace::session_name;

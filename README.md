@@ -48,12 +48,21 @@ kira-mux init
 # edit ~/.config/kira-mux/projects/example.toml
 # set `root` to a real project path and adjust agents
 
+# Prefer `open` for interactive agents: attach, finish any first-run UI
+# (trust directory, login, …), then detach and dispatch with `send`.
 kira-mux open example
+# …accept Codex/Claude/etc. prompts in the pane if this is a cold start…
+# Ctrl-b d  (detach)
+
 kira-mux send example assistant "review the auth module"
 kira-mux capture example assistant --lines 80
 kira-mux status example
 kira-mux kill example --yes
 ```
+
+`start` (no attach) is fine once agents are already bootstrapped. On a cold
+interactive first launch, use **`open`** (or `start` + `attach`) before the
+first unattended `send` — see [Running vs input-ready](#running-vs-input-ready).
 
 See [`examples/solo-coder/`](./examples/solo-coder) for a ready-made project
 config.
@@ -69,7 +78,7 @@ config.
 | `list` | List configured projects |
 | `status` | Live workspace / agent state |
 | `agents` | Inspect agents (list, capabilities, groups) |
-| `send` | Deliver a prompt to an agent pane |
+| `send` | Deliver a prompt to a **live** pane (not “agent ready”) |
 | `capture` | Capture recent pane output |
 | `restart` | Restart one agent, or all panes |
 | `kill` | Tear down the managed session |
@@ -145,6 +154,40 @@ silently skipped. `list` / `list --json` includes a row with
 `state = "config_error"` plus `path` and `error` fields. Exit code **2** when
 any such row is present. Diagnostics live in the list output itself (stdout),
 so `--json` does not depend on log level or merging stderr.
+
+### Running vs input-ready
+
+Kira reports agent state from **tmux pane liveness**, not from application
+readiness.
+
+| Term | Meaning in Kira |
+|---|---|
+| **`running`** | The pane process is alive (`pane_dead = 0`). |
+| **Input-ready** | The agent TUI is past setup and will treat pasted text as a task. **Not detected** by Kira. |
+
+So `status` / `agents` can show `running` while Codex is still on “Do you trust
+this directory?”, a login screen, or another first-use dialog. `send` only
+refuses **dead** panes; it will happily paste into a setup UI.
+
+**Contract (operator-managed readiness):**
+
+- There is **no** readiness config, poll, or tool-specific “done” detector.
+- Cold start for interactive tools: use **`open`** (or attach), complete
+  one-time bootstrap in the pane, detach, then use `send` / scripts.
+- Headless automation assumes agents are already past that bootstrap (or uses
+  non-interactive agent modes).
+
+**Manual cold-start scenario (Codex-like tools)**
+
+1. `kira-mux open <project>` — session starts; agent may show a trust/login UI.
+2. In the attached pane, accept prompts until the normal chat/input is ready.
+3. Detach (`Ctrl-b d`).
+4. `kira-mux send <project> <agent> "…"` — task text goes to the agent, not setup.
+5. Optional: `kira-mux capture …` to read the reply.
+
+If you `start` + `send` immediately on a brand-new interactive agent, the prompt
+can land in the wrong UI. That is expected with this contract, not a silent
+bug.
 
 ## Layout
 
