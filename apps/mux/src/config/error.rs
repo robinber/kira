@@ -15,13 +15,14 @@ pub enum ConfigError {
     },
     /// Parsing a TOML config file failed.
     ///
-    /// `reason` is a safe diagnostic (parser message + location) and never
-    /// includes TOML source excerpts, which may contain secrets.
+    /// `reason` is a value-free diagnostic with a location when available and
+    /// never includes TOML source excerpts or values, which may contain
+    /// secrets.
     #[error("failed to parse config file {path}: {reason}")]
     FileParse {
         /// Path that failed to parse.
         path: PathBuf,
-        /// Safe diagnostic: parser message plus line/column when known.
+        /// Safe diagnostic category plus line/column when known.
         reason: String,
     },
     /// Canonicalizing or expanding a path failed.
@@ -219,7 +220,8 @@ impl ConfigError {
     /// The TOML crate's default `Display` embeds the offending source line.
     /// That can leak secrets from malformed literal env values into `list`,
     /// `list --json`, and default warn logs. This constructor keeps the
-    /// parser message and line/column when available, without any excerpt.
+    /// location when available, without trusting parser messages that may
+    /// embed literal values.
     pub(crate) fn file_parse(path: PathBuf, input: &str, error: &toml::de::Error) -> Self {
         Self::FileParse {
             path,
@@ -228,9 +230,9 @@ impl ConfigError {
     }
 }
 
-/// Format a TOML parse error without source excerpts.
+/// Format a TOML parse error without source excerpts or literal values.
 fn safe_toml_parse_reason(error: &toml::de::Error, input: &str) -> String {
-    let message = error.message();
+    let message = "invalid TOML configuration";
     match error.span() {
         Some(span) if !input.is_empty() => {
             let (line, column) = line_column_at(input.as_bytes(), span.start);
@@ -270,6 +272,8 @@ fn line_column_at(input: &[u8], byte_offset: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{ConfigError, line_column_at, safe_toml_parse_reason};
 
     const SENTINEL: &str = "super-secret-value-do-not-leak";
@@ -309,6 +313,37 @@ mod tests {
         assert!(
             display.contains("failed to parse config file"),
             "got: {display}"
+        );
+    }
+
+    #[test]
+    fn safe_toml_parse_reason_omits_literal_embedded_in_message() {
+        const NUMERIC_SENTINEL: &str = "987654321012345678";
+
+        let input = format!("env = {{ TOKEN = {NUMERIC_SENTINEL} }}");
+        let Err(error) = toml::from_str::<BTreeMap<String, BTreeMap<String, String>>>(&input)
+        else {
+            panic!("expected env value type failure");
+        };
+
+        let raw_message = error.message();
+        assert!(
+            raw_message.contains(NUMERIC_SENTINEL),
+            "precondition: TOML message must embed the invalid value, got: {raw_message}"
+        );
+
+        let reason = safe_toml_parse_reason(&error, &input);
+        assert!(
+            !reason.contains(NUMERIC_SENTINEL),
+            "safe reason must not include the invalid value: {reason}"
+        );
+        assert!(
+            reason.contains("invalid TOML configuration"),
+            "diagnostic category should remain actionable: {reason}"
+        );
+        assert!(
+            reason.contains("line") && reason.contains("column"),
+            "location should be preserved: {reason}"
         );
     }
 
