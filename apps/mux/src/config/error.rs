@@ -199,4 +199,13 @@ pub enum ConfigError {
         /// Non-directory resolved path.
         path: PathBuf,
     },
+    /// One or more project files or profiles failed to load during discovery.
+    ///
+    /// Emitted by `list` after printing structured `config_error` rows so
+    /// automation can fail without losing the per-entry diagnostics.
+    #[error("{count} project config(s) failed to load (details in list output)")]
+    ProjectConfigLoadFailures {
+        /// Number of failed project files / profiles.
+        count: usize,
+    },
 }

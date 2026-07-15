@@ -131,6 +131,14 @@ workspace.
 
 Literal env values never appear in the fingerprint material; only digests do.
 
+### Invalid project files in `list`
+
+Broken project TOML (parse errors, unknown fields, failed validation) is **not**
+silently skipped. `list` / `list --json` includes a row with
+`state = "config_error"` plus `path` and `error` fields. Exit code **2** when
+any such row is present. Diagnostics live in the list output itself (stdout),
+so `--json` does not depend on log level or merging stderr.
+
 ## Layout
 
 ```text
