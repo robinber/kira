@@ -27,6 +27,9 @@ pub enum KiraMuxError {
     /// The user declined a destructive kill operation.
     #[error("kill aborted")]
     KillAborted,
+    /// An operation that requires a live pane targeted a dead pane.
+    #[error("cannot send to dead pane for agent '{0}'")]
+    DeadPane(String),
     /// Workspace launch completed with at least one failed pane.
     #[error("project {0} completed in degraded state")]
     Degraded(String),
