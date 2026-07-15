@@ -1,22 +1,42 @@
 # errors
 
-## 1. Source-backed guidance
-- The Rust Book treats `Result<T, E>` as the default for recoverable errors and `panic!` as the tool for unrecoverable failures or bugs.
-- Prefer typed, composable library errors when the caller may want to match, enrich, or recover from them.
-- Use `?` as the normal propagation path in library and application code.
-- Document error behavior on public functions, including panic conditions when they exist.
-- For constructors that can fail validation, prefer `build`/`try_new`-style APIs or `TryFrom` over a fallible `new`.
-- At binary boundaries, `anyhow::Result` or `Box<dyn Error>` is acceptable when the goal is to report a user-facing failure and exit cleanly.
+## Layers
 
-## 2. Skill policy
-- Library code should usually return a concrete error enum or another composable error type, not erase errors too early.
-- Do not use `unwrap`, `expect`, `panic!`, `todo!`, or `unimplemented!` in production code (non-test, non-example, non-bench). Use typed errors and `?` propagation to surface fallibility.
-- Make fallibility obvious in the API name and docs.
-- Prefer `?` over manual propagation unless you need to attach context or translate the error.
-- Keep validation at the boundary: construct valid values with `build`/`try_new`, then let the rest of the code assume invariants hold.
+| Type | Module | Use |
+|---|---|---|
+| `ConfigError` | `config/error.rs` | TOML load, validation, resolve, paths |
+| `KiraMuxError` | `error.rs` | domain outcomes mapped to exit codes |
+| `TmuxError` | `tmux/error.rs` | missing session/target, no server, command failure |
+| `anyhow::Error` | edges | context, glue, binary `run()` |
 
-## 3. Allowed exceptions
-- Tests, examples, and invariant-checking code may use `panic!` or `expect` when failure should stop immediately.
-- A CLI or TUI `main` may use `anyhow` or `Box<dyn Error>` to collapse diverse failures into one exit path.
-- In Kira, do not introduce `panic!` in non-test code unless an existing, explicit repository deviation already covers that boundary or the user specifically approves the deviation.
-- A fallible `new` can be tolerated in existing code, but it should not be the preferred shape for new APIs.
+`KiraMuxError::ConfigValidation` wraps `ConfigError`. Prefer returning the
+typed error early; convert at the boundary with `?` / `.into()`.
+
+## Policy
+
+- No `unwrap` / `expect` / `panic!` / `todo!` / `unimplemented!` outside tests
+  (workspace clippy denials).
+- Prefer typed variants over `bail!("string")` when:
+  - exit codes should distinguish the case, or
+  - callers match on the error.
+- Tests may use `test_support::{or_panic, ok, err}` instead of raw unwrap.
+
+## Exit codes (`main.rs`)
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 2 | config / validation / unknown agent|group / kill aborted |
+| 3 | missing dependency (e.g. tmux binary) |
+| 4 | workspace drifted |
+| 5 | session absent |
+| 6 | dead pane or degraded launch |
+| 1 | other (`anyhow` / untyped) |
+
+New user-visible failure modes should get a `KiraMuxError` variant **and** an
+exit-code arm when scripts need to distinguish them.
+
+## Construction
+
+- Fallible construction: `try_*` / `build` / `Result`-returning resolve paths.
+- Do not add fallible `new` that panics on bad input.
