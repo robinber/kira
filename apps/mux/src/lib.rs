@@ -1,8 +1,7 @@
 //! Library backing the `kira-mux` CLI.
 //!
 //! Loads XDG project configuration, manages tmux workspaces, and delivers
-//! prompts to agent panes. Product A has no Postgres message bus and no
-//! workflow engine.
+//! prompts to agent panes.
 
 use anyhow::Result;
 use clap::Parser;

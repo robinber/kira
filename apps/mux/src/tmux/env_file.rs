@@ -18,9 +18,8 @@ use anyhow::{Context, Result, bail};
 /// in the process env are silently skipped.
 ///
 /// Kept deliberately narrow to avoid leaking unrelated secrets into tmux
-/// sessions. `MSGBUS_DATABASE_URL` is forwarded because bus-backed commands
-/// fail loudly without it.
-const FORWARDED_ENV_VARS: &[&str] = &["MSGBUS_DATABASE_URL"];
+/// sessions. Add names here only when every agent pane must inherit them.
+const FORWARDED_ENV_VARS: &[&str] = &[];
 const ENV_WRAPPER_SHELL: &str = "/bin/sh";
 const ENV_WRAPPER_ARG0: &str = "kira-mux-env";
 const ENV_WRAPPER_SCRIPT: &str =
@@ -194,31 +193,28 @@ mod tests {
     use crate::test_support::TestResultExt;
 
     #[test]
-    fn whitelist_includes_msgbus_database_url() {
-        assert!(FORWARDED_ENV_VARS.contains(&"MSGBUS_DATABASE_URL"));
-    }
-
-    #[test]
-    fn forwarded_env_pairs_from_captures_set_vars_for_env_file_channel() {
-        let pairs = forwarded_env_pairs_from(|key| match key {
-            "MSGBUS_DATABASE_URL" => Some("postgres://bus/local".to_string()),
-            _ => None,
-        });
-        assert_eq!(
-            pairs,
-            vec![(
-                "MSGBUS_DATABASE_URL".to_string(),
-                "postgres://bus/local".to_string(),
-            )]
+    fn forwarded_env_whitelist_is_empty_by_default() {
+        assert!(
+            FORWARDED_ENV_VARS.is_empty(),
+            "keep the default whitelist empty; only add names agents must inherit"
         );
     }
 
     #[test]
+    fn forwarded_env_pairs_from_is_empty_with_empty_whitelist() {
+        let pairs = forwarded_env_pairs_from(|key| match key {
+            "SHOULD_NOT_FORWARD" => Some("secret".to_string()),
+            _ => None,
+        });
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
     fn env_file_wrapper_argv_never_contains_resolved_secret_values() {
-        let secret = "postgres://user:password@db.local/kira";
+        let secret = "super-secret-token";
         let temp = tempfile::tempdir().or_panic();
         let env_file = ShellEnvFile::create_in(
-            &[("MSGBUS_DATABASE_URL".to_string(), secret.to_string())],
+            &[("KIRA_TEST_TOKEN".to_string(), secret.to_string())],
             temp.path(),
         )
         .or_panic();
@@ -227,8 +223,8 @@ mod tests {
             &env_file_path,
             &[
                 "kira-mux".to_string(),
-                "workflow".to_string(),
                 "status".to_string(),
+                "demo".to_string(),
             ],
         );
 
@@ -246,10 +242,10 @@ mod tests {
 
     #[test]
     fn respawn_pane_argv_uses_env_file_path_without_env_flags_or_values() {
-        let secret = "postgres://user:password@db.local/kira";
+        let secret = "super-secret-token";
         let temp = tempfile::tempdir().or_panic();
         let env_file = ShellEnvFile::create_in(
-            &[("MSGBUS_DATABASE_URL".to_string(), secret.to_string())],
+            &[("KIRA_TEST_TOKEN".to_string(), secret.to_string())],
             temp.path(),
         )
         .or_panic();
@@ -258,7 +254,7 @@ mod tests {
             "%0",
             "/tmp/project",
             Some(&env_file_path),
-            &["kira-mux".to_string(), "workflow".to_string()],
+            &["kira-mux".to_string(), "status".to_string()],
         );
 
         assert!(
@@ -275,10 +271,7 @@ mod tests {
     fn env_file_uses_owner_only_permissions() {
         let temp = tempfile::tempdir().or_panic();
         let env_file = ShellEnvFile::create_in(
-            &[(
-                "MSGBUS_DATABASE_URL".to_string(),
-                "postgres://bus/local".to_string(),
-            )],
+            &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
             temp.path(),
         )
         .or_panic();
@@ -290,22 +283,16 @@ mod tests {
     #[test]
     fn env_file_contents_exports_values_with_shell_quoting() {
         let contents = shell_env_file_contents(&[
-            (
-                "MSGBUS_DATABASE_URL".to_string(),
-                "postgres://user:pa'ss@db.local/kira".to_string(),
-            ),
+            ("KIRA_TEST_TOKEN".to_string(), "value:pa'ss".to_string()),
             ("KIRA_MODE".to_string(), "worker pool".to_string()),
         ]);
 
-        assert!(
-            contents
-                .contains("export 'MSGBUS_DATABASE_URL=postgres://user:pa'\\''ss@db.local/kira'")
-        );
+        assert!(contents.contains("export 'KIRA_TEST_TOKEN=value:pa'\\''ss'"));
         assert!(contents.contains("export 'KIRA_MODE=worker pool'"));
     }
 
     #[test]
-    fn forwarded_env_pairs_from_is_empty_when_no_vars_set() {
+    fn forwarded_env_pairs_from_is_empty_when_lookup_returns_none() {
         let pairs = forwarded_env_pairs_from(|_| None);
         assert!(pairs.is_empty());
     }
