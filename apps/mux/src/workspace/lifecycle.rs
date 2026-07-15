@@ -395,6 +395,59 @@ mod tests {
     }
 
     #[test]
+    fn start_on_healthy_does_not_respawn_panes() {
+        // Env reference host-value rotation is invisible to the fingerprint,
+        // so start must not re-inject env on a healthy session — that is
+        // restart's job (#16).
+        let fake = FakeTmux::new();
+        let mut project = test_project();
+        make_launchable(&mut project);
+        setup_healthy_session(&fake, &project);
+        let before = fake
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
+            .count();
+
+        start(&fake, &project, false).or_panic();
+
+        let after = fake
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
+            .count();
+        assert_eq!(
+            before, after,
+            "healthy start must not respawn panes (would be required to refresh $VAR env)"
+        );
+    }
+
+    #[test]
+    fn restart_respawns_panes_to_refresh_runtime_env() {
+        let fake = FakeTmux::new();
+        let mut project = test_project();
+        make_launchable(&mut project);
+        setup_healthy_session(&fake, &project);
+        let before = fake
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
+            .count();
+
+        restart(&fake, &project, None).or_panic();
+
+        let after = fake
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
+            .count();
+        assert!(
+            after > before,
+            "restart must respawn so newly resolved $VAR values reach panes"
+        );
+    }
+
+    #[test]
     fn start_repairs_degraded_session() {
         let fake = FakeTmux::new();
         let mut project = test_project();
