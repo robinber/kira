@@ -124,10 +124,6 @@ fn resolve_agents(
     Ok((resolved, fingerprint_materials, seen))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the resolution pipeline keeps precedence, validation, and fingerprint material synchronized field by field"
-)]
 fn resolve_single_agent(
     agent: ProjectAgent,
     template: Option<&AgentTemplate>,
@@ -215,31 +211,6 @@ fn resolve_single_agent(
         }
     }
 
-    let orchestrator_prompt_template = agent
-        .orchestrator_prompt_template
-        .clone()
-        .or_else(|| template.and_then(|item| item.orchestrator_prompt_template.clone()));
-
-    if let Some(ref tmpl) = orchestrator_prompt_template {
-        let unknowns = crate::prompt::lint_orchestrator_template(tmpl);
-        if !unknowns.is_empty() {
-            tracing::warn!(
-                "agent {} orchestrator_prompt_template has unknown variable(s): {}",
-                agent.id,
-                unknowns.join(", ")
-            );
-        }
-    }
-
-    if orchestrator_prompt_template.is_some()
-        && !capabilities.iter().any(|cap| cap == "orchestrator")
-    {
-        tracing::warn!(
-            "agent {} orchestrator_prompt_template is ignored unless capability 'orchestrator' is present",
-            agent.id
-        );
-    }
-
     let resolved = ResolvedAgent {
         id: agent.id,
         label,
@@ -251,7 +222,6 @@ fn resolve_single_agent(
         env,
         capabilities,
         prompt_template,
-        orchestrator_prompt_template,
     };
 
     Ok((resolved, fingerprint_material))
@@ -551,33 +521,6 @@ mod tests {
     use super::*;
     use crate::test_support::{TestOptionExt, TestResultExt};
 
-    fn base_project(root: &Path) -> ProjectFile {
-        ProjectFile {
-            id: "test".to_string(),
-            name: None,
-            root: root.to_string_lossy().into_owned(),
-            layout: None,
-            main_pane_ratio: None,
-            window_name: None,
-            agents: vec![ProjectAgent {
-                id: "reviewer".to_string(),
-                template: None,
-                label: None,
-                mode: None,
-                command: Some("echo".to_string()),
-                shell_command: None,
-                args: None,
-                cwd: None,
-                env: BTreeMap::new(),
-                capabilities: None,
-                prompt_template: None,
-                orchestrator_prompt_template: None,
-            }],
-            groups: BTreeMap::new(),
-            orchestration: None,
-        }
-    }
-
     #[test]
     fn resolve_env_map_reports_missing_environment_variable() {
         let variable = "KIRA_MUX_TEST_MISSING_ENV_RESTRICTION_7E3D2C";
@@ -613,149 +556,6 @@ mod tests {
         assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(source.to_string(), "HOME is not set");
         assert_eq!(display, "failed to read config file ~: HOME is not set");
-    }
-
-    // --- orchestrator_prompt_template resolution ---
-
-    fn orchestrator_template() -> AgentTemplate {
-        AgentTemplate {
-            name: "codex-orchestrator".to_string(),
-            label: None,
-            mode: None,
-            command: Some("codex".to_string()),
-            shell_command: None,
-            args: vec![],
-            cwd: None,
-            env: BTreeMap::new(),
-            capabilities: vec!["orchestrator".to_string()],
-            prompt_template: None,
-            orchestrator_prompt_template: Some(
-                "$orchestrator {{orchestrator_envelope}}".to_string(),
-            ),
-        }
-    }
-
-    #[test]
-    fn orchestrator_prompt_template_inherits_from_template() {
-        let temp = tempfile::tempdir().or_panic();
-        let global = GlobalConfig {
-            agent_templates: vec![orchestrator_template()],
-            ..GlobalConfig::default()
-        };
-        let project = ProjectFile {
-            id: "test".to_string(),
-            name: None,
-            root: temp.path().to_string_lossy().into_owned(),
-            layout: None,
-            main_pane_ratio: None,
-            window_name: None,
-            agents: vec![ProjectAgent {
-                id: "orchestrator-1".to_string(),
-                template: Some("codex-orchestrator".to_string()),
-                label: None,
-                mode: None,
-                command: None,
-                shell_command: None,
-                args: None,
-                cwd: None,
-                env: BTreeMap::new(),
-                capabilities: None,
-                prompt_template: None,
-                orchestrator_prompt_template: None,
-            }],
-            groups: BTreeMap::new(),
-            orchestration: None,
-        };
-        let resolved =
-            resolve_project(project, "default", &global, EnvResolutionMode::Deferred).or_panic();
-        assert_eq!(
-            resolved.agents[0].orchestrator_prompt_template.as_deref(),
-            Some("$orchestrator {{orchestrator_envelope}}")
-        );
-    }
-
-    #[test]
-    fn orchestrator_prompt_template_agent_overrides_template() {
-        let temp = tempfile::tempdir().or_panic();
-        let global = GlobalConfig {
-            agent_templates: vec![orchestrator_template()],
-            ..GlobalConfig::default()
-        };
-        let project = ProjectFile {
-            id: "test".to_string(),
-            name: None,
-            root: temp.path().to_string_lossy().into_owned(),
-            layout: None,
-            main_pane_ratio: None,
-            window_name: None,
-            agents: vec![ProjectAgent {
-                id: "orchestrator-1".to_string(),
-                template: Some("codex-orchestrator".to_string()),
-                label: None,
-                mode: None,
-                command: None,
-                shell_command: None,
-                args: None,
-                cwd: None,
-                env: BTreeMap::new(),
-                capabilities: None,
-                prompt_template: None,
-                orchestrator_prompt_template: Some("custom {{objective}}".to_string()),
-            }],
-            groups: BTreeMap::new(),
-            orchestration: None,
-        };
-        let resolved =
-            resolve_project(project, "default", &global, EnvResolutionMode::Deferred).or_panic();
-        assert_eq!(
-            resolved.agents[0].orchestrator_prompt_template.as_deref(),
-            Some("custom {{objective}}")
-        );
-    }
-
-    #[test]
-    fn orchestrator_prompt_template_missing_resolves_to_none() {
-        let temp = tempfile::tempdir().or_panic();
-        let project = base_project(temp.path());
-        let resolved = resolve_project(
-            project,
-            "default",
-            &GlobalConfig::default(),
-            EnvResolutionMode::Deferred,
-        )
-        .or_panic();
-        assert!(resolved.agents[0].orchestrator_prompt_template.is_none());
-    }
-
-    #[test]
-    fn orchestrator_prompt_template_does_not_change_fingerprint() {
-        let temp = tempfile::tempdir().or_panic();
-        let global = GlobalConfig::default();
-
-        let project_without = base_project(temp.path());
-        let resolved_without = resolve_project(
-            project_without,
-            "default",
-            &global,
-            EnvResolutionMode::Deferred,
-        )
-        .or_panic();
-
-        let mut project_with = base_project(temp.path());
-        project_with.agents[0].orchestrator_prompt_template =
-            Some("{{orchestrator_envelope}}".to_string());
-        let resolved_with = resolve_project(
-            project_with,
-            "default",
-            &global,
-            EnvResolutionMode::Deferred,
-        )
-        .or_panic();
-
-        assert_eq!(
-            resolved_without.fingerprint, resolved_with.fingerprint,
-            "orchestrator_prompt_template must not affect the fingerprint"
-        );
     }
 
     #[cfg(unix)]

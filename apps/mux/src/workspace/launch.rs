@@ -296,7 +296,6 @@ mod tests {
             env: BTreeMap::new(),
             capabilities: vec!["orchestrator".to_string()],
             prompt_template: None,
-            orchestrator_prompt_template: None,
         }
     }
 
