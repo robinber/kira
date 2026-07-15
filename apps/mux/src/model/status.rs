@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::Serialize;
 
@@ -8,7 +9,7 @@ use crate::model::ResolvedProject;
 /// Lifecycle state of a managed tmux workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProjectState {
+pub(crate) enum ProjectState {
     /// No managed session is running.
     Stopped,
     /// All managed panes are healthy.
@@ -19,6 +20,19 @@ pub enum ProjectState {
     Drifted,
     /// Status collection failed unexpectedly.
     Error,
+}
+
+impl fmt::Display for ProjectState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Keep text output aligned with the serde snake_case names.
+        f.write_str(match self {
+            Self::Stopped => "stopped",
+            Self::Running => "running",
+            Self::Degraded => "degraded",
+            Self::Drifted => "drifted",
+            Self::Error => "error",
+        })
+    }
 }
 
 /// Runtime state of a single agent pane inside a workspace.
@@ -37,9 +51,21 @@ pub(crate) enum AgentState {
     Error,
 }
 
+impl fmt::Display for AgentState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Running => "running",
+            Self::ExitedClean => "exited (0)",
+            Self::ExitedFailed => "exited (failed)",
+            Self::MissingPane => "missing",
+            Self::Error => "error",
+        })
+    }
+}
+
 /// Lightweight project overview used by the CLI list command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ProjectSummary {
+pub(crate) struct ProjectSummary {
     /// Stable project ID.
     pub id: String,
     /// Active profile ID.
@@ -96,7 +122,8 @@ pub(crate) struct AgentStatus {
 pub(crate) struct AgentsOutput {
     /// Display name of the project.
     pub project: String,
-    /// Active profile, or `None` for the default profile.
+    /// Active profile, omitted for the default profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     /// Agent rows included in the output.
     pub agents: Vec<AgentInfo>,
@@ -133,6 +160,17 @@ pub(crate) enum AgentRunState {
     Absent,
 }
 
+impl fmt::Display for AgentRunState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Keep text output aligned with the serde lowercase names.
+        f.write_str(match self {
+            Self::Running => "running",
+            Self::Dead => "dead",
+            Self::Absent => "absent",
+        })
+    }
+}
+
 /// Build structured agents output from a resolved project and its workspace
 /// topology.
 pub(crate) fn build_agents_output(
@@ -156,6 +194,9 @@ pub(crate) fn build_agents_output(
                     (AgentRunState::Running, Some(mp.pane.pane_id.clone()))
                 }
                 Some(mp) => (AgentRunState::Dead, Some(mp.pane.pane_id.clone())),
+                // Defensive: inspect() classifies a workspace with a missing
+                // managed pane as Drifted, so a live workspace always pairs
+                // every agent — this arm is unreachable via inspect().
                 None if workspace.is_some() => (AgentRunState::Dead, None),
                 None => (AgentRunState::Absent, None),
             };
@@ -208,7 +249,6 @@ mod tests {
                 .map(|(i, agent)| ManagedPane {
                     pane: PaneInfo {
                         pane_id: format!("%{i}"),
-                        window_id: "@w-agents".to_string(),
                         pane_dead: false,
                         pane_dead_status: None,
                     },
@@ -331,7 +371,6 @@ mod tests {
                 ManagedPane {
                     pane: PaneInfo {
                         pane_id: "%0".to_string(),
-                        window_id: "@w-agents".to_string(),
                         pane_dead: false,
                         pane_dead_status: None,
                     },
@@ -340,7 +379,6 @@ mod tests {
                 ManagedPane {
                     pane: PaneInfo {
                         pane_id: "%1".to_string(),
-                        window_id: "@w-agents".to_string(),
                         pane_dead: true,
                         pane_dead_status: Some(1),
                     },
