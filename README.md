@@ -56,6 +56,9 @@ kira-mux open example
 
 kira-mux send example assistant "review the auth module"
 kira-mux capture example assistant --lines 80
+
+# Agent-to-agent dispatch: block until the reply settles, print it on stdout.
+kira-mux send example assistant "review the auth module" --wait
 kira-mux status example
 kira-mux kill example --yes
 ```
@@ -78,7 +81,7 @@ config.
 | `list` | List configured projects |
 | `status` | Live workspace / agent state |
 | `agents` | Inspect agents (list, capabilities, groups) |
-| `send` | Deliver a prompt to a **live** pane (not “agent ready”) |
+| `send` | Deliver a prompt to a **live** pane (not “agent ready”); `--wait` blocks until the reply settles |
 | `capture` | Capture recent pane output |
 | `restart` | Restart one agent, or all panes |
 | `kill` | Tear down the managed session |
@@ -188,6 +191,19 @@ refuses **dead** panes; it will happily paste into a setup UI.
 If you `start` + `send` immediately on a brand-new interactive agent, the prompt
 can land in the wrong UI. That is expected with this contract, not a silent
 bug.
+
+### Waiting for a reply: `send --wait`
+
+`send --wait` polls the pane after delivery and prints the captured output on
+stdout once it settles. The condition is **pane stability, not a formal done
+signal**, in two phases: the pane must first *change* after the submit (the
+reply started), then stay unchanged for a few seconds. A pane that dies
+mid-wait fails (exit 6); an internal hard timeout (~10 min, no CLI flag)
+aborts with exit 7 and writes the last capture to stderr.
+
+Known limits: a reply streamed with pauses longer than the stability window
+can be cut short, and a pane that keeps redrawing (clocks, watchers) or a
+reply that fully renders before the first poll both end in the hard timeout.
 
 ## Layout
 

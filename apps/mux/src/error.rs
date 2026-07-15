@@ -28,8 +28,21 @@ pub enum KiraMuxError {
     #[error("kill aborted")]
     KillAborted,
     /// An operation that requires a live pane targeted a dead pane.
-    #[error("cannot send to dead pane for agent '{0}'")]
+    #[error("pane for agent '{0}' is dead")]
     DeadPane(String),
+    /// The agent pane died while `send --wait` was polling for output.
+    #[error("pane for agent '{0}' died while waiting for output")]
+    PaneDiedDuringWait(String),
+    /// `send --wait` hit the internal hard timeout before the pane went
+    /// through the activity-then-stability cycle.
+    #[error("timed out waiting for output from agent '{agent_id}' to stabilize")]
+    WaitTimeout {
+        /// Agent whose pane never stabilized.
+        agent_id: String,
+        /// Last captured pane content, surfaced on stderr by the CLI layer
+        /// so callers can inspect partial output.
+        last_capture: String,
+    },
     /// Workspace launch completed with at least one failed pane.
     #[error("project {0} completed in degraded state")]
     Degraded(String),
