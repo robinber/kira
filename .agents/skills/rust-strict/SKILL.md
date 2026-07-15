@@ -1,106 +1,106 @@
 ---
 name: rust-strict
-description: Use when the task involves Rust codebases, Cargo manifests, Cargo workspaces, clippy/rustfmt/rustdoc/test workflows, Rust API design, error handling, technical debt drift, or release-quality verification for Rust projects.
+description: >-
+  Use when changing, reviewing, or verifying Rust in this repo (kira-mux):
+  Cargo workspace policy, clippy/rustfmt/rustdoc/tests, errors, config/tmux
+  code, or release-quality checks.
 ---
 
 # Rust Strict
 
-Use this skill for Rust code that should be changed, reviewed, verified, or documented with release-quality discipline.
+Strict workflow for the **kira-mux** workspace: a single CLI crate that manages
+local tmux multi-agent workspaces. Prefer the smallest change that matches
+existing patterns in `apps/mux`.
 
-## Scope
+Load order: `AGENTS.md` → this skill → code next to the module you edit.
 
-- Rust crates, workspaces, binaries, libraries, proc-macros, build scripts, examples, benches, and tests.
-- Cargo manifests, feature flags, workspace layout, toolchain policy, MSRV, CI gates, lint policy, docs, and release checks.
-- Public API design, error types, panic boundaries, safety contracts, and runtime architecture.
+## This repository
+
+| Fact | Value |
+|---|---|
+| Product | local tmux multi-agent CLI (`kira-mux`) |
+| Layout | Cargo workspace, one member: `apps/mux` |
+| Edition / MSRV | `2024` / `1.97.0` (`rust-toolchain.toml`) |
+| Nightly | **only** `cargo +nightly fmt` |
+| Errors | `thiserror` domain types; `anyhow` at CLI / I/O edges |
+| Visibility | almost everything `pub(crate)`; thin public surface from `lib.rs` |
+| Secrets | never in logs, fingerprints, or process argv (env files for pane env) |
+
+### Module map (`apps/mux/src/`)
+
+| Path | Role |
+|---|---|
+| `cli/` | clap surface |
+| `app/` | command handlers |
+| `config/` | XDG load / resolve / validate / fingerprint |
+| `tmux/` | adapter, client, parse, paste, env files |
+| `workspace/` | session lifecycle, layout, status summaries |
+| `inspector.rs` | topology classify + live inspect |
+| `agent_io/` | send / capture / pane resolve / submit policy |
+| `model/` | resolved project + status DTOs |
+| `prompt/` | template render + context |
+| `output.rs` | text / JSON printing |
+| `error.rs` | `KiraMuxError` + drift reasons |
+| `main.rs` | logging init + exit-code map |
+
+Keep the product small. Prefer a clear CLI over new subsystems.
 
 ## Activation checklist
 
-Before any Rust action, complete the anchor pass and make the effective contract explicit:
+Before editing, reviewing, or claiming verification:
 
-1. Read `AGENTS.md` and this skill before editing, reviewing, debugging, or claiming verification.
-2. Read the workspace policy files listed below, then identify the exact package, target, feature set, and crate boundary affected.
-3. State the effective toolchain. In this repo, `rust-toolchain.toml` pins stable Rust; nightly is used only where an explicit command such as `cargo +nightly fmt` requires it.
-4. Classify the change as implementation, review, docs/rustdoc, dependency/supply-chain, workspace policy, or release verification.
-5. Choose the narrowest verification command that can fail for the touched behavior, and record what it does not cover.
+1. Read `AGENTS.md` and this skill.
+2. Anchor on policy files (below); do not invent toolchain or lint policy from memory.
+3. Name the package/target/feature set you will touch (`kira-mux` / lib, bin, tests).
+4. Classify: implementation, review, docs, deps/supply-chain, workspace policy, or release verification.
+5. Pick the **narrowest** command that can fail for the change; record what it does not cover.
 
-Do not start from memory or generic Rust habits when the repository policy files answer the question.
+## Anchor files
 
-## Repository anchoring
-
-Before acting, inspect the workspace policy files that define the effective contract:
-
-- `Cargo.toml` — workspace package metadata (`[workspace.package]`), workspace lint policy (`[workspace.lints]`), and crate-level `[lints] workspace = true` inheritance.
-- `rust-toolchain.toml` — pinned toolchain channel, required components, and profile.
-- `.rustfmt.toml` — edition 2024 formatting baseline with import grouping.
-- `clippy.toml` — MSRV, doc-valid-idents, and threshold knobs.
-- `.cargo/config.toml` — canonical cargo aliases.
-- `deny.toml` — dependency advisory, license, and source policy.
-- `.github/workflows/ci.yml` — Rust CI gates and split test lanes.
-
-Anchor on those files first, then before editing:
-
-1. Identify the crate or crates actually involved.
-2. Determine whether the change is public API, runtime behavior, tests/examples, or private glue.
-3. Confirm MSRV and toolchain constraints.
-4. Find the repo's lint baseline and CI commands.
-5. Decide which verification command is the cheapest meaningful check.
-
-If the request is ambiguous, resolve it by reading the current code and manifests instead of guessing the intended architecture.
-
-## Normative sources
-
-Treat the official Rust ecosystem guidance as the default technical baseline:
-
-- Cargo semantics and workspace behavior.
-- rustfmt formatting rules.
-- Clippy diagnostics and lint intent.
-- rustdoc documentation conventions.
-- Rust API Guidelines for public design.
-
-Repository policy, lint configuration, CI, and release process define the effective project contract. Follow them unless they conflict with the user's requested outcome or would normalize a correctness, safety, or compatibility regression.
-
-If a Cargo, Clippy, rustfmt, rustdoc, or public-API fact is uncertain or version-sensitive, verify it against official documentation instead of relying on memory.
-
-## Strictness profile
-
-- Be strict on runtime code, public APIs, error semantics, docs, safety contracts, dependency changes, and final verification.
-- Treat `-D warnings`, rustdoc warnings, `cargo deny`, workspace lint inheritance, and no hidden panics in production code as the quality floor.
-- Be pragmatic on tests, examples, benches, and private glue when extra ceremony would not improve signal.
-- Do not impose a generic Rust preference where the repository already has a documented and enforced policy.
-- Do not make nightly the default toolchain unless the repository owner deliberately changes `rust-toolchain.toml`; use `+nightly` only for commands that explicitly need it.
+| File | Contract |
+|---|---|
+| `Cargo.toml` | workspace package, members, `[workspace.lints]`, deps |
+| `apps/mux/Cargo.toml` | package inherits `[lints] workspace = true` |
+| `rust-toolchain.toml` | pinned stable `1.97.0` |
+| `.rustfmt.toml` | edition 2024; run with `+nightly` |
+| `clippy.toml` | MSRV, thresholds, `doc-valid-idents` |
+| `.cargo/config.toml` | aliases: `lint`, `lint-app`, `lint-pedantic`, `test-all`, `doc-all`, `deny-all` |
+| `deny.toml` | advisories / licenses / sources |
+| `.github/workflows/ci.yml` | fmt, clippy, doc, deny, test lanes |
+| `justfile` | `just check` = full gate |
 
 ## Operating model
 
-- Prefer the smallest change that satisfies the request.
-- Separate discovery, implementation, and verification.
-- Keep iteration scope narrow until there is evidence the change needs to widen.
-- When the change touches shared behavior, verify the behavior directly instead of relying on inference.
-- For final confirmation, widen verification only as far as the change scope justifies.
+- Smallest change that satisfies the request.
+- Self-check: would a senior engineer call this overcomplicated? If yes, simplify.
+- Discovery → implementation → verification; do not widen scope without evidence.
+- Match existing module boundaries (`cli` → `app` → `workspace` / `agent_io` → `tmux` / `config`).
+- One topology truth: pane I/O should not invent a second drift contract next to `inspector::inspect`.
 
-## Drift control gates
+## Hard gates (no net-new debt)
 
-Rust work must leave the touched surface no worse than it was.
+Before non-trivial runtime edits:
 
-Before editing non-trivial runtime code:
+1. Check target file size and module responsibility.
+2. Search for existing helpers before adding parsing, path, env, fingerprint, or error-mapping logic.
+3. Do not expand known debt in the touched area without an explicit reason.
 
-1. Check target file size and local module shape.
-2. Search for existing helpers, duplicate logic, and related tests before adding new code.
-3. If the task, issue, plan, or an active debt tracker references audit findings for the touched scope, read only the relevant findings and do not expand known debt without an explicit reason.
+| Gate | Rule |
+|---|---|
+| File > 1000 LOC | No feature growth without extract/split first (bugfix/test-only ok) |
+| File > 800 LOC | Pressure zone: narrow additions only |
+| ≥ 6 params | Prefer a request/context/options struct |
+| 3rd copy of a helper | Extract shared code or justify divergence |
+| `#[allow]` / `#[expect]` | Smallest scope + `reason = "..."`; no silent broadening |
 
-Hard gates:
+Current large files (approx.): `inspector.rs`, `config/resolve.rs`, `tmux/client.rs`,
+`test_support`, `config/fingerprint.rs`, `workspace/lifecycle.rs` — treat as pressure zones.
 
-- Do not grow a file already over 1,000 lines for feature work unless the change is a minimal bug fix, test-only addition, or an approved transitional step. Extract or split first when the requested change would add another responsibility.
-- Treat files over 800 lines as pressure zones: keep additions narrow, avoid new responsibilities, and prefer moving cohesive helpers into focused modules.
-- Do not add parameters to functions that already have 6 or more parameters; introduce a request, context, or options type unless there is a documented reason not to.
-- Do not add a third copy of parsing, formatting, validation, config, path, timestamp, retry, or error-mapping logic. Extract a shared helper or justify why the behaviors must diverge.
-- Do not add broad `#[allow]` attributes. Every new allowance needs the smallest scope, `reason = "..."`, and a cleanup path if it is temporary.
-- If touching untested critical logic, add a focused test or state why the gap remains and which command gives the best available coverage.
+Details: `references/drift-control.md`.
 
-For more detail, load `references/drift-control.md` when a task touches large files, active audit findings, duplicated logic, broad suppressions, public APIs, command dispatch, runtime orchestration, config resolution, or test gaps.
+## Verification
 
-## Verification policy
-
-Default verification is impact-scoped. Use the narrowest command that can fail for the change, then widen only when the touched surface justifies it. The full static baseline is reserved for releases, workspace policy changes, dependency-policy changes, broad public API changes, cross-crate behavior, or explicit operator request:
+Impact-scoped by default. Full static baseline (release / workspace policy / deps / broad API):
 
 ```bash
 cargo +nightly fmt --all --check
@@ -109,157 +109,120 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 cargo deny check advisories licenses sources
 ```
 
-Tests remain impact-scoped for lint, documentation, and workspace-policy changes, including before a push. Run `cargo test --workspace --all-features` only when the operator explicitly asks for it or when a cross-cutting runtime/shared-contract change cannot be covered by narrower tests.
+Also available: `just check`, cargo aliases (`lint`, `test-all`, `doc-all`, `deny-all`).
 
-Repository CI may split these gates into narrower jobs, so check the workflow files before matching a CI lane exactly.
+| Change type | Prefer |
+|---|---|
+| Logic / API | `cargo clippy -p kira-mux …` + focused `cargo test -p kira-mux --lib <filter>` |
+| Formatting only | `cargo +nightly fmt --all --check` |
+| Public docs | `RUSTDOCFLAGS="-D warnings" cargo doc-all` |
+| Deps / deny.toml | `cargo deny check advisories licenses sources` |
+| Cross-cutting runtime | `cargo test --workspace --all-features` |
 
-During iteration, prefer the narrowest useful command: `cargo check -p crate`, a focused `cargo test`, a single package, or a targeted doc build. Use cargo aliases (`lint-app`, `lint`, `doc-all`, `test-all`) for convenience. Do not report an ambiguous `cargo test` result as broad proof; state the exact package/workspace selection, target, feature set, and remaining gap.
+Rules:
 
-- Use `cargo +nightly fmt --all --check` when formatting is part of the change or when the repo expects formatting gates.
-- Use `cargo clippy` when the change affects logic, API shape, unsafe code, concurrency, or lint-sensitive code.
-- Use `RUSTDOCFLAGS="-D warnings" cargo doc-all` when public docs or rustdoc examples changed.
-- Use `cargo test` when behavior changed or the request explicitly involves tests.
-- In workspaces, remember that `cargo test` from the root may only cover default members. Use `-p`, `--workspace`, or explicit package selection when coverage needs to include non-default members.
-- Treat doctests as required when public docs or public examples changed.
-- Before finalizing, run the smallest set of commands that convincingly covers the touched surface.
-- Escalate to `--workspace --all-targets --all-features` only when the change spans shared crates, workspace policy, lint/toolchain config, feature plumbing, public APIs shared across crates, or release-critical paths.
-- Final reports must name every verification command actually run, whether it passed, and what was intentionally not run.
+- Only claim a command passed if you ran it and checked output.
+- Report exact package, target, feature set, and intentional gaps.
+- Do not treat a narrow filter as full suite proof.
+- This workspace has a single member; still prefer explicit `-p kira-mux` when focusing.
 
 ## Lint policy
 
-Lints are managed at the workspace level in `Cargo.toml` `[workspace.lints]` and inherited by crates via `[lints] workspace = true`. Additional Clippy configuration lives in `clippy.toml`.
+Source of truth: root `Cargo.toml` `[workspace.lints]` + `clippy.toml`.
 
-- Treat `clippy::all`, `RUSTFLAGS="-D warnings"`, rustdoc `-D warnings`, and the repository's explicit workspace lint denials as the safe strict baseline.
-- Every new workspace member must inherit `[workspace.lints]` with `[lints] workspace = true` unless the operator approves a crate-local exception.
-- Do not recommend enabling `clippy::pedantic`, `clippy::nursery`, or `clippy::restriction` globally by default. Trial stricter lints in focused scopes first, then ratchet one proven lint at a time.
-- Read the repo's manifest lint policy, `clippy.toml`, and CI before introducing new lint rules.
-- Respect repo-specific lint settings when present, but do not let local history override a reasonable Rust baseline.
-- Fix the root cause of a lint instead of suppressing it unless the suppression is narrowly justified and documented.
-- Avoid broad `allow` attributes. New non-test suppressions need the smallest scope, `reason = "..."`, and a cleanup path if temporary; touching an existing suppression must not broaden it silently.
+Already enforced here (do not weaken):
 
-Lint ratchet: lints are tightened deliberately at the workspace level. Enforce new lint policy in runtime code first, then widen only when the resulting signal is understood.
+- `unsafe_code = deny`, `missing_docs = deny` (workspace)
+- clippy: `unwrap_used`, `expect_used`, `todo`, `unimplemented`, `dbg_macro` = **deny**
+- groups: `correctness`/`suspicious` deny; `pedantic` and others **warn** at workspace level
+- CI: `RUSTFLAGS=-D warnings`, `RUSTDOCFLAGS=-D warnings`
 
-## Deviation handling
+Notes:
 
-Repository-specific deviations from the shared baseline must be explicit and documented. When a deviation exists, justify the reason and whether it is temporary or permanent. Deviations not documented are not permitted by omission.
+- New members must use `[lints] workspace = true`.
+- Prefer fixing root causes over suppressions.
+- Repo already runs pedantic at **warn**; do not propose global pedantic deny without a funded cleanup.
+- `cargo lint-pedantic` exists for optional pedantic-as-deny checks.
 
-## Public API rules
+Details: `references/lints.md`.
 
-- Keep public items stable in shape, naming, and semantics unless the task explicitly asks for a breaking change.
-- Prefer explicit types, explicit ownership boundaries, and predictable trait bounds.
-- Make fallibility visible in the type system when the error is recoverable.
-- Avoid leaking implementation details through public signatures.
-- If a change alters a public contract, update the docs and tests that describe that contract.
+## Errors and exit codes
 
-## Public trait guidance
+| Layer | Type | Role |
+|---|---|---|
+| Config | `config::ConfigError` | load / parse / validate / resolve |
+| Domain | `KiraMuxError` | CLI-facing domain (drift, absent, dead pane, …) |
+| Tmux | `tmux::TmuxError` | missing target/session, no server, command failure |
+| Edge | `anyhow::Error` | glue, context, binary boundary |
 
-For public traits in libraries and shared crates, do not default to public `async fn`. Prefer:
+Rules:
 
-- methods returning `impl Future<Output = T> + Send`,
-- a concrete stream alias such as `BoxStream<'static, T>`,
-- object-safe traits only when dynamic dispatch is genuinely needed.
+- No `unwrap` / `expect` / `panic!` / `todo!` / `unimplemented!` in non-test code.
+- Prefer typed variants over string `bail!` when the CLI maps exit codes.
+- `main.rs` maps `ConfigError` and `KiraMuxError` to exit codes (2–6); untyped failures → 1.
+- Preserve actionable messages; never log secrets.
 
-This keeps `Send` explicit at the boundary, avoids surprise auto-trait issues, and keeps port and trait layers stable for callers.
+Details: `references/errors.md`, `references/cli-systems.md`.
 
-## Ownership and borrowing
+## Visibility and API
 
-- Take ownership when the function needs ownership.
-- Borrow when it does not.
-- Do not take `&T` and immediately clone unless there is a documented reason.
-- Avoid gratuitous `Arc<Mutex<_>>`. First ask whether ownership transfer or message passing is cleaner.
+- Default new items to `pub(crate)` unless the binary/tests need them public.
+- Public today: `run`, `KiraMuxError`, `WorkspaceDriftReason`, `config::ConfigError`, `logging::init_logging`.
+- Keep `main.rs` thin: init logging, call `kira_mux::run()`, map exit codes.
+- Prefer explicit ownership; avoid gratuitous `clone` / `Arc<Mutex<_>>`.
 
-## Error handling rules
+This crate is not an async service: do not introduce async runtime, streams, or
+public `async fn` traits unless the task explicitly requires it.
 
-- Use typed errors where the caller can act on them.
-- Keep error enums small and domain-oriented.
-- Preserve source errors when context matters.
-- Do not use `unwrap`, `expect`, `panic!`, `todo!`, or `unimplemented!` in production code (non-test, non-example, non-bench). Use typed errors and `?` propagation to surface fallibility.
-- In binaries and top-level orchestration, convert errors at the boundary and emit actionable context.
+Details: `references/api-design.md`, `references/docs.md`.
 
-## Documentation rules
+## Logging and secrets
 
-- Public items should have rustdoc. In libraries and shared crates, treat undocumented public API as a bug unless the repository has explicitly chosen a narrower documentation policy.
-- CI enforces `RUSTDOCFLAGS="-D warnings"` — broken intra-doc links, bare URLs, and other rustdoc warnings are build failures.
-- Include examples when the example clarifies usage or edge cases.
-- Add `Errors`, `Panics`, and `Safety` sections when they are relevant.
-- Document invariants, preconditions, feature flags, and lifetimes when callers need them.
-- Keep examples compileable and aligned with the current API.
-- For internal glue, keep docs brief unless the code is subtle.
+- Use `tracing` (not ad hoc `println!` for diagnostics). User-facing success data stays on stdout via `output.rs`.
+- Default log level is warn; `KIRA_MUX_LOG` / `RUST_LOG` override; `--json` lowers default to error so stderr noise does not spoil machine output.
+- Redact env values with `logging::redact_env_value` when logging launch env.
+- Fingerprint hashes literal env values; never put secrets on tmux argv (use `tmux/env_file`).
 
-## Runtime architecture rules
+## Tests
 
-- Keep `main.rs` thin. Put logic in testable modules.
-- Move branching behavior, parsing, and business logic out of the entrypoint.
-- Keep shared state explicit and bounded.
-- Prefer small, composable modules with narrow responsibilities.
-- Make concurrency, blocking, and allocation decisions visible near the boundary where they matter.
-- Separate pure logic from I/O so tests stay focused and cheap.
+- Unit tests next to modules; FakeTmux + helpers in `test_support` (`#[cfg(test)]`).
+- Prefer deterministic setup (`setup_healthy_session`, etc.) over real tmux unless writing an explicit integration harness.
+- Prefer coordination over new `sleep`s in tests; production send/paste still uses short settles — do not add more without need.
+- State exact filters: e.g. `cargo test -p kira-mux --lib inspector:: --all-features`.
+- Critical surfaces needing tests when touched: fingerprint, resolve/validate, inspect/drift, lifecycle, send/capture resolve, exit-code map.
 
-## Async rules
+Details: `references/testing.md`.
 
-- Keep async at the boundaries that actually need it.
-- Avoid blocking calls inside async tasks.
-- Make cancellation behavior explicit.
-- Treat spawned tasks as owned resources. Someone must supervise them.
-- Prefer bounded queues and explicit backpressure over unbounded buffering.
-- Add tracing spans to long-running or externally visible async work.
+## Dependencies
 
-## Logging and observability
-
-- Use `tracing`, not ad hoc `println!` or `eprintln!`.
-- Prefer structured fields over interpolated strings.
-- Log state transitions and external calls.
-- Never log secrets, raw tokens, or full unredacted configs.
-- For streaming systems, capture timing at step boundaries.
-
-## Tests, examples, and private glue
-
-- Be pragmatic here. Use the least ceremony that gives confidence.
-- Tests and examples may trade strictness for clarity when the public contract is already covered elsewhere.
-- Private glue can be simpler and more direct, but it still should not become unmaintainable or hide failures.
-- Avoid over-architecting helper code that is only used in tests.
-- Still keep failure messages and assertions useful.
-
-## Rust-specific checks
-
-- Confirm feature flags, default features, and workspace member selection when they affect the result.
-- Watch for edition differences, MSRV-sensitive APIs, and `no_std` or `alloc` boundaries.
-- Check doctests when public examples are added or changed.
-- Check proc-macro and build-script behavior separately from the main library or binary when needed.
-
-## Dependency rules
-
-- Treat `Cargo.toml`, `Cargo.lock`, and `deny.toml` edits as supply-chain changes.
-- Prefer workspace dependency declarations and explain whether a new dependency is direct, transitive-only, build-time, runtime, or test-only.
-- Keep the dependency graph lean; avoid large framework additions for small problems.
-- Avoid wildcard versions, unreviewed git dependencies, unnecessary default features, and broad feature enables.
-- Do not relax `deny.toml` policy without an explicit rationale and a narrower alternative considered first.
-- Run `cargo deny check advisories licenses sources` after dependency or dependency-policy changes; include `bans` too when version duplication or wildcard policy is part of the change.
+- Prefer workspace deps; keep the graph lean.
+- `Cargo.toml` / `Cargo.lock` / `deny.toml` edits are supply-chain changes → run deny after.
+- Do not re-enable unused feature flags (e.g. random clap/`tracing-subscriber` features) without a call site.
+- Do not relax `deny.toml` without rationale.
 
 ## Review checklist
 
-Before considering a Rust change complete, confirm:
+- Docs still accurate for any public item touched?
+- No new hidden panics in non-test code?
+- Errors typed where exit codes / callers care?
+- Logs secret-safe? Fingerprint still excludes cosmetics?
+- Topology / drift contract still single-sourced?
+- Verification commands named with scope and gaps?
+- Touched large files no worse than before?
 
-- Are the public docs still accurate?
-- Are trait boundaries still clean?
-- Is the new code free of hidden panics?
-- Is ownership clearer, not muddier?
-- Are errors typed and contextual?
-- Are logs structured and secret-safe?
-- Does every new crate inherit workspace lints and workspace package policy?
-- Is the verification evidence exact about package, target, feature set, and gaps?
+## References
 
-## Reference files
+Load only what the task needs:
 
-Load these when you need more detail than this skill should carry:
+| File | When |
+|---|---|
+| `references/workflow.md` | anchor pass, CI, verification scope |
+| `references/testing.md` | unit / FakeTmux / report discipline |
+| `references/lints.md` | workspace lint structure, suppressions |
+| `references/docs.md` | rustdoc / public items |
+| `references/api-design.md` | types, constructors, surface size |
+| `references/errors.md` | Result boundaries, panic policy |
+| `references/cli-systems.md` | main / exit codes / stdout vs stderr |
+| `references/drift-control.md` | file size, duplication, debt gates |
 
-- `references/workflow.md` for the anchor pass, verification scoping, and CI alignment.
-- `references/testing.md` for unit, integration, and doctest expectations.
-- `references/lints.md` for manifest lint policy, Clippy groups, and suppressions.
-- `references/docs.md` for rustdoc expectations and public examples.
-- `references/api-design.md` for public API shape, constructors, and naming.
-- `references/errors.md` for recoverable errors, panic boundaries, and fallible construction.
-- `references/cli-systems.md` for thin `main.rs` boundaries, exit codes, and CLI/runtime separation.
-- `references/drift-control.md` for no-net-new-debt gates, large-file pressure, duplication checks, and audit-aware edits.
-
-Keep this file short. Put deep, stable reference material in the files above rather than expanding this skill body.
+Keep this skill body short. Put deep material in `references/`, not here.

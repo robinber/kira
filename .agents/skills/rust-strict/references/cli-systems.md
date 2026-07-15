@@ -1,19 +1,34 @@
 # cli-systems
 
-## 1. Source-backed guidance
-- Keep `main.rs` thin: parse arguments, build config, call orchestration code, and translate the result into an exit code.
-- Move testable logic into library modules so the core behavior can be exercised without spawning the full process.
-- Separate orchestration/runtime concerns from UI and formatting concerns; the core should not need to know how output is presented.
-- Send user-facing errors to `stderr`, reserve `stdout` for successful output, and map failures to meaningful exit codes.
-- Favor integration tests for CLI/TUI/system tools because they verify argument handling, process wiring, and user-visible behavior end to end.
+## Binary shape
 
-## 2. Skill policy
-- Treat `main` as glue, not as the home for real business logic.
-- Put parsing, validation, domain logic, and rendering behind functions that can be unit tested directly.
-- Keep the boundary between runtime plumbing and UI crisp so each piece has one job.
-- Design the failure path as a product feature: clear message, correct stream, correct exit code.
+```
+main.rs          logging + kira_mux::run() + exit_code_for_error
+lib.rs           pub fn run() → clap parse → app::run
+cli/             clap types only
+app/             command handlers (load context, call workspace/agent_io)
+output.rs        stdout text / JSON
+```
 
-## 3. Allowed exceptions
-- A tiny one-off binary may keep logic in `main` if there is no realistic reuse or testability benefit.
-- Some process-heavy or device-specific system tools may need more orchestration in `main`, but the testable core should still be extracted where possible.
-- Unit tests are still useful for pure logic; integration tests should cover the command line and process boundary when behavior depends on them.
+Keep `main.rs` thin. Do not put domain logic in the binary target.
+
+## Streams
+
+| Stream | Content |
+|---|---|
+| stdout | successful user data (`list`, `status`, `capture`, `--json`) |
+| stderr | errors, warnings, interactive prompts (`confirm_kill`), tracing |
+
+Do not print diagnostics to stdout when `--json` is in play (logging already
+drops default level to `error` when `--json` appears before `--`).
+
+## Exit codes
+
+Map domain errors in `main.rs` (see `references/errors.md`). Preserve stable
+codes when changing variants: scripts rely on 2/3/4/5/6.
+
+## Testing CLI behavior
+
+- Unit-test pure handlers and exit mapping without spawning the process.
+- Prefer library-level tests with FakeTmux over full process integration unless
+  adding an explicit real-tmux harness.

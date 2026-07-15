@@ -1,102 +1,81 @@
 # drift-control
 
-Use this reference when Rust work risks adding maintainability debt: large files,
-active audit findings, duplicated logic, broad lint suppressions, public API growth,
-command dispatch, runtime orchestration, config resolution, or missing tests.
+Use when work risks maintainability debt: large files, duplicated helpers,
+broad suppressions, second topology/error paths, or missing tests on critical
+surfaces.
 
-## 1. No net-new debt
+## No net-new debt
 
-The default standard is not "tests pass"; it is "the touched surface is no worse
-after the change." A passing build can still ship architectural drift.
+Passing tests are not enough — the touched surface should be no worse after the
+change.
 
-Before editing, inventory the touched surface:
+Before editing:
 
-- file size with `wc -l <path>` or `rg --files <scope> | xargs wc -l` when useful;
-- existing tests with `rg -n "#\\[cfg\\(test\\)|#\\[test\\]|tokio::test" <scope>`;
-- similar logic with `rg -n "<domain term>|<function stem>|<error type>" <scope>`;
-- active audit/debt notes when referenced by the task, issue, plan, or a maintained tracker.
+- size: `wc -l <path>`
+- similar logic: search before adding parse / path / env / fingerprint / error map
+- active findings only if the task or a maintained tracker points at them
 
-Dated one-off audit reports are historical context, not permanent live policy.
-Read them only when they are explicitly referenced, have unresolved/active
-status markers, or are cited by a maintained debt tracker. If an active finding
-names the file or behavior you are touching, either reduce that finding, avoid
-making it worse, or state the explicit trade-off.
+## Size gates
 
-## 2. Size and responsibility gates
-
-| Condition | Required behavior |
+| Condition | Behavior |
 |---|---|
-| File > 1,000 LOC | Bugfix/test-only additions may be minimal. Feature work should extract or split before adding another responsibility. |
-| File > 800 LOC | Treat as a pressure zone. Keep additions narrow and prefer focused helper modules. |
-| Function > 80 LOC or deeply nested | Do not add another branch without first considering extraction. |
-| Module owns unrelated responsibilities | New behavior should land in the narrower responsibility, not the broad module. |
+| \> 1000 LOC | No feature growth without extract/split (bugfix/test-only ok) |
+| \> 800 LOC | Pressure zone; narrow additions |
+| Deep / long function | Prefer extract over another nested branch |
 
-Do not refactor unrelated code just to satisfy a number. The rule is about
-stopping additional drift on the surface you are already touching.
+Do not drive drive-by refactors of unrelated code just to satisfy a number.
 
-## 3. API shape gates
+Pressure zones today often include: `inspector.rs`, `config/resolve.rs`,
+`tmux/client.rs`, `test_support/mod.rs`, `config/fingerprint.rs`,
+`workspace/lifecycle.rs`.
 
-- Six parameters is the review threshold. Adding a parameter at or above that
-  threshold requires a request, context, options, or builder type unless the
-  surrounding API already has a documented exception.
-- Avoid boolean parameters in public APIs unless the name at the call site is
-  self-evident. Prefer a small enum for policy choices.
-- New public types must describe ownership, fallibility, and caller-visible
-  invariants in rustdoc.
-- If a function's arguments cluster naturally, name the cluster and make it a
-  type. Do not make every caller remember positional meaning.
+## Duplication gates
 
-## 4. Duplication gates
+Search before adding a third copy of:
 
-Search before adding logic for:
+- prompt template parse/render
+- path expand / symlink / root escape checks
+- config validation and env classification (`$VAR` vs literal)
+- fingerprint field materialization
+- tmux failure classification (`failed_tmux_status`, missing-target maps)
+- JSON/text list/status rendering
+- topology/drift classification (`inspect` vs list summary vs send resolve)
 
-- `{{...}}` template parsing or string interpolation;
-- timestamp/date formatting;
-- path normalization, symlink, or project-root checks;
-- config validation and env resolution;
-- retry/backoff/timeout constants;
-- adapter or subprocess error mapping;
-- JSON/text output rendering;
-- tmux output parsing and drift detection.
+Two copies can be transitional. A third needs a shared helper or an explicit
+divergence reason.
 
-Two copies can be transitional. A third copy is a design decision and needs a
-shared helper or an explicit divergence reason.
+## Single topology truth
 
-## 5. Suppression gates
+`inspector::inspect` / `classify_snapshot` own workspace topology. `send` /
+`capture` resolve panes through that contract. Do not reintroduce a lighter
+parallel check that can disagree on fingerprint or pane identity.
 
-New `#[allow]` attributes require:
+List uses a batched snapshot for speed, but failures must not become false
+`Drifted` (empty snapshot default is forbidden).
 
-- the narrowest possible scope;
-- `reason = "..."` for non-test code;
-- no broad lint-group suppression unless the user approves it or a migration
-  note already exists;
-- a cleanup path for temporary suppressions.
+## Suppression gates
 
-Prefer fixing the API shape over silencing `too_many_arguments`, fixing the
-ownership shape over silencing clone-related lints, and documenting the public
-contract over silencing docs lints.
+New `#[allow]` / `#[expect]`:
 
-## 6. Test gates
+- narrowest scope
+- `reason = "..."` outside tests
+- no silent broadening
+- temporary ⇒ cleanup path
 
-When touching critical logic, add or update focused tests for the behavior you
-changed. Critical surfaces include:
+## Test gates
 
-- config loading, validation, resolution, and fingerprints;
-- tmux parsing, workspace lifecycle, drift detection, and pane resolution;
-- command dispatch and exit-code behavior;
-- config load/resolve and tmux mutation paths;
-- orchestrator watcher and agent I/O paths;
-- TUI terminal setup/teardown and state transitions.
+When touching critical logic, add focused tests for:
 
-If tests are impractical in the current turn, state the remaining gap and run
-the narrowest command that still exercises the touched path.
+- config load / resolve / fingerprint
+- inspect + drift reasons
+- workspace lifecycle and list error mapping
+- agent_io resolve / send / capture
+- exit-code mapping for new domain errors
 
-## 7. Final report checklist
+## Report checklist
 
-For non-trivial Rust changes, report:
+For non-trivial changes, note:
 
-- files touched that were over 800 or 1,000 LOC;
-- whether any active audit/debt finding was affected;
-- whether new duplication, parameters, or lint suppressions were introduced;
-- tests or verification commands run;
-- remaining drift, if any, as explicit follow-up.
+- large files touched
+- new duplication / params / suppressions
+- commands run and remaining gaps
