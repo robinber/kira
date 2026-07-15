@@ -3,26 +3,10 @@
 use anyhow::Result;
 
 use super::load_project_context;
-use crate::cli::{AgentsArgs, AgentsCommand};
+use crate::cli::AgentsCommand;
 use crate::config::EnvResolutionMode;
 use crate::error::KiraMuxError;
 use crate::output;
-
-pub(super) fn resolve_agents_args(args: AgentsArgs) -> Result<AgentsCommand> {
-    if let Some(sub) = args.command {
-        return Ok(sub);
-    }
-    let project_id = args.list.project_id.ok_or_else(|| {
-        KiraMuxError::MissingArgument(
-            "project id is required\n\nUsage: kira-mux agents <PROJECT_ID> or kira-mux agents list <PROJECT_ID>".into(),
-        )
-    })?;
-    Ok(AgentsCommand::List {
-        project_id,
-        profile: args.list.profile,
-        json: args.list.json,
-    })
-}
 
 pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
     let (project_id, profile) = match &sub {

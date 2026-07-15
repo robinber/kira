@@ -1,30 +1,15 @@
 use clap::Subcommand;
 
-/// Arguments for `kira-mux agents`, supporting both the flat list form and
-/// explicit subcommands.
+/// Arguments for `kira-mux agents`; a subcommand is required.
 #[derive(Debug, clap::Args)]
-#[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct AgentsArgs {
     #[command(subcommand)]
-    pub(crate) command: Option<AgentsCommand>,
-
-    /// Flat `agents <PROJECT_ID>` form (equivalent to `agents list`).
-    #[command(flatten)]
-    pub(crate) list: AgentsListFlatArgs,
-}
-
-/// Flat list-form arguments shared with the historical `agents <id>` UX.
-#[derive(Debug, clap::Args)]
-pub(crate) struct AgentsListFlatArgs {
-    pub(crate) project_id: Option<String>,
-    #[arg(long)]
-    pub(crate) profile: Option<String>,
-    #[arg(long)]
-    pub(crate) json: bool,
+    pub(crate) command: AgentsCommand,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentsCommand {
+    /// List configured agents and their runtime state.
     List {
         project_id: String,
         #[arg(long)]
@@ -32,6 +17,7 @@ pub(crate) enum AgentsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one agent's capabilities and state.
     Capabilities {
         project_id: String,
         agent_id: String,
@@ -40,6 +26,7 @@ pub(crate) enum AgentsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show the members of a named agent group.
     Group {
         project_id: String,
         group_name: String,

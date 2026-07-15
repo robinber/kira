@@ -15,9 +15,6 @@ pub enum KiraMuxError {
     /// The requested group name does not exist in the resolved project.
     #[error("unknown group name: {0}")]
     UnknownGroupName(String),
-    /// A required CLI argument was omitted after higher-level parsing.
-    #[error("{0}")]
-    MissingArgument(String),
     /// Project or global configuration failed validation.
     #[error("config validation error: {0}")]
     ConfigValidation(#[from] ConfigError),
