@@ -1,9 +1,19 @@
-use anyhow::{Context, Result};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
 
 use crate::config::{AgentMode, Layout};
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{PANE_AGENT_COMMAND, PANE_COMMAND_SHELL};
+
+/// How long to watch a pane after `respawn-pane` for an immediate exit.
+///
+/// Short enough that interactive tools still initializing are not treated as
+/// failed; long enough to catch missing binaries and commands that exit on
+/// the first tick (the #13 false-success case).
+const POST_LAUNCH_HEALTH_WINDOW: Duration = Duration::from_millis(400);
+const POST_LAUNCH_HEALTH_POLL: Duration = Duration::from_millis(50);
 
 pub(super) struct TopologyGuard<'a> {
     tmux: &'a dyn TmuxAdapter,
@@ -152,7 +162,42 @@ pub(super) fn launch_agent(
         tmux.set_pane_option(pane_id, PANE_AGENT_COMMAND, &basename)?;
     }
 
+    verify_pane_survived_launch(tmux, pane_id, &agent.id)?;
     Ok(())
+}
+
+/// Poll `pane_dead` for a bounded window after launch.
+///
+/// Success means the process was still alive at the end of the window — not
+/// that the agent is "ready" for prompts. Immediate exits (missing binary,
+/// `exit 1`, crash on start) surface as launch failures so callers can map
+/// them to the degraded exit code.
+fn verify_pane_survived_launch(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    agent_id: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + POST_LAUNCH_HEALTH_WINDOW;
+    loop {
+        if pane_is_dead(tmux, pane_id)? {
+            bail!("agent '{agent_id}' exited immediately after launch");
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        std::thread::sleep(POST_LAUNCH_HEALTH_POLL.min(deadline - now));
+    }
+}
+
+fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
+    let panes = tmux.list_panes(pane_id)?;
+    let pane = panes
+        .iter()
+        .find(|pane| pane.pane_id == pane_id)
+        .or_else(|| panes.first())
+        .with_context(|| format!("pane {pane_id} missing after launch"))?;
+    Ok(pane.pane_dead)
 }
 
 #[cfg(test)]
@@ -237,6 +282,9 @@ mod tests {
     #[test]
     fn launch_agent_respawns_with_command_and_args() {
         let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
         let project = minimal_project();
         let agent = &project.agents[0];
 
@@ -256,6 +304,25 @@ mod tests {
                 "--profile".to_string(),
                 "fast".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn launch_agent_fails_when_process_exits_immediately() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.set_respawn_exits_immediately(true);
+        let project = minimal_project();
+        let agent = &project.agents[0];
+
+        let error = super::launch_agent(&fake, "%0", &project, agent).err_or_panic();
+        assert!(
+            error
+                .to_string()
+                .contains("exited immediately after launch"),
+            "got: {error}"
         );
     }
 
