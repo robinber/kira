@@ -5,6 +5,7 @@ use anyhow::Result;
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
 use crate::error::KiraMuxError;
+use crate::inspector::WorkspaceTopology;
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
@@ -30,12 +31,12 @@ pub(crate) fn send_prompt(
     prompt: &str,
     no_template: bool,
 ) -> Result<String> {
-    let (pane, agent) = resolve_managed_pane(tmux, project, agent_id)?;
+    let (pane, agent, topology) = resolve_managed_pane(tmux, project, agent_id)?;
     if pane.pane_dead {
         return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
     }
 
-    let final_prompt = render_final_prompt(tmux, project, agent_id, prompt, no_template);
+    let final_prompt = render_final_prompt(project, agent_id, prompt, no_template, &topology);
     paste_and_submit(tmux, &pane, agent, &final_prompt)?;
     Ok(final_prompt)
 }
@@ -43,35 +44,28 @@ pub(crate) fn send_prompt(
 /// Compute the final prompt text for `agent_id` without mutating tmux.
 ///
 /// Applies the agent's `prompt_template` (when present and `no_template`
-/// is `false`) using a rich pane-topology context, falling back to a
-/// minimal context when tmux inspection fails. Returns the raw prompt
-/// unchanged when no template applies.
+/// is `false`) using the topology already inspected for pane resolution, so
+/// the pane context rendered into the prompt describes the same workspace
+/// state the prompt is delivered into. Returns the raw prompt unchanged when
+/// no template applies.
 fn render_final_prompt(
-    tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     agent_id: &str,
     prompt: &str,
     no_template: bool,
+    topology: &WorkspaceTopology,
 ) -> String {
     let agent = project.agents.iter().find(|a| a.id == agent_id);
     match agent.and_then(|a| a.prompt_template.as_deref()) {
         Some(template) if !no_template => {
-            let ctx = match crate::inspector::inspect(tmux, project) {
-                Ok(topology) => {
-                    let (active_agents, agent_states) =
-                        crate::prompt::extract_agent_state(&topology, project);
-                    PromptContext {
-                        user_prompt: prompt.to_owned(),
-                        agent_name: agent_id.to_owned(),
-                        project_name: project.name.clone(),
-                        active_agents,
-                        agent_states,
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "tmux topology inspection failed; using minimal prompt context");
-                    PromptContext::minimal(agent_id, &project.name, prompt)
-                }
+            let (active_agents, agent_states) =
+                crate::prompt::extract_agent_state(topology, project);
+            let ctx = PromptContext {
+                user_prompt: prompt.to_owned(),
+                agent_name: agent_id.to_owned(),
+                project_name: project.name.clone(),
+                active_agents,
+                agent_states,
             };
             crate::prompt::render(template, &ctx)
         }
