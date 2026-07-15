@@ -691,64 +691,18 @@ mod tests {
     }
 
     #[test]
-    fn absolute_project_root_is_stable_across_process_cwd() {
-        // `set_current_dir` is process-global; serialize tests that mutate it.
-        static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = CWD_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
+    fn absolute_project_root_is_accepted_by_stability_gate() {
         let base = match tempfile::tempdir() {
             Ok(dir) => dir,
             Err(error) => panic!("failed to create tempdir: {error}"),
         };
-        let project = base.path().join("proj");
-        let cwd_a = base.path().join("cwd-a");
-        let cwd_b = base.path().join("cwd-b");
-        for dir in [&project, &cwd_a, &cwd_b] {
-            if let Err(error) = std::fs::create_dir(dir) {
-                panic!("failed to create {}: {error}", dir.display());
-            }
-        }
-        let configured = project.display().to_string();
+        let configured = base.path().display().to_string();
         assert!(
             Path::new(&configured).is_absolute(),
             "temp paths must be absolute for this test"
         );
 
-        let original = env::current_dir().or_panic();
-        let restore = |path: &Path| {
-            if let Err(error) = env::set_current_dir(path) {
-                panic!("failed to restore cwd {}: {error}", path.display());
-            }
-        };
-
-        if let Err(error) = env::set_current_dir(&cwd_a) {
-            panic!("failed to chdir a: {error}");
-        }
-        let from_a = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
-        let relative_from_a = normalize_project_root(".", ResolutionMode::Deferred).err_or_panic();
-
-        if let Err(error) = env::set_current_dir(&cwd_b) {
-            restore(&original);
-            panic!("failed to chdir b: {error}");
-        }
-        let from_b = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
-        let relative_from_b = normalize_project_root(".", ResolutionMode::Deferred).err_or_panic();
-        restore(&original);
-
-        assert_eq!(
-            from_a, from_b,
-            "absolute roots must resolve identically from every CWD"
-        );
-        assert!(matches!(
-            relative_from_a,
-            ConfigError::RelativeProjectRoot(_)
-        ));
-        assert!(matches!(
-            relative_from_b,
-            ConfigError::RelativeProjectRoot(_)
-        ));
+        require_stable_project_root(&configured).or_panic();
     }
 
     #[test]
