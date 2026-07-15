@@ -59,10 +59,6 @@ pub(crate) fn send_prompt(
     })
 }
 
-// Ensure both fields stay part of the public-crate delivery contract even when
-// a call site only needs `pane_id` for `--wait`.
-const _: fn(&DeliveredPrompt) -> (&str, &str) = |d| (d.rendered.as_str(), d.pane_id.as_str());
-
 /// Compute the final prompt text for `agent` without mutating tmux.
 ///
 /// Applies the agent's `prompt_template` (when present and `no_template`

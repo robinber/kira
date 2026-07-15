@@ -120,7 +120,7 @@ pub(crate) fn wait_on_pane(
     let wall_start = Instant::now();
     // Baseline after the full submit sequence: prompt echo is already
     // rendered, so any change from here on is response activity.
-    let mut last = tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES)?;
+    let mut last = capture_or_died(tmux, agent_id, pane_id)?;
     let mut activity_seen = false;
     let mut last_change = options.elapsed(wall_start);
 
@@ -140,7 +140,7 @@ pub(crate) fn wait_on_pane(
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
-        let current = tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES)?;
+        let current = capture_or_died(tmux, agent_id, pane_id)?;
         if current != last {
             last = current;
             activity_seen = true;
@@ -150,6 +150,18 @@ pub(crate) fn wait_on_pane(
         {
             return Ok(last);
         }
+    }
+}
+
+/// Capture for the wait loop: a pane that vanishes between the liveness
+/// check and the capture surfaces as [`KiraMuxError::PaneDiedDuringWait`],
+/// matching [`pane_is_dead`], instead of a transport error.
+fn capture_or_died(tmux: &dyn TmuxAdapter, agent_id: &str, pane_id: &str) -> Result<String> {
+    match tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES) {
+        Err(error) if TmuxError::is_missing_target(&error) => {
+            Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into())
+        }
+        other => other,
     }
 }
 
@@ -338,9 +350,25 @@ mod tests {
         // No project inspect path: direct pane wait after a successful send.
         let output = wait_on_pane(&fake, "alpha", "%0", &fast_options()).or_panic();
         assert_eq!(output, "prompt echo\nreply");
+    }
 
-        // Unknown agent would fail resolve_managed_pane; wait_on_pane does not care.
-        let _ = project;
+    #[test]
+    fn capture_between_liveness_checks_maps_vanished_pane_to_died() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+
+        // Pane gone at capture time (vanished after the liveness check):
+        // the typed MissingTarget must surface as PaneDiedDuringWait.
+        let err = capture_or_died(&fake, "alpha", "%99").err_or_panic();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::PaneDiedDuringWait(id)) if id == "alpha"
+            ),
+            "capture of a vanished pane must map to PaneDiedDuringWait, got: {err}"
+        );
     }
 
     #[test]

@@ -81,6 +81,13 @@ pub(super) fn cmd_send(
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_id, profile, ResolutionMode::Deferred)?;
     let delivered = crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
+    // Length only: prompt content may carry user secrets, keep it out of logs.
+    tracing::debug!(
+        agent = agent_id,
+        pane = %delivered.pane_id,
+        rendered_len = delivered.rendered.len(),
+        "prompt delivered"
+    );
     if !wait {
         return Ok(());
     }
