@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-/// When environment-variable placeholders are resolved during config loading.
+/// How strictly runtime-only configuration is resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnvResolutionMode {
-    /// Keep `$VARS` unresolved until runtime use.
+pub(crate) enum ResolutionMode {
+    /// Keep `$VARS` unresolved and tolerate paths that disappeared after
+    /// launch.
     Deferred,
-    /// Resolve `$VARS` during config loading.
+    /// Resolve `$VARS` and require launch paths to exist.
     Runtime,
 }
 

@@ -12,7 +12,7 @@ pub(crate) struct ResolvedProject {
     pub profile_id: String,
     /// Human-friendly project name.
     pub name: String,
-    /// Canonical project root directory.
+    /// Absolute normalized project root path used as stable workspace identity.
     pub root: PathBuf,
     /// Requested workspace layout.
     pub layout: Layout,

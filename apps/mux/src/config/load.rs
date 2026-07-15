@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::error::ConfigError;
 use super::model::{
-    EnvResolutionMode, GlobalConfig, ProjectFile, ProjectFileRaw, ProjectIdOnly,
+    GlobalConfig, ProjectFile, ProjectFileRaw, ProjectIdOnly, ResolutionMode,
     default_session_prefix, default_shell, default_tmux_bin, default_window_name,
 };
 use super::resolve::{resolve_project, validate_global_config};
@@ -24,7 +24,7 @@ type Result<T> = std::result::Result<T, ConfigError>;
 /// skipped.
 pub(crate) fn load_projects(
     paths: &AppPaths,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<Vec<ResolvedProject>> {
     let global = load_global_config(&paths.global_config_path())?;
     let mut projects = Vec::new();
@@ -51,7 +51,7 @@ pub(crate) fn load_projects(
         }
 
         for pid in profile_ids(&raw) {
-            let resolved_profile = resolve_profile(&raw, pid, &global, env_mode);
+            let resolved_profile = resolve_profile(&raw, pid, &global, resolution_mode);
             match resolved_profile {
                 Ok(project) => projects.push(project),
                 Err(error) => {
@@ -80,12 +80,12 @@ pub(crate) fn load_project(
     paths: &AppPaths,
     project_id: &str,
     profile_id: Option<&str>,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<ResolvedProject> {
     let global = load_global_config(&paths.global_config_path())?;
     let raw = find_project_raw(paths, project_id)?;
     let effective_profile = resolve_profile_id(&raw, profile_id)?;
-    resolve_profile(&raw, &effective_profile, &global, env_mode)
+    resolve_profile(&raw, &effective_profile, &global, resolution_mode)
 }
 
 fn parse_project_raw(path: &Path) -> Result<ProjectFileRaw> {
@@ -106,10 +106,10 @@ fn resolve_profile(
     raw: &ProjectFileRaw,
     profile_id: &str,
     global: &GlobalConfig,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<ResolvedProject> {
     let project = select_profile(raw, profile_id)?;
-    resolve_project(project, profile_id, global, env_mode)
+    resolve_project(project, profile_id, global, resolution_mode)
 }
 
 fn select_profile(raw: &ProjectFileRaw, profile_id: &str) -> Result<ProjectFile> {

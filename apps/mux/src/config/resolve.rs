@@ -11,19 +11,18 @@ use super::fingerprint::{
     env_fingerprint,
 };
 use super::model::{
-    AgentMode, AgentTemplate, EnvResolutionMode, GlobalConfig, Layout, ProjectAgent, ProjectFile,
+    AgentMode, AgentTemplate, GlobalConfig, Layout, ProjectAgent, ProjectFile, ResolutionMode,
 };
 
-/// Characters rejected in identifiers that end up in tmux session names or
-/// target syntax (`session:window.pane`). Whitespace is included because
-/// identifiers round-trip through tmux options, which are trimmed on read —
-/// a padded id would never compare equal again and report permanent drift.
-const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &['\t', '\n', '\r', ' ', ':', '.'];
+/// Non-whitespace characters rejected in identifiers that end up in tmux
+/// session names or target syntax (`session:window.pane`). All Unicode
+/// whitespace is rejected separately because tmux option reads are trimmed.
+const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &[':', '.'];
 
 fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
     if let Some(ch) = id
         .chars()
-        .find(|ch| FORBIDDEN_IDENTIFIER_CHARS.contains(ch))
+        .find(|ch| ch.is_whitespace() || FORBIDDEN_IDENTIFIER_CHARS.contains(ch))
     {
         return Err(ConfigError::InvalidIdentifierChar {
             kind,
@@ -46,18 +45,18 @@ pub(crate) fn resolve_project(
     project: ProjectFile,
     profile_id: &str,
     global: &GlobalConfig,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<ResolvedProject> {
     validate_project_shape(&project)?;
     validate_identifier("profile id", profile_id)?;
     validate_identifier("session prefix", &global.session_prefix)?;
 
     let (root, layout, main_pane_ratio, window_name, name) =
-        resolve_workspace_defaults(&project, global)?;
+        resolve_workspace_defaults(&project, global, resolution_mode)?;
     validate_identifier("window name", &window_name)?;
     let template_map = build_template_map(&global.agent_templates)?;
     let (agents, fingerprint_agents, seen_agents) =
-        resolve_agents(project.agents, &template_map, &root, env_mode)?;
+        resolve_agents(project.agents, &template_map, &root, resolution_mode)?;
 
     validate_groups(&project.groups, &seen_agents)?;
 
@@ -94,8 +93,9 @@ pub(crate) fn resolve_project(
 fn resolve_workspace_defaults(
     project: &ProjectFile,
     global: &GlobalConfig,
+    resolution_mode: ResolutionMode,
 ) -> Result<(PathBuf, Layout, u8, String, String)> {
-    let root = normalize_project_root(&project.root)?;
+    let root = normalize_project_root(&project.root, resolution_mode)?;
     let layout = project.layout.unwrap_or(global.default_layout);
     let main_pane_ratio = project.main_pane_ratio.unwrap_or(global.main_pane_ratio);
     let window_name = project
@@ -113,7 +113,7 @@ fn resolve_agents(
     agents: Vec<ProjectAgent>,
     template_map: &BTreeMap<String, &AgentTemplate>,
     root: &Path,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<(
     Vec<ResolvedAgent>,
     Vec<FingerprintAgentMaterial>,
@@ -138,7 +138,7 @@ fn resolve_agents(
             None => None,
         };
 
-        let (agent, material) = resolve_single_agent(agent, template, root, env_mode)?;
+        let (agent, material) = resolve_single_agent(agent, template, root, resolution_mode)?;
         resolved.push(agent);
         fingerprint_materials.push(material);
     }
@@ -150,7 +150,7 @@ fn resolve_single_agent(
     agent: ProjectAgent,
     template: Option<&AgentTemplate>,
     root: &Path,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<(ResolvedAgent, FingerprintAgentMaterial)> {
     let label = agent
         .label
@@ -181,6 +181,7 @@ fn resolve_single_agent(
             .as_deref()
             .or_else(|| template.and_then(|item| item.cwd.as_deref())),
         root,
+        resolution_mode,
     )?;
 
     let mut unresolved_env = template.map(|item| item.env.clone()).unwrap_or_default();
@@ -207,9 +208,9 @@ fn resolve_single_agent(
             .collect(),
     };
 
-    let env = match env_mode {
-        EnvResolutionMode::Deferred => unresolved_env,
-        EnvResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env)?,
+    let env = match resolution_mode {
+        ResolutionMode::Deferred => unresolved_env,
+        ResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env)?,
     };
 
     let capabilities = match &agent.capabilities {
@@ -337,52 +338,29 @@ fn validate_agent(
     }
 }
 
-fn normalize_project_root(root: &str) -> Result<PathBuf> {
+fn normalize_project_root(root: &str, resolution_mode: ResolutionMode) -> Result<PathBuf> {
     let expanded = expand_path(root, None)?;
 
+    if !expanded.exists() && resolution_mode == ResolutionMode::Runtime {
+        return Err(ConfigError::ProjectRootNotFound(expanded));
+    }
     if expanded.exists() && !expanded.is_dir() {
         return Err(ConfigError::ProjectRootNotDirectory(expanded));
     }
 
-    // A missing root must still resolve: kill/status/list have to keep
-    // working after the project directory is deleted, or the workspace can
-    // never be cleaned up. Launch preflights existence separately.
-    canonicalize_allowing_missing_tail(&expanded).map_err(|source| ConfigError::PathResolution {
-        path: expanded.clone(),
-        source,
-    })
+    // Keep the normalized configured path as the stable workspace identity.
+    // Canonicalizing here would change the session hash when a configured
+    // symlink becomes broken after launch, making the session impossible to
+    // find for status or cleanup.
+    Ok(expanded)
 }
 
-/// Canonicalize `path`, tolerating a missing tail: the deepest existing
-/// ancestor is canonicalized (resolving symlinks such as macOS `/var` →
-/// `/private/var`) and the missing components are re-appended. This keeps a
-/// project root's identity — and therefore its derived tmux session name —
-/// stable across deletion of the directory.
-fn canonicalize_allowing_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
-    match path.canonicalize() {
-        Ok(canonical) => Ok(canonical),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let normalized = normalize_path(path);
-            let mut ancestor = normalized.as_path();
-            let mut tail: Vec<std::ffi::OsString> = Vec::new();
-            while !ancestor.exists() {
-                let Some(parent) = ancestor.parent() else {
-                    break;
-                };
-                if let Some(name) = ancestor.file_name() {
-                    tail.push(name.to_os_string());
-                }
-                ancestor = parent;
-            }
-            let mut canonical = ancestor.canonicalize()?;
-            canonical.extend(tail.iter().rev());
-            Ok(canonical)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn resolve_agent_cwd(agent_id: &str, raw: Option<&str>, project_root: &Path) -> Result<PathBuf> {
+fn resolve_agent_cwd(
+    agent_id: &str,
+    raw: Option<&str>,
+    project_root: &Path,
+    resolution_mode: ResolutionMode,
+) -> Result<PathBuf> {
     let Some(value) = raw else {
         return Ok(project_root.to_path_buf());
     };
@@ -418,6 +396,9 @@ fn resolve_agent_cwd(agent_id: &str, raw: Option<&str>, project_root: &Path) -> 
         });
     }
 
+    if !resolved.exists() && resolution_mode == ResolutionMode::Deferred {
+        return Ok(resolved);
+    }
     if !resolved.exists() {
         return Err(ConfigError::AgentCwdNotFound {
             agent_id: agent_id.to_string(),
@@ -432,13 +413,20 @@ fn resolve_agent_cwd(agent_id: &str, raw: Option<&str>, project_root: &Path) -> 
     }
 
     if !is_absolute_or_home {
+        let canonical_root =
+            project_root
+                .canonicalize()
+                .map_err(|source| ConfigError::PathResolution {
+                    path: project_root.to_path_buf(),
+                    source,
+                })?;
         let canonical = resolved
             .canonicalize()
             .map_err(|source| ConfigError::PathResolution {
                 path: resolved.clone(),
                 source,
             })?;
-        if !canonical.starts_with(project_root) {
+        if !canonical.starts_with(&canonical_root) {
             return Err(ConfigError::AgentCwdEscapesRoot {
                 agent_id: agent_id.to_string(),
                 path: canonical,
@@ -535,15 +523,20 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn check_symlink_escape(path: &Path, project_root: &Path) -> Option<PathBuf> {
+    let canonical_root = project_root.canonicalize().ok()?;
     match path.canonicalize() {
-        Ok(canonical) if !canonical.starts_with(project_root) => Some(canonical),
+        Ok(canonical) if !canonical.starts_with(&canonical_root) => Some(canonical),
         Err(_) => std::fs::read_link(path).ok().and_then(|target| {
             let effective = if target.is_absolute() {
                 normalize_path(&target)
             } else {
-                normalize_path(&path.parent().unwrap_or(project_root).join(target))
+                let parent = path.parent().unwrap_or(project_root);
+                let resolved_parent = parent
+                    .canonicalize()
+                    .unwrap_or_else(|_| normalize_path(parent));
+                normalize_path(&resolved_parent.join(target))
             };
-            (!effective.starts_with(project_root)).then_some(effective)
+            (!effective.starts_with(&canonical_root)).then_some(effective)
         }),
         Ok(_) => None,
     }
@@ -591,8 +584,10 @@ mod tests {
             ("a\rb", '\r'),
             // Padded ids round-trip through trimmed tmux options and would
             // report permanent drift.
+            (" alpha", ' '),
             ("a b", ' '),
             ("a ", ' '),
+            ("a\u{00a0}", '\u{00a0}'),
         ] {
             let error = validate_identifier("agent id", id).err_or_panic();
             let ConfigError::InvalidIdentifierChar { kind, id: got, ch } = error else {
@@ -651,17 +646,45 @@ mod tests {
         }
         let configured = root.display().to_string();
 
-        let before = normalize_project_root(&configured).or_panic();
+        let before = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
         if let Err(error) = std::fs::remove_dir(&root) {
             panic!("failed to remove workdir: {error}");
         }
-        let after = normalize_project_root(&configured).or_panic();
+        let after = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
 
         assert_eq!(
             before, after,
             "resolved root (and thus the derived session name) must be \
              identical before and after the directory disappears"
         );
+    }
+
+    #[test]
+    fn deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd() {
+        let base = tempfile::tempdir().or_panic();
+        let missing_root = base.path().join("missing-root");
+        let root = normalize_project_root(
+            &missing_root.display().to_string(),
+            ResolutionMode::Deferred,
+        )
+        .or_panic();
+
+        let cwd =
+            resolve_agent_cwd("alpha", Some("subdir"), &root, ResolutionMode::Deferred).or_panic();
+
+        assert_eq!(cwd, missing_root.join("subdir"));
+    }
+
+    #[test]
+    fn runtime_resolution_rejects_missing_project_root() {
+        let base = tempfile::tempdir().or_panic();
+        let missing_root = base.path().join("missing-root");
+
+        let error =
+            normalize_project_root(&missing_root.display().to_string(), ResolutionMode::Runtime)
+                .err_or_panic();
+
+        assert!(matches!(error, ConfigError::ProjectRootNotFound(path) if path == missing_root));
     }
 
     #[test]
@@ -684,7 +707,7 @@ mod tests {
             agent,
             None,
             Path::new("/tmp/kira-test-root"),
-            EnvResolutionMode::Deferred,
+            ResolutionMode::Deferred,
         )
         .or_panic();
 
@@ -766,6 +789,23 @@ mod tests {
             symlink("..", &link).or_panic();
             let project_root = temp.path().canonicalize().or_panic();
             assert!(check_symlink_escape(&link, &project_root).is_none());
+        }
+
+        #[test]
+        fn project_root_identity_survives_broken_configured_symlink() {
+            let temp = tempfile::tempdir().or_panic();
+            let target = temp.path().join("target");
+            let link = temp.path().join("project-link");
+            std::fs::create_dir(&target).or_panic();
+            symlink(&target, &link).or_panic();
+            let configured = link.display().to_string();
+
+            let before = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+            std::fs::remove_dir(&target).or_panic();
+            let after = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+
+            assert_eq!(before, after);
+            assert_eq!(after, link);
         }
     }
 }
