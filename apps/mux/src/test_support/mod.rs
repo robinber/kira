@@ -101,6 +101,10 @@ struct FakePane {
     /// When set, the pane is marked dead once this many `capture_pane`
     /// calls have been observed — simulates a crash mid-wait.
     dies_after_captures: Option<usize>,
+    /// When set, the pane is removed from the session once this many
+    /// `capture_pane` calls have been observed — simulates a killed window
+    /// (`MissingTarget` on subsequent `list_panes` / capture).
+    removed_after_captures: Option<usize>,
 }
 
 impl FakePane {
@@ -112,6 +116,7 @@ impl FakePane {
             content: String::new(),
             queued_contents: VecDeque::new(),
             dies_after_captures: None,
+            removed_after_captures: None,
         }
     }
 }
@@ -300,6 +305,13 @@ impl FakeTmux {
     /// simulating an agent that crashes mid-wait.
     pub(crate) fn set_pane_dies_after_captures(&self, pane_id: &str, captures: usize) {
         self.with_pane_mut(pane_id, |pane| pane.dies_after_captures = Some(captures));
+    }
+
+    /// Remove `pane_id` after `captures` calls to `capture_pane`, simulating
+    /// a killed window so subsequent `list_panes("%N")` returns
+    /// `MissingTarget`.
+    pub(crate) fn set_pane_removed_after_captures(&self, pane_id: &str, captures: usize) {
+        self.with_pane_mut(pane_id, |pane| pane.removed_after_captures = Some(captures));
     }
 
     fn record_text_op(&self, op: FakeOp, pane_id: &str, text: &str) {
@@ -583,27 +595,37 @@ impl TmuxAdapter for FakeTmux {
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         for session in sessions.values_mut() {
             for window in session.windows.values_mut() {
-                for pane in &mut window.panes {
-                    if pane.pane_id == pane_id {
-                        if let Some(next) = pane.queued_contents.pop_front() {
-                            pane.content = next;
-                        }
-                        if let Some(remaining) = &mut pane.dies_after_captures {
-                            *remaining = remaining.saturating_sub(1);
-                            if *remaining == 0 {
-                                pane.dead = true;
-                            }
-                        }
-                        let lines: Vec<&str> = pane.content.lines().collect();
-                        if lines.len() > history_limit {
-                            return Ok(lines[lines.len() - history_limit..].join("\n") + "\n");
-                        }
-                        return Ok(pane.content.clone());
+                if let Some(idx) = window.panes.iter().position(|pane| pane.pane_id == pane_id) {
+                    let pane = &mut window.panes[idx];
+                    if let Some(next) = pane.queued_contents.pop_front() {
+                        pane.content = next;
                     }
+                    if let Some(remaining) = &mut pane.dies_after_captures {
+                        *remaining = remaining.saturating_sub(1);
+                        if *remaining == 0 {
+                            pane.dead = true;
+                        }
+                    }
+                    let remove_now = if let Some(remaining) = &mut pane.removed_after_captures {
+                        *remaining = remaining.saturating_sub(1);
+                        *remaining == 0
+                    } else {
+                        false
+                    };
+                    let lines: Vec<&str> = pane.content.lines().collect();
+                    let content = if lines.len() > history_limit {
+                        lines[lines.len() - history_limit..].join("\n") + "\n"
+                    } else {
+                        pane.content.clone()
+                    };
+                    if remove_now {
+                        window.panes.remove(idx);
+                    }
+                    return Ok(content);
                 }
             }
         }
-        bail!("pane not found: {pane_id}")
+        Err(TmuxError::MissingTarget(pane_id.to_string()).into())
     }
 }
 

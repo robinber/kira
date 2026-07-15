@@ -7,21 +7,22 @@
 //! pane that sits quiet while the model thinks must not be reported as done
 //! with only the prompt echo captured.
 
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::resolve::resolve_managed_pane;
 use crate::error::KiraMuxError;
-use crate::model::ResolvedProject;
-use crate::tmux::TmuxAdapter;
+use crate::tmux::{TmuxAdapter, TmuxError};
 
 /// Lines of pane history compared per poll and returned on success. Sized
 /// for a full agent reply; intentionally a constant, not CLI surface.
 const WAIT_CAPTURE_LINES: usize = 200;
 
 /// Tuning for the stability poll. Production uses [`WaitOptions::default`];
-/// tests inject tiny durations so timeout paths run in milliseconds.
+/// tests inject tiny durations (and optional virtual time) so timeout paths
+/// run without wall-clock sleeps.
 pub(crate) struct WaitOptions {
     /// Delay between pane captures.
     pub(crate) poll_interval: Duration,
@@ -30,6 +31,15 @@ pub(crate) struct WaitOptions {
     /// Hard cap on the whole wait. Kept below typical caller-side tool
     /// timeouts so kira-mux fails first with a useful error.
     pub(crate) hard_timeout: Duration,
+    /// Time source. Wall clock in production; virtual for deterministic tests.
+    clock: WaitClock,
+}
+
+enum WaitClock {
+    Wall,
+    /// Each [`WaitOptions::sleep`] advances elapsed time without blocking.
+    #[cfg(test)]
+    Virtual(Mutex<Duration>),
 }
 
 impl Default for WaitOptions {
@@ -38,87 +48,152 @@ impl Default for WaitOptions {
             poll_interval: Duration::from_millis(500),
             stability_window: Duration::from_secs(3),
             hard_timeout: Duration::from_mins(10),
+            clock: WaitClock::Wall,
         }
     }
 }
 
-/// Block until `agent_id`'s pane shows output activity and then stabilizes;
-/// return the final capture (same text shape as `capture`).
+impl WaitOptions {
+    /// Test knobs: millisecond-scale timings with a virtual clock so timeout
+    /// and stability paths advance without real sleeps.
+    #[cfg(test)]
+    fn virtual_time(
+        poll_interval: Duration,
+        stability_window: Duration,
+        hard_timeout: Duration,
+    ) -> Self {
+        Self {
+            poll_interval,
+            stability_window,
+            hard_timeout,
+            clock: WaitClock::Virtual(Mutex::new(Duration::ZERO)),
+        }
+    }
+
+    fn elapsed(&self, wall_start: Instant) -> Duration {
+        match &self.clock {
+            WaitClock::Wall => wall_start.elapsed(),
+            #[cfg(test)]
+            WaitClock::Virtual(elapsed) => match elapsed.lock() {
+                Ok(guard) => *guard,
+                Err(poisoned) => *poisoned.into_inner(),
+            },
+        }
+    }
+
+    fn sleep(&self, duration: Duration) {
+        match &self.clock {
+            WaitClock::Wall => std::thread::sleep(duration),
+            #[cfg(test)]
+            WaitClock::Virtual(elapsed) => {
+                let mut guard = match elapsed.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *guard = guard.saturating_add(duration);
+            }
+        }
+    }
+}
+
+/// Block until `pane_id` shows output activity and then stabilizes; return
+/// the final capture (same text shape as `capture`).
+///
+/// Call this with the pane id already resolved by `send` so the baseline is
+/// taken immediately after submit, without a second `inspect` round-trip.
 ///
 /// # Errors
 ///
-/// Fails fast with the same errors as `send` (absent session, drift, unknown
-/// agent, dead pane). During the wait: [`KiraMuxError::PaneDiedDuringWait`]
-/// when the pane dies — a dead pane's frozen content must never read as
-/// "stable" — and [`KiraMuxError::WaitTimeout`] (carrying the last capture)
-/// when the hard timeout elapses first.
-pub(crate) fn wait_for_stable_output(
+/// [`KiraMuxError::PaneDiedDuringWait`] when the pane is dead at entry or
+/// dies/vanishes mid-wait (frozen dead content must never read as "stable").
+/// [`KiraMuxError::WaitTimeout`] when the hard timeout elapses first.
+pub(crate) fn wait_on_pane(
     tmux: &dyn TmuxAdapter,
-    project: &ResolvedProject,
     agent_id: &str,
+    pane_id: &str,
     options: &WaitOptions,
 ) -> Result<String> {
-    let (pane, _agent, _topology) = resolve_managed_pane(tmux, project, agent_id)?;
-    if pane.pane_dead {
-        return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
+    if pane_is_dead(tmux, pane_id)? {
+        return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
     }
 
-    let deadline = Instant::now() + options.hard_timeout;
+    let wall_start = Instant::now();
     // Baseline after the full submit sequence: prompt echo is already
     // rendered, so any change from here on is response activity.
-    let mut last = tmux.capture_pane(&pane.pane_id, WAIT_CAPTURE_LINES)?;
+    let mut last = tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES)?;
     let mut activity_seen = false;
-    let mut last_change = Instant::now();
+    let mut last_change = options.elapsed(wall_start);
 
     loop {
-        let now = Instant::now();
-        if now >= deadline {
+        let now = options.elapsed(wall_start);
+        if now >= options.hard_timeout {
             return Err(KiraMuxError::WaitTimeout {
                 agent_id: agent_id.to_string(),
                 last_capture: last,
             }
             .into());
         }
-        std::thread::sleep(options.poll_interval.min(deadline - now));
+        let remaining = options.hard_timeout.saturating_sub(now);
+        options.sleep(options.poll_interval.min(remaining));
 
-        if pane_is_dead(tmux, &pane.pane_id)? {
+        if pane_is_dead(tmux, pane_id)? {
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
-        let current = tmux.capture_pane(&pane.pane_id, WAIT_CAPTURE_LINES)?;
+        let current = tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES)?;
         if current != last {
             last = current;
             activity_seen = true;
-            last_change = Instant::now();
-        } else if activity_seen && last_change.elapsed() >= options.stability_window {
+            last_change = options.elapsed(wall_start);
+        } else if activity_seen
+            && options.elapsed(wall_start).saturating_sub(last_change) >= options.stability_window
+        {
             return Ok(last);
         }
     }
 }
 
-/// A vanished pane (killed window) counts as dead; a killed session already
-/// surfaces as a typed error from `list_panes`.
+/// A vanished pane (killed window / missing target) counts as dead. Session
+/// loss is also treated as dead for the wait loop so callers get a typed
+/// exit 6 rather than an untyped transport failure.
 fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
-    let panes = tmux.list_panes(pane_id)?;
-    Ok(panes
-        .iter()
-        .find(|pane| pane.pane_id == pane_id)
-        .is_none_or(|pane| pane.pane_dead))
+    match tmux.list_panes(pane_id) {
+        Ok(panes) => Ok(panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .is_none_or(|pane| pane.pane_dead)),
+        Err(error) if TmuxError::is_missing_target(&error) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ResolvedProject;
     use crate::test_support::TestResultExt;
 
+    /// Resolve then wait — covers topology gates at wait entry in tests.
+    fn wait_for_stable_output(
+        tmux: &dyn TmuxAdapter,
+        project: &ResolvedProject,
+        agent_id: &str,
+        options: &WaitOptions,
+    ) -> Result<String> {
+        let (pane, _agent, _topology) =
+            super::super::resolve::resolve_managed_pane(tmux, project, agent_id)?;
+        wait_on_pane(tmux, agent_id, &pane.pane_id, options)
+    }
+
     /// Millisecond-scale knobs so timeout paths stay fast; the stability
-    /// window spans several polls, mirroring the production ratio.
+    /// window spans several polls, mirroring the production ratio. Virtual
+    /// time means these tests do not burn wall-clock sleeps.
     fn fast_options() -> WaitOptions {
-        WaitOptions {
-            poll_interval: Duration::from_millis(1),
-            stability_window: Duration::from_millis(20),
-            hard_timeout: Duration::from_millis(250),
-        }
+        WaitOptions::virtual_time(
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            Duration::from_millis(250),
+        )
     }
 
     #[test]
@@ -190,10 +265,13 @@ mod tests {
 
         let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
 
-        assert!(matches!(
-            err.downcast_ref::<KiraMuxError>(),
-            Some(KiraMuxError::DeadPane(id)) if id == "alpha"
-        ));
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::PaneDiedDuringWait(id)) if id == "alpha"
+            ),
+            "post-send wait must use PaneDiedDuringWait, not send-time DeadPane, got: {err}"
+        );
     }
 
     #[test]
@@ -203,12 +281,12 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
         fake.queue_pane_contents("%0", &["prompt echo", "streaming...", "str"]);
         fake.set_pane_dies_after_captures("%0", 3);
-        // Success and timeout are both out of reach: death must win.
-        let options = WaitOptions {
-            poll_interval: Duration::from_millis(1),
-            stability_window: Duration::from_secs(30),
-            hard_timeout: Duration::from_secs(30),
-        };
+        // Stability window is unreachable; death must win before hard timeout.
+        let options = WaitOptions::virtual_time(
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+            Duration::from_millis(250),
+        );
 
         let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
 
@@ -219,6 +297,50 @@ mod tests {
             ),
             "a frozen dead pane must fail, not read as stable, got: {err}"
         );
+    }
+
+    #[test]
+    fn wait_fails_when_pane_vanishes_mid_wait() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        // Baseline capture, then the pane is gone (killed window): list_panes
+        // returns MissingTarget, which must map to PaneDiedDuringWait.
+        fake.queue_pane_contents("%0", &["prompt echo"]);
+        fake.set_pane_removed_after_captures("%0", 1);
+        let options = WaitOptions::virtual_time(
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+            Duration::from_millis(250),
+        );
+
+        let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::PaneDiedDuringWait(id)) if id == "alpha"
+            ),
+            "vanished pane must be typed PaneDiedDuringWait (exit 6), got: {err}"
+        );
+    }
+
+    #[test]
+    fn wait_on_pane_skips_resolve_and_uses_given_pane_id() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.queue_pane_contents(
+            "%0",
+            &["prompt echo", "prompt echo\nreply", "prompt echo\nreply"],
+        );
+
+        // No project inspect path: direct pane wait after a successful send.
+        let output = wait_on_pane(&fake, "alpha", "%0", &fast_options()).or_panic();
+        assert_eq!(output, "prompt echo\nreply");
+
+        // Unknown agent would fail resolve_managed_pane; wait_on_pane does not care.
+        let _ = project;
     }
 
     #[test]

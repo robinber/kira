@@ -28,7 +28,7 @@ pub enum KiraMuxError {
     #[error("kill aborted")]
     KillAborted,
     /// An operation that requires a live pane targeted a dead pane.
-    #[error("cannot send to dead pane for agent '{0}'")]
+    #[error("pane for agent '{0}' is dead")]
     DeadPane(String),
     /// The agent pane died while `send --wait` was polling for output.
     #[error("pane for agent '{0}' died while waiting for output")]

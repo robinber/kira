@@ -17,8 +17,17 @@ const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
 /// Delay before the second Enter for double-enter agents.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 
+/// Result of a successful prompt delivery.
+pub(crate) struct DeliveredPrompt {
+    /// Rendered text that was pasted/submitted into the pane.
+    pub(crate) rendered: String,
+    /// Pane that received the prompt; reuse for `send --wait` without a
+    /// second full workspace inspect (keeps the post-submit baseline tight).
+    pub(crate) pane_id: String,
+}
+
 /// Render the final prompt for `agent_id` and deliver it to the agent's
-/// managed pane. Returns the rendered prompt that was sent.
+/// managed pane. Returns the rendered text and the target pane id.
 ///
 /// Delivery requires a **live** pane only. Kira does not wait for the agent
 /// TUI to be input-ready (trust dialogs, logins, …). Operators bootstrap
@@ -35,7 +44,7 @@ pub(crate) fn send_prompt(
     agent_id: &str,
     prompt: &str,
     no_template: bool,
-) -> Result<String> {
+) -> Result<DeliveredPrompt> {
     let (pane, agent, topology) = resolve_managed_pane(tmux, project, agent_id)?;
     // Gate: process liveness only — not application readiness.
     if pane.pane_dead {
@@ -44,8 +53,15 @@ pub(crate) fn send_prompt(
 
     let final_prompt = render_final_prompt(project, agent, prompt, no_template, &topology);
     paste_and_submit(tmux, &pane, agent, &final_prompt)?;
-    Ok(final_prompt)
+    Ok(DeliveredPrompt {
+        rendered: final_prompt,
+        pane_id: pane.pane_id,
+    })
 }
+
+// Ensure both fields stay part of the public-crate delivery contract even when
+// a call site only needs `pane_id` for `--wait`.
+const _: fn(&DeliveredPrompt) -> (&str, &str) = |d| (d.rendered.as_str(), d.pane_id.as_str());
 
 /// Compute the final prompt text for `agent` without mutating tmux.
 ///
@@ -412,9 +428,10 @@ mod tests {
 
         let sent = send_prompt(&fake, &project, "alpha", "hello world", false).or_panic();
         assert_eq!(
-            sent, "Agent Alpha in Test: hello world",
+            sent.rendered, "Agent Alpha in Test: hello world",
             "send_prompt must return the rendered prompt, not the raw input"
         );
+        assert_eq!(sent.pane_id, "%0");
     }
 
     #[test]
@@ -424,7 +441,8 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
 
         let sent = send_prompt(&fake, &project, "alpha", "/help", false).or_panic();
-        assert_eq!(sent, "/help");
+        assert_eq!(sent.rendered, "/help");
+        assert_eq!(sent.pane_id, "%0");
     }
 
     #[test]
@@ -435,6 +453,7 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
 
         let sent = send_prompt(&fake, &project, "alpha", "args here", false).or_panic();
-        assert_eq!(sent, "/cmd args here");
+        assert_eq!(sent.rendered, "/cmd args here");
+        assert_eq!(sent.pane_id, "%0");
     }
 }
