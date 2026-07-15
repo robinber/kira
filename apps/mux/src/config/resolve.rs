@@ -154,6 +154,7 @@ fn resolve_single_agent(
         .label
         .clone()
         .or_else(|| template.map(template_label))
+        .filter(|label| !label.is_empty())
         .unwrap_or_else(|| agent.id.clone());
     let mode = agent
         .mode
@@ -188,6 +189,7 @@ fn resolve_single_agent(
         mode,
         command.as_deref(),
         shell_command.as_deref(),
+        &args,
     )?;
 
     let fingerprint_material = FingerprintAgentMaterial {
@@ -311,6 +313,7 @@ fn validate_agent(
     mode: AgentMode,
     command: Option<&str>,
     shell_command: Option<&str>,
+    args: &[String],
 ) -> Result<()> {
     match mode {
         AgentMode::Direct if command.is_none_or(str::is_empty) => {
@@ -323,6 +326,11 @@ fn validate_agent(
                 agent_id: agent_id.to_string(),
             })
         }
+        // Launch only passes args in direct mode; rejecting here keeps config
+        // honest instead of silently ignoring shell-mode args.
+        AgentMode::Shell if !args.is_empty() => Err(ConfigError::ShellArgsNotSupported {
+            agent_id: agent_id.to_string(),
+        }),
         _ => Ok(()),
     }
 }
@@ -557,6 +565,69 @@ mod tests {
         }
 
         validate_identifier("agent id", "plain-id_09").or_panic();
+    }
+
+    #[test]
+    fn shell_mode_rejects_nonempty_args() {
+        let error = validate_agent(
+            "worker",
+            AgentMode::Shell,
+            None,
+            Some("npm test"),
+            &["--watch".to_string()],
+        )
+        .err_or_panic();
+        assert!(matches!(
+            error,
+            ConfigError::ShellArgsNotSupported { agent_id } if agent_id == "worker"
+        ));
+    }
+
+    #[test]
+    fn shell_mode_allows_empty_args() {
+        validate_agent("worker", AgentMode::Shell, None, Some("npm test"), &[]).or_panic();
+    }
+
+    #[test]
+    fn direct_mode_allows_args() {
+        validate_agent(
+            "coder",
+            AgentMode::Direct,
+            Some("codex"),
+            None,
+            &["--full-auto".to_string()],
+        )
+        .or_panic();
+    }
+
+    #[test]
+    fn empty_label_falls_back_to_agent_id() {
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: Some(String::new()),
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+        };
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            None,
+            Path::new("/tmp/kira-test-root"),
+            EnvResolutionMode::Deferred,
+        )
+        .or_panic();
+
+        assert_eq!(
+            resolved.label, "alpha",
+            "empty label must fall back to the id, not render as `alpha ()`"
+        );
     }
 
     #[cfg(unix)]
