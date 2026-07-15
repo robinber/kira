@@ -89,6 +89,12 @@ impl TestBed {
 
     /// Run the compiled `kira-mux` binary against this bed's sandbox.
     fn kira(&self, args: &[&str]) -> Output {
+        self.kira_with_env(args, &[])
+    }
+
+    /// Like [`Self::kira`], with extra process environment entries (e.g. host
+    /// values for `$VAR` agent env references).
+    fn kira_with_env(&self, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_kira-mux"));
         command
             .args(args)
@@ -101,6 +107,9 @@ impl TestBed {
             // developer running the suite inside tmux) is never visible.
             .env("TMUX_TMPDIR", self.config_home.path())
             .env_remove("TMUX");
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
         run(&mut command)
     }
 
@@ -626,6 +635,54 @@ fn restart_revives_dead_agent_once_its_command_succeeds() {
     write_file(std::path::Path::new(&ready_flag), "");
     assert_success(&bed.kira(&["restart", "it", "solo"]), "restart");
     bed.wait_for_state("running");
+}
+
+#[test]
+fn env_reference_host_value_rotation_requires_restart() {
+    // Contract (#16): `$VAR` fingerprints the name only. Host value rotation
+    // does not drift the session; healthy `start` keeps the old injection.
+    // `restart` re-resolves and re-applies.
+    let bed = TestBed::new();
+    bed.write_project(
+        r#"[[agents]]
+id = "alpha"
+mode = "shell"
+shell_command = "printf 'token=%s\n' \"$TOKEN\"; exec cat"
+env = { TOKEN = "$KIRA_IT_TOKEN" }
+"#,
+    );
+
+    assert_success(
+        &bed.kira_with_env(&["start", "it"], &[("KIRA_IT_TOKEN", "one")]),
+        "start with token=one",
+    );
+    bed.wait_for_state("running");
+    bed.wait_for_capture("alpha", "token=one");
+
+    // Same config, rotated host value — start must not refresh the pane.
+    assert_success(
+        &bed.kira_with_env(&["start", "it"], &[("KIRA_IT_TOKEN", "two")]),
+        "start with token=two (healthy no-op)",
+    );
+    assert_eq!(bed.wait_for_state("running")["state"], "running");
+    let still_one = bed.kira(&["capture", "it", "alpha"]);
+    assert_success(&still_one, "capture after no-op start");
+    let text = stdout_of(&still_one);
+    assert!(
+        text.contains("token=one"),
+        "pane must still show the original injection, got: {text:?}"
+    );
+    assert!(
+        !text.contains("token=two"),
+        "start must not re-inject rotated $VAR values, got: {text:?}"
+    );
+
+    assert_success(
+        &bed.kira_with_env(&["restart", "it", "alpha"], &[("KIRA_IT_TOKEN", "two")]),
+        "restart applies token=two",
+    );
+    bed.wait_for_state("running");
+    bed.wait_for_capture("alpha", "token=two");
 }
 
 #[test]

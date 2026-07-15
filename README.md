@@ -119,7 +119,7 @@ workspace.
 - layout, main pane ratio, window name
 - default shell, remain-on-exit
 - per agent: id, mode, command / shell_command / args (mode-aware), cwd, env
-  (literal values are hashed; `$VAR` references fingerprint the variable name)
+  (see env rules below)
 
 **Excluded on purpose** (cosmetic / non-topology — no drift):
 
@@ -129,7 +129,14 @@ workspace.
   the old workspace shows as **stopped** (not drifted); `tmux_bin` only
   changes how tmux is invoked
 
-Literal env values never appear in the fingerprint material; only digests do.
+### Agent `env`: literals vs `$VAR` references
+
+| Config form | Example | Fingerprint | Refresh |
+|---|---|---|---|
+| **Literal** | `TOKEN = "secret"` | SHA-256 of the value (never raw) | Editing the value **drifts** the live session → `kill` then `start`/`open` |
+| **Reference** | `TOKEN = "$KIRA_TOKEN"` | Variable **name** only (`KIRA_TOKEN`) | Changing the host env value does **not** drift. Healthy `start` reuses panes and keeps the old injection. Run **`restart`** (agent or all) to re-resolve and re-apply |
+
+Secrets never appear in fingerprint material, tmux session options, or default logs (pane env is delivered via a short-lived env file, not argv).
 
 ### Invalid project files in `list`
 

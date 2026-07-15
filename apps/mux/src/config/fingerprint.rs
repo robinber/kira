@@ -13,9 +13,14 @@ use super::model::{AgentMode, Layout, RemainOnExit};
 /// false-positive drift detection when users change cosmetic agent metadata
 /// that does not require a workspace restart.
 ///
-/// Env values are digested before entering the material so that resolved
-/// secrets never appear in it, while value changes still change the
-/// fingerprint.
+/// Env entries:
+/// - **Literal** values are hashed so secrets never appear in fingerprint
+///   material, but editing the config value still changes the fingerprint
+///   (session becomes **drifted**).
+/// - **`$VAR` references** fingerprint only the variable *name*. Changing the
+///   host environment value does **not** drift the session: `start` reuses
+///   healthy panes without re-injecting env. Use **`restart`** to re-resolve
+///   references and re-apply them to panes.
 #[derive(Debug, Clone)]
 pub(crate) struct FingerprintAgentMaterial {
     pub id: String,
@@ -31,8 +36,11 @@ pub(crate) struct FingerprintAgentMaterial {
 #[derive(Debug, Clone)]
 pub(crate) enum EnvFingerprint {
     /// A literal value, reduced to a SHA-256 digest of the value bytes.
+    /// Digest changes when the configured literal changes → drift.
     Literal(String),
-    /// An environment reference — the reference target is included.
+    /// An environment reference — only the target name is stored (e.g. `HOME`
+    /// for `$HOME`). Host value rotation does not affect the fingerprint;
+    /// operators must `restart` to refresh pane env.
     Reference(String),
 }
 
@@ -445,6 +453,29 @@ mod tests {
             compute_fingerprint(fx_a.input()),
             compute_fingerprint(fx_b.input())
         );
+    }
+
+    #[test]
+    fn reference_host_value_rotation_does_not_affect_fingerprint() {
+        // Config stays `TOKEN = "$KIRA_TOKEN"`. Only the process env changes.
+        // Fingerprint material never sees the resolved secret, so rotation of
+        // the host value alone must not mark the workspace drifted.
+        let mut fx = Fixture::new();
+        fx.agents[0]
+            .env
+            .insert("TOKEN".into(), env_fingerprint("$KIRA_TOKEN"));
+        let first = compute_fingerprint(fx.input());
+        let second = compute_fingerprint(fx.input());
+        assert_eq!(
+            first, second,
+            "same $VAR reference must yield a stable fingerprint regardless \
+             of whatever value the host currently has for that name"
+        );
+        // Sanity: still a reference form in material, not a hashed secret.
+        match fx.agents[0].env.get("TOKEN") {
+            Some(EnvFingerprint::Reference(name)) => assert_eq!(name, "KIRA_TOKEN"),
+            other => panic!("expected Reference, got {other:?}"),
+        }
     }
 
     // --- material ambiguity ---
