@@ -12,38 +12,47 @@ use crate::tmux::{PaneInfo, TmuxAdapter};
 /// callers can decide whether the operation is allowed (`send` rejects them;
 /// `capture` allows them). Drifted and absent sessions fail with typed
 /// [`KiraMuxError`] variants.
+///
+/// The inspected topology is returned alongside the pane so callers can
+/// reuse it (e.g. for the prompt context) instead of running a second
+/// inspection that could observe a different workspace state.
 pub(super) fn resolve_managed_pane<'a>(
     tmux: &dyn TmuxAdapter,
     project: &'a ResolvedProject,
     agent_id: &str,
-) -> Result<(PaneInfo, &'a ResolvedAgent)> {
+) -> Result<(PaneInfo, &'a ResolvedAgent, WorkspaceTopology)> {
     let agent = project
         .agents
         .iter()
         .find(|a| a.id == agent_id)
         .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
 
-    match inspector::inspect(tmux, project)? {
-        WorkspaceTopology::Absent => Err(KiraMuxError::SessionAbsent.into()),
-        WorkspaceTopology::Drifted { reason } => Err(KiraMuxError::Drifted {
-            project_id: project.id.clone(),
-            reason,
+    let topology = inspector::inspect(tmux, project)?;
+    let pane = match &topology {
+        WorkspaceTopology::Absent => return Err(KiraMuxError::SessionAbsent.into()),
+        WorkspaceTopology::Drifted { reason } => {
+            return Err(KiraMuxError::Drifted {
+                project_id: project.id.clone(),
+                reason: reason.clone(),
+            }
+            .into());
         }
-        .into()),
         WorkspaceTopology::Healthy(workspace) | WorkspaceTopology::Degraded(workspace) => {
             // inspect() pairs every configured agent when topology is live;
             // MissingManagedPane is a defensive fallback only.
-            let managed = workspace
+            workspace
                 .panes
                 .iter()
                 .find(|mp| mp.agent.id == agent_id)
+                .map(|mp| mp.pane.clone())
                 .ok_or_else(|| KiraMuxError::Drifted {
                     project_id: project.id.clone(),
                     reason: WorkspaceDriftReason::MissingManagedPane(agent_id.to_string()),
-                })?;
-            Ok((managed.pane.clone(), agent))
+                })?
         }
-    }
+    };
+
+    Ok((pane, agent, topology))
 }
 
 #[cfg(test)]
@@ -101,7 +110,7 @@ mod tests {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
-        let (pane, agent) = ok(
+        let (pane, agent, _topology) = ok(
             resolve_managed_pane(&fake, &project, "alpha"),
             "resolve_managed_pane should find the healthy managed pane",
         );
@@ -115,7 +124,7 @@ mod tests {
         let project = crate::test_support::test_project();
         crate::test_support::setup_session_with_dead_panes(&fake, &project, &[0]);
 
-        let (pane, agent) = ok(
+        let (pane, agent, _topology) = ok(
             resolve_managed_pane(&fake, &project, "alpha"),
             "resolve_managed_pane should return dead panes so callers can decide",
         );
@@ -297,7 +306,7 @@ mod tests {
         fake.add_pane(&session, "other-window", "%99", false);
         fake.set_pane_opt(&session, "other-window", 0, "@kira_mux_agent_id", "alpha");
 
-        let (pane, agent) = ok(
+        let (pane, agent, _topology) = ok(
             resolve_managed_pane(&fake, &project, "alpha"),
             "resolve_managed_pane should ignore unmanaged windows",
         );
@@ -433,7 +442,7 @@ mod tests {
         ];
 
         for (agent_id, expected_pane_id) in expected {
-            let (pane, agent) = ok(
+            let (pane, agent, _topology) = ok(
                 resolve_managed_pane(&fake, &project, agent_id),
                 format!("resolve_managed_pane should find agent '{agent_id}'"),
             );
