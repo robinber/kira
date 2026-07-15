@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::domain::ResolvedProject;
+use crate::model::ResolvedProject;
 
 /// Derive the managed tmux session name for a resolved project/profile pair.
 #[must_use]

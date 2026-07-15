@@ -1,4 +1,4 @@
-//! Command handlers for the product-A CLI.
+//! Command handlers for the `kira-mux` CLI.
 
 mod agent_cmds;
 mod workspace_cmds;
@@ -9,7 +9,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::cli::{Cli, CommandKind};
+use crate::config::{EnvResolutionMode, load_project};
+use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
+use crate::tmux::TmuxClient;
 
 const DEFAULT_CONFIG: &str = r#"session_prefix = "ai"
 default_layout = "auto"
@@ -85,6 +88,18 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             bail!("no command provided; try `kira-mux --help`");
         }
     }
+}
+
+/// Load a project and build a tmux client for command handlers.
+pub(super) fn load_project_context(
+    project_id: &str,
+    profile: Option<&str>,
+    env_mode: EnvResolutionMode,
+) -> Result<(ResolvedProject, TmuxClient)> {
+    let paths = AppPaths::from_env()?;
+    let project = load_project(&paths, project_id, profile, env_mode)?;
+    let tmux = TmuxClient::from_env(project.tmux_bin.clone());
+    Ok((project, tmux))
 }
 
 fn init(force: bool) -> Result<()> {

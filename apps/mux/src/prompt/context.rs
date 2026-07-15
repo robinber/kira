@@ -1,5 +1,5 @@
-use crate::domain::ResolvedProject;
 use crate::inspector::WorkspaceTopology;
+use crate::model::ResolvedProject;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptContext {
@@ -100,8 +100,8 @@ mod tests {
 
     use super::*;
     use crate::config::{AgentMode, Layout, RemainOnExit};
-    use crate::domain::{ResolvedAgent, ResolvedProject};
     use crate::inspector::{InspectedWorkspace, ManagedPane, WorkspaceTopology};
+    use crate::model::{ResolvedAgent, ResolvedProject};
     use crate::tmux::PaneInfo;
 
     fn make_agent(id: &str, capabilities: Vec<String>) -> ResolvedAgent {
@@ -138,7 +138,6 @@ mod tests {
             agents,
             fingerprint: "fp".to_string(),
             groups,
-            orchestration: None,
         }
     }
 

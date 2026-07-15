@@ -191,9 +191,6 @@ pub(crate) struct ProjectFile {
     /// Named agent groups.
     #[serde(default)]
     pub groups: BTreeMap<String, Vec<String>>,
-    /// Optional orchestration settings.
-    #[serde(default)]
-    pub orchestration: Option<OrchestrationConfig>,
 }
 
 /// Internal project agent definition before template expansion.
@@ -284,9 +281,6 @@ pub(crate) struct ProjectFileRaw {
     /// Optional group definitions.
     #[serde(default)]
     pub groups: Option<BTreeMap<String, Vec<String>>>,
-    /// Optional orchestration settings.
-    #[serde(default)]
-    pub orchestration: Option<OrchestrationConfig>,
 }
 
 impl ProjectFileRaw {
@@ -342,119 +336,34 @@ pub(crate) fn default_tmux_bin() -> String {
     "tmux".to_string()
 }
 
-/// Resolved orchestration settings for a project.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct OrchestrationConfig {
-    /// Liveness timings for verified delivery and the stall watchdog.
-    pub liveness: LivenessConfig,
-}
-
-impl OrchestrationConfig {
-    /// Liveness settings that apply to `agent_id`.
-    ///
-    /// V1 resolves every agent to the global `[orchestration.liveness]`
-    /// table. The accessor is the single resolution point so a later
-    /// `[agents.<id>.liveness]` override table (the pool is heterogeneous:
-    /// different agent CLIs have different latencies) can slot in without
-    /// touching any call site.
-    #[must_use]
-    pub fn liveness_for(&self, _agent_id: &str) -> LivenessConfig {
-        self.liveness
-    }
-}
-
-/// Liveness timings for verified delivery and the stall watchdog,
-/// configured through the optional `[orchestration.liveness]` table.
-/// Absent table or fields fall back to the defaults below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct LivenessConfig {
-    /// Window after a verified landing within which the prompt must leave
-    /// the pane's input area (delivery counted as ingested), in seconds.
-    pub ingest_window_secs: u64,
-    /// Age of a task's last durable activity past which the watchdog opens
-    /// a stall episode, in seconds.
-    pub stall_after_secs: u64,
-    /// Window after a stall nudge without new durable activity past which
-    /// the watchdog escalates to `needs_operator`, in seconds.
-    pub escalate_after_secs: u64,
-}
-
-impl Default for LivenessConfig {
-    fn default() -> Self {
-        Self {
-            ingest_window_secs: 15,
-            stall_after_secs: 900,
-            escalate_after_secs: 300,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn orchestration_config_rejects_removed_engine_fields() {
-        // The removed orchestration-engine settings must not parse anymore;
-        // deny_unknown_fields makes stale configs fail loudly instead of
-        // being silently ignored.
-        for legacy in ["mode = \"automatic\"\n", "poll_interval_ms = 500\n"] {
-            let err = toml::from_str::<OrchestrationConfig>(legacy)
-                .err()
-                .unwrap_or_else(|| panic!("removed engine field must fail to parse: {legacy}"));
-            assert!(
-                err.to_string().contains("unknown field"),
-                "expected an unknown-field error for {legacy:?}, got: {err}"
-            );
-        }
-    }
+    fn project_file_rejects_removed_orchestration_table() {
+        let toml = r#"
+id = "demo"
+root = "/tmp/demo"
+orchestration = { liveness = { stall_after_secs = 120 } }
 
-    #[test]
-    fn liveness_defaults_apply_when_the_table_is_absent() {
-        let config: OrchestrationConfig =
-            toml::from_str("").unwrap_or_else(|err| panic!("parse: {err}"));
-        assert_eq!(
-            config.liveness,
-            LivenessConfig {
-                ingest_window_secs: 15,
-                stall_after_secs: 900,
-                escalate_after_secs: 300,
-            }
-        );
-    }
-
-    #[test]
-    fn liveness_table_overrides_only_the_supplied_fields() {
-        let config: OrchestrationConfig = toml::from_str("[liveness]\nstall_after_secs = 120\n")
-            .unwrap_or_else(|err| panic!("parse: {err}"));
-        assert_eq!(config.liveness.stall_after_secs, 120);
-        assert_eq!(config.liveness.ingest_window_secs, 15);
-        assert_eq!(config.liveness.escalate_after_secs, 300);
-    }
-
-    #[test]
-    fn liveness_table_rejects_unknown_fields() {
-        let err = toml::from_str::<OrchestrationConfig>("[liveness]\nstall_secs = 120\n")
+[[agents]]
+id = "a"
+command = "codex"
+"#;
+        let err = toml::from_str::<ProjectFileRaw>(toml)
             .err()
-            .unwrap_or_else(|| panic!("unknown liveness field must fail to parse"));
+            .unwrap_or_else(|| panic!("removed orchestration table must fail to parse"));
         assert!(
-            err.to_string().contains("stall_secs"),
-            "expected the unknown field to be named, got: {err}"
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
         );
     }
 
     #[test]
-    fn liveness_for_returns_the_global_settings_for_every_agent() {
-        let config: OrchestrationConfig = toml::from_str("[liveness]\nescalate_after_secs = 60\n")
-            .unwrap_or_else(|err| panic!("parse: {err}"));
-        for agent in ["codex", "opus", "glm51", "opencode-1"] {
-            assert_eq!(
-                config.liveness_for(agent),
-                config.liveness,
-                "v1 resolves every agent to the global table (agent: {agent})"
-            );
-        }
+    fn global_config_defaults_parse() {
+        let config: GlobalConfig = toml::from_str("").unwrap_or_else(|err| panic!("parse: {err}"));
+        assert_eq!(config.session_prefix, "ai");
+        assert_eq!(config.main_pane_ratio, 50);
     }
 }

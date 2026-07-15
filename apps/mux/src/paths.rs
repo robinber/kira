@@ -1,4 +1,4 @@
-//! XDG Base Directory path resolution for kira-mux config and state.
+//! XDG Base Directory path resolution for kira-mux config.
 
 use std::env;
 use std::path::PathBuf;
@@ -7,39 +7,25 @@ use anyhow::{Result, anyhow};
 
 /// XDG-derived filesystem locations used by kira-mux.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "the field names follow the standard XDG config, state, and data home terminology"
-)]
 pub struct AppPaths {
     config_home: PathBuf,
-    state_home: PathBuf,
-    data_home: PathBuf,
 }
 
 impl AppPaths {
-    /// Build an `AppPaths` from explicit XDG base directories.
+    /// Build an `AppPaths` from an explicit XDG config home.
     #[must_use]
-    pub fn new(config_home: PathBuf, state_home: PathBuf, data_home: PathBuf) -> Self {
-        Self {
-            config_home,
-            state_home,
-            data_home,
-        }
+    pub fn new(config_home: PathBuf) -> Self {
+        Self { config_home }
     }
 
-    /// Resolve XDG base directories from the current environment.
+    /// Resolve XDG config home from the current environment.
     ///
     /// # Errors
     ///
     /// Returns an error when `HOME` is unavailable and an XDG fallback path
     /// is required.
     pub fn from_env() -> Result<Self> {
-        Ok(Self::new(
-            xdg_home("XDG_CONFIG_HOME", ".config")?,
-            xdg_home("XDG_STATE_HOME", ".local/state")?,
-            xdg_home("XDG_DATA_HOME", ".local/share")?,
-        ))
+        Ok(Self::new(xdg_home("XDG_CONFIG_HOME", ".config")?))
     }
 
     /// Return the kira-mux config directory.
@@ -52,18 +38,6 @@ impl AppPaths {
     #[must_use]
     pub fn projects_dir(&self) -> PathBuf {
         self.config_dir().join("projects")
-    }
-
-    /// Return the kira-mux state directory.
-    #[must_use]
-    pub fn state_dir(&self) -> PathBuf {
-        self.state_home.join("kira-mux")
-    }
-
-    /// Return the kira-mux data directory.
-    #[must_use]
-    pub fn data_dir(&self) -> PathBuf {
-        self.data_home.join("kira-mux")
     }
 
     /// Return the global config file path.
