@@ -42,7 +42,13 @@ fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
         Some(KiraMuxError::SessionAbsent) => ExitCode::from(5),
         // Dead pane and post-launch degradation both mean the workspace exists
         // but is not fully healthy — scripts can treat exit 6 as "repair me".
-        Some(KiraMuxError::DeadPane(_) | KiraMuxError::Degraded(_)) => ExitCode::from(6),
+        Some(
+            KiraMuxError::DeadPane(_)
+            | KiraMuxError::PaneDiedDuringWait(_)
+            | KiraMuxError::Degraded(_),
+        ) => ExitCode::from(6),
+        // Wait timeout is distinct from pane death so callers can retry.
+        Some(KiraMuxError::WaitTimeout { .. }) => ExitCode::from(7),
         None => ExitCode::FAILURE,
     }
 }
@@ -74,5 +80,20 @@ mod tests {
     fn dead_pane_maps_to_exit_code_6() {
         let err = anyhow::Error::new(KiraMuxError::DeadPane("alpha".into()));
         assert_eq!(exit_code_for_error(&err), ExitCode::from(6));
+    }
+
+    #[test]
+    fn pane_died_during_wait_maps_to_exit_code_6() {
+        let err = anyhow::Error::new(KiraMuxError::PaneDiedDuringWait("alpha".into()));
+        assert_eq!(exit_code_for_error(&err), ExitCode::from(6));
+    }
+
+    #[test]
+    fn wait_timeout_maps_to_exit_code_7() {
+        let err = anyhow::Error::new(KiraMuxError::WaitTimeout {
+            agent_id: "alpha".into(),
+            last_capture: "partial".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::from(7));
     }
 }

@@ -261,7 +261,9 @@ impl TmuxAdapter for TmuxClient {
             &start_line.to_string(),
         ])?;
         if !output.status.success() {
-            bail!(command_error(&output));
+            // Typed like list_panes so wait/capture callers can classify a
+            // vanished pane instead of seeing an opaque transport failure.
+            return Err(failed_tmux_status(pane_id, &output));
         }
         let raw = String::from_utf8_lossy(&output.stdout);
         // tmux pads the visible area with empty lines below content, which

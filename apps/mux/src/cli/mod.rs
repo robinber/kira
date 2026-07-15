@@ -84,6 +84,16 @@ pub(crate) enum CommandKind {
         profile: Option<String>,
         #[arg(long)]
         no_template: bool,
+        /// Block until the pane output settles, then print it on stdout.
+        ///
+        /// Waits for pane *stability*: the pane must first change after the
+        /// prompt is submitted (response activity), then stay unchanged for a
+        /// few seconds. This is a proxy for completion, not a formal agent
+        /// done signal — panes that keep redrawing (clocks, watchers) or go
+        /// quiet mid-stream can fool it. An internal hard timeout (~10 min)
+        /// aborts with a dedicated exit code and the last capture on stderr.
+        #[arg(long)]
+        wait: bool,
     },
     /// Capture recent pane output.
     Capture {
