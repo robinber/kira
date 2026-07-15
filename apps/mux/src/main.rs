@@ -32,8 +32,7 @@ fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
 
     match error.downcast_ref::<KiraMuxError>() {
         Some(
-            KiraMuxError::UnknownProjectId(_)
-            | KiraMuxError::UnknownAgentId(_)
+            KiraMuxError::UnknownAgentId(_)
             | KiraMuxError::UnknownGroupName(_)
             | KiraMuxError::MissingArgument(_)
             | KiraMuxError::ConfigValidation(_)

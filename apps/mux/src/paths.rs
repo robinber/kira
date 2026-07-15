@@ -7,14 +7,13 @@ use anyhow::{Result, anyhow};
 
 /// XDG-derived filesystem locations used by kira-mux.
 #[derive(Debug, Clone)]
-pub struct AppPaths {
+pub(crate) struct AppPaths {
     config_home: PathBuf,
 }
 
 impl AppPaths {
     /// Build an `AppPaths` from an explicit XDG config home.
-    #[must_use]
-    pub fn new(config_home: PathBuf) -> Self {
+    pub(crate) fn new(config_home: PathBuf) -> Self {
         Self { config_home }
     }
 
@@ -24,31 +23,27 @@ impl AppPaths {
     ///
     /// Returns an error when `HOME` is unavailable and an XDG fallback path
     /// is required.
-    pub fn from_env() -> Result<Self> {
+    pub(crate) fn from_env() -> Result<Self> {
         Ok(Self::new(xdg_home("XDG_CONFIG_HOME", ".config")?))
     }
 
     /// Return the kira-mux config directory.
-    #[must_use]
-    pub fn config_dir(&self) -> PathBuf {
+    pub(crate) fn config_dir(&self) -> PathBuf {
         self.config_home.join("kira-mux")
     }
 
     /// Return the directory that stores per-project config files.
-    #[must_use]
-    pub fn projects_dir(&self) -> PathBuf {
+    pub(crate) fn projects_dir(&self) -> PathBuf {
         self.config_dir().join("projects")
     }
 
     /// Return the global config file path.
-    #[must_use]
-    pub fn global_config_path(&self) -> PathBuf {
+    pub(crate) fn global_config_path(&self) -> PathBuf {
         self.config_dir().join("config.toml")
     }
 
     /// Return the path used by `init` for the example project file.
-    #[must_use]
-    pub fn example_project_path(&self) -> PathBuf {
+    pub(crate) fn example_project_path(&self) -> PathBuf {
         self.projects_dir().join("example.toml")
     }
 }

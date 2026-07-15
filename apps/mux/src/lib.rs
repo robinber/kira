@@ -14,13 +14,13 @@ pub(crate) mod error;
 pub(crate) mod inspector;
 pub(crate) mod interaction;
 pub mod logging;
-pub mod model;
+pub(crate) mod model;
 pub(crate) mod output;
-pub mod paths;
+pub(crate) mod paths;
 pub(crate) mod prompt;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod tmux;
+pub(crate) mod tmux;
 pub(crate) mod workspace;
 
 pub use error::{KiraMuxError, WorkspaceDriftReason};

@@ -6,4 +6,4 @@ mod resolve;
 mod send;
 
 pub(crate) use capture::capture_output;
-pub(crate) use send::{prepare_prompt, send_rendered_prompt};
+pub(crate) use send::send_prompt;

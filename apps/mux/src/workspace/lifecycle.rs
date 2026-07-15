@@ -2,13 +2,14 @@ use anyhow::{Result, bail};
 
 use super::launch::{TopologyGuard, apply_layout, launch_agent};
 use super::{session_name, window_target};
+use crate::config::ConfigError;
 use crate::error::KiraMuxError;
 use crate::inspector::{self, ManagedPane, WorkspaceTopology};
 use crate::model::ResolvedProject;
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{
-    PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID,
-    SESSION_PROJECT_ROOT, WINDOW_ROLE, WINDOW_ROLE_AGENTS,
+    PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
+    WINDOW_ROLE_AGENTS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +105,14 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
         return Ok(());
     }
 
-    tmux.kill_session(&session)
+    if let Err(error) = tmux.kill_session(&session) {
+        // The session may have died between the existence check and the
+        // kill; the goal is reached either way.
+        if inspector::session_exists(tmux, &session)? {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn attach_to_session(tmux: &dyn TmuxAdapter, session: &str) -> Result<()> {
@@ -123,11 +131,18 @@ fn create(
 ) -> Result<StartOutcome> {
     for agent in &project.agents {
         if !agent.cwd.is_dir() {
-            bail!(
-                "agent {} cwd does not exist or is not a directory: {}",
-                agent.id,
-                agent.cwd.display()
-            );
+            let validation = if agent.cwd.exists() {
+                ConfigError::AgentCwdNotDirectory {
+                    agent_id: agent.id.clone(),
+                    path: agent.cwd.clone(),
+                }
+            } else {
+                ConfigError::AgentCwdNotFound {
+                    agent_id: agent.id.clone(),
+                    path: agent.cwd.clone(),
+                }
+            };
+            return Err(KiraMuxError::ConfigValidation(validation).into());
         }
     }
 
@@ -136,10 +151,9 @@ fn create(
 
     tmux.create_detached_session(session, &root, &project.window_name, project.agents.len())?;
     let mut guard = TopologyGuard::new(tmux, session);
-    let setup = (|| -> Result<()> {
+    let setup = (|| -> Result<Vec<crate::tmux::PaneInfo>> {
         tmux.set_session_option(session, SESSION_PROJECT_ID, &project.id)?;
         tmux.set_session_option(session, SESSION_PROFILE_ID, &project.profile_id)?;
-        tmux.set_session_option(session, SESSION_PROJECT_ROOT, &root)?;
         tmux.set_session_option(session, SESSION_CONFIG_FINGERPRINT, &project.fingerprint)?;
         tmux.set_window_option(&window_target, WINDOW_ROLE, WINDOW_ROLE_AGENTS)?;
         tmux.set_window_option(
@@ -148,28 +162,38 @@ fn create(
             project.remain_on_exit.as_str(),
         )?;
 
-        while tmux.list_panes(Some(&window_target))?.len() < project.agents.len() {
+        let existing = tmux.list_panes(&window_target)?.len();
+        for _ in existing..project.agents.len() {
             tmux.split_window(&window_target, &root)?;
             tmux.select_layout(&window_target, "even-vertical")?;
         }
 
-        let panes = tmux.list_panes(Some(&window_target))?;
+        let panes = tmux.list_panes(&window_target)?;
+        if panes.len() != project.agents.len() {
+            bail!(
+                "expected {} panes after window setup, found {}",
+                project.agents.len(),
+                panes.len()
+            );
+        }
         for (pane, agent) in panes.iter().zip(project.agents.iter()) {
             tmux.set_pane_option(&pane.pane_id, PANE_AGENT_ID, &agent.id)?;
         }
 
         apply_layout(tmux, project, &window_target)?;
 
-        Ok(())
+        Ok(panes)
     })();
-    if let Err(error) = setup {
-        guard.mark_failed(error.to_string());
-        return Err(error);
-    }
+    let panes = match setup {
+        Ok(panes) => panes,
+        Err(error) => {
+            guard.mark_failed(error.to_string());
+            return Err(error);
+        }
+    };
 
     guard.commit();
 
-    let panes = tmux.list_panes(Some(&window_target))?;
     let mut any_launch_failed = false;
     for (pane, agent) in panes.iter().zip(project.agents.iter()) {
         let launch_result = launch_agent(tmux, pane.pane_id.as_str(), project, agent);
@@ -226,19 +250,34 @@ fn restart_managed_panes(
     panes: &[ManagedPane],
     agent_id: Option<&str>,
 ) -> Result<()> {
-    match agent_id {
-        Some(agent_id) => {
-            let managed = panes
-                .iter()
-                .find(|pane| pane.agent.id == agent_id)
-                .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
-            launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
+    if let Some(agent_id) = agent_id {
+        let managed = panes
+            .iter()
+            .find(|pane| pane.agent.id == agent_id)
+            .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
+        launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
+        return Ok(());
+    }
+
+    // Match create()/repair(): keep going past individual failures and
+    // report the workspace as degraded, instead of stopping half-restarted
+    // with no signal.
+    let mut any_launch_failed = false;
+    for managed in panes {
+        if let Err(error) =
+            launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)
+        {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                agent_id = managed.agent.id.as_str(),
+                %error,
+                "agent restart failed, workspace will be degraded"
+            );
+            any_launch_failed = true;
         }
-        None => {
-            for managed in panes {
-                launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
-            }
-        }
+    }
+    if any_launch_failed {
+        return Err(KiraMuxError::Degraded(project.id.clone()).into());
     }
 
     Ok(())
@@ -280,39 +319,7 @@ mod tests {
     fn start_repairs_degraded_session() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", true);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
+        crate::test_support::setup_session_with_dead_panes(&fake, &project, &[1]);
 
         let outcome = start(&fake, &project, false).or_panic();
         assert_eq!(outcome, StartOutcome::Healthy);
@@ -339,6 +346,23 @@ mod tests {
         setup_healthy_session(&fake, &project);
 
         restart(&fake, &project, None).or_panic();
+    }
+
+    #[test]
+    fn restart_all_reports_degraded_after_attempting_every_pane() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+        fake.set_fail_respawn(true);
+
+        let err = restart(&fake, &project, None).err_or_panic();
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Degraded(_))
+            ),
+            "restart must keep create()/repair() degraded semantics, got: {err}"
+        );
     }
 
     #[test]
