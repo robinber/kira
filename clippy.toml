@@ -1,0 +1,17 @@
+msrv = "1.97.0"
+doc-valid-idents = [
+  "Aider",
+  "Axum",
+  "Claude",
+  "Codex",
+  "JSON",
+  "LLM",
+  "OpenAI",
+  "Rust",
+  "SQLite",
+  "TUI",
+  "WebSocket",
+  "XDG",
+]
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
