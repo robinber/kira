@@ -75,8 +75,6 @@ pub struct ResolvedAgent {
     pub capabilities: Vec<String>,
     /// Optional prompt template applied before send.
     pub prompt_template: Option<String>,
-    /// Optional launch prompt template for orchestrator start/restart.
-    pub orchestrator_prompt_template: Option<String>,
 }
 
 #[cfg(test)]
