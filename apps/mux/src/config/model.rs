@@ -164,9 +164,6 @@ pub struct AgentTemplate {
     /// Optional prompt template for send operations.
     #[serde(default)]
     pub prompt_template: Option<String>,
-    /// Optional launch prompt template for orchestrator start/restart.
-    #[serde(default)]
-    pub orchestrator_prompt_template: Option<String>,
 }
 
 /// Internal project shape used before full resolution.
@@ -235,9 +232,6 @@ pub(crate) struct ProjectAgent {
     /// Optional prompt template.
     #[serde(default)]
     pub prompt_template: Option<String>,
-    /// Optional launch prompt template for orchestrator start/restart.
-    #[serde(default)]
-    pub orchestrator_prompt_template: Option<String>,
 }
 
 /// Profile-specific overrides inside a profiled project file.
