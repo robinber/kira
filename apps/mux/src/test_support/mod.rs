@@ -20,6 +20,9 @@ pub(crate) struct FakeTmux {
     fail_paste: AtomicBool,
     fail_send_keys: AtomicBool,
     fail_respawn: AtomicBool,
+    /// When set, a successful `respawn_pane` marks the pane dead immediately
+    /// so post-launch health checks observe an instant exit.
+    respawn_exits_immediately: AtomicBool,
 }
 
 #[track_caller]
@@ -124,6 +127,7 @@ impl FakeTmux {
             fail_paste: AtomicBool::new(false),
             fail_send_keys: AtomicBool::new(false),
             fail_respawn: AtomicBool::new(false),
+            respawn_exits_immediately: AtomicBool::new(false),
         }
     }
 
@@ -137,6 +141,11 @@ impl FakeTmux {
 
     pub(crate) fn set_fail_respawn(&self, fail: bool) {
         self.fail_respawn.store(fail, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_respawn_exits_immediately(&self, exits: bool) {
+        self.respawn_exits_immediately
+            .store(exits, Ordering::Relaxed);
     }
 
     pub(crate) fn ops(&self) -> Vec<FakeOp> {
@@ -300,6 +309,24 @@ impl TmuxAdapter for FakeTmux {
 
     fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>> {
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+
+        // Real tmux accepts pane ids (`%0`) as list-panes targets; post-launch
+        // health checks rely on that.
+        if target.starts_with('%') {
+            for session in sessions.values() {
+                for window in session.windows.values() {
+                    if let Some(pane) = window.panes.iter().find(|pane| pane.pane_id == target) {
+                        return Ok(vec![PaneInfo {
+                            pane_id: pane.pane_id.clone(),
+                            pane_dead: pane.dead,
+                            pane_dead_status: if pane.dead { Some(1) } else { None },
+                        }]);
+                    }
+                }
+            }
+            return Err(TmuxError::MissingTarget(target.to_string()).into());
+        }
+
         let (session_name, window_name) = if let Some((s, w)) = target.split_once(':') {
             (s, Some(w))
         } else {
@@ -385,6 +412,19 @@ impl TmuxAdapter for FakeTmux {
             env: env_overrides.to_vec(),
             command: command.to_vec(),
         });
+
+        // Revive by default (mirrors a successful respawn); optional flag
+        // simulates a process that dies before the post-launch health window.
+        let leave_dead = self.respawn_exits_immediately.load(Ordering::Relaxed);
+        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        for session in sessions.values_mut() {
+            for window in session.windows.values_mut() {
+                if let Some(pane) = window.panes.iter_mut().find(|pane| pane.pane_id == target) {
+                    pane.dead = leave_dead;
+                    return Ok(());
+                }
+            }
+        }
         Ok(())
     }
 

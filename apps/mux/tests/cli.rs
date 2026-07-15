@@ -495,13 +495,13 @@ fn dead_pane_degrades_workspace_send_exits_6_capture_still_works() {
         "{CAT_AGENT}\n[[agents]]\nid = \"omega\"\nmode = \"shell\"\nshell_command = \"exit 7\"\n"
     ));
 
-    // The omega pane dies almost immediately; start may or may not observe
-    // that (exit 0 or 6), so assert on the settled state instead.
+    // Post-launch health check must observe omega's immediate exit and
+    // surface the degraded exit code (issue #13).
     let start = bed.kira(&["start", "it"]);
-    assert!(
-        matches!(exit_code(&start), 0 | 6),
-        "start must exit 0 or 6, got {}: {:?}",
+    assert_eq!(
         exit_code(&start),
+        6,
+        "start must exit 6 when an agent dies immediately, stderr: {:?}",
         stderr_of(&start)
     );
     let status = bed.wait_for_state("degraded");
@@ -539,12 +539,51 @@ fn restart_revives_dead_agent_once_its_command_succeeds() {
     ));
 
     let start = bed.kira(&["start", "it"]);
-    assert!(matches!(exit_code(&start), 0 | 6), "start must exit 0 or 6");
+    assert_eq!(
+        exit_code(&start),
+        6,
+        "start must exit 6 on immediate failure, stderr: {:?}",
+        stderr_of(&start)
+    );
     bed.wait_for_state("degraded");
 
     write_file(std::path::Path::new(&ready_flag), "");
     assert_success(&bed.kira(&["restart", "it", "solo"]), "restart");
     bed.wait_for_state("running");
+}
+
+#[test]
+fn start_exits_6_for_missing_executable() {
+    let bed = TestBed::new();
+    bed.write_project(
+        r#"[[agents]]
+id = "ghost"
+mode = "direct"
+command = "/nonexistent/kira-mux-missing-agent-bin"
+"#,
+    );
+
+    let start = bed.kira(&["start", "it"]);
+    assert_eq!(
+        exit_code(&start),
+        6,
+        "missing executable must degrade start, stderr: {:?}",
+        stderr_of(&start)
+    );
+    let status = bed.wait_for_state("degraded");
+    assert_eq!(
+        status["agents"][0]["state"], "exited_failed",
+        "got: {status}"
+    );
+
+    // Repair path must also report degraded, not a false success.
+    let again = bed.kira(&["start", "it"]);
+    assert_eq!(
+        exit_code(&again),
+        6,
+        "repair start must stay degraded, stderr: {:?}",
+        stderr_of(&again)
+    );
 }
 
 // ---------------------------------------------------------------------------

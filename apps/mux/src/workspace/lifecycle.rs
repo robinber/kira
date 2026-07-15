@@ -251,7 +251,19 @@ fn restart_managed_panes(
             .find(|pane| pane.agent.id == agent_id)
             .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
         validate_launch_paths(project, std::iter::once(&managed.agent))?;
-        launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
+        // Match restart-all / start: a failed launch is a degraded workspace,
+        // not an opaque I/O failure (exit 1).
+        if let Err(error) =
+            launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)
+        {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                agent_id,
+                %error,
+                "agent restart failed, workspace will be degraded"
+            );
+            return Err(KiraMuxError::Degraded(project.id.clone()).into());
+        }
         return Ok(());
     }
 
@@ -391,6 +403,35 @@ mod tests {
 
         let outcome = start(&fake, &project, false).or_panic();
         assert_eq!(outcome, StartOutcome::Healthy);
+    }
+
+    #[test]
+    fn start_reports_degraded_when_agent_exits_immediately() {
+        let fake = FakeTmux::new();
+        let mut project = test_project();
+        make_launchable(&mut project);
+        fake.set_respawn_exits_immediately(true);
+
+        let outcome = start(&fake, &project, false).or_panic();
+        assert_eq!(outcome, StartOutcome::Degraded);
+    }
+
+    #[test]
+    fn restart_single_agent_reports_degraded_on_immediate_exit() {
+        let fake = FakeTmux::new();
+        let mut project = test_project();
+        make_launchable(&mut project);
+        setup_healthy_session(&fake, &project);
+        fake.set_respawn_exits_immediately(true);
+
+        let err = restart(&fake, &project, Some("alpha")).err_or_panic();
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::Degraded(_))
+            ),
+            "single-agent restart must use degraded semantics, got: {err}"
+        );
     }
 
     #[test]
