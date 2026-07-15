@@ -77,9 +77,9 @@ pub(crate) fn render_final_prompt(
 }
 
 /// Deliver an already-rendered prompt to the managed pane for `agent_id`.
-/// Does NOT re-render the prompt against any template — callers supply
-/// the exact bytes to paste. Used by workflow-dispatch to guarantee the
-/// msgbus-persisted `Prompt` content matches the tmux-delivered content.
+///
+/// Does not re-render the prompt against any template — callers supply the
+/// exact bytes to paste.
 pub(crate) fn send_rendered_prompt(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
