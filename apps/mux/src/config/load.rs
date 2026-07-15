@@ -138,10 +138,8 @@ fn parse_project_raw(path: &Path) -> Result<ProjectFileRaw> {
         path: path.to_path_buf(),
         source,
     })?;
-    let raw: ProjectFileRaw = toml::from_str(&source).map_err(|source| ConfigError::FileParse {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let raw: ProjectFileRaw = toml::from_str(&source)
+        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))?;
     raw.validate_shape()?;
 
     Ok(raw)
@@ -237,11 +235,8 @@ fn load_global_config(path: &Path) -> Result<GlobalConfig> {
         path: path.to_path_buf(),
         source,
     })?;
-    let mut config: GlobalConfig =
-        toml::from_str(&source).map_err(|source| ConfigError::FileParse {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let mut config: GlobalConfig = toml::from_str(&source)
+        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))?;
 
     if config.session_prefix.is_empty() {
         config.session_prefix = default_session_prefix();
@@ -315,11 +310,8 @@ fn project_id_from_file(path: &Path) -> Result<String> {
         path: path.to_path_buf(),
         source,
     })?;
-    let project: ProjectIdOnly =
-        toml::from_str(&source).map_err(|source| ConfigError::FileParse {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let project: ProjectIdOnly = toml::from_str(&source)
+        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))?;
     Ok(project.id)
 }
 
@@ -472,6 +464,54 @@ command = "echo"
                     && f.project_id.as_deref() == Some("mystery")),
             "unknown-field should still expose best-effort id: {:?}",
             loaded.failures
+        );
+    }
+
+    #[test]
+    fn load_projects_malformed_toml_diagnostics_omit_source_secrets() {
+        const SENTINEL: &str = "super-secret-value-do-not-leak";
+
+        let config_home = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("config home: {error}"),
+        };
+        let projects = config_home.path().join("kira-mux/projects");
+        if let Err(error) = fs::create_dir_all(&projects) {
+            panic!("projects dir: {error}");
+        }
+
+        let body = format!("env = {{ TOKEN = \"{SENTINEL}\n");
+        if let Err(error) = fs::write(projects.join("leaky.toml"), &body) {
+            panic!("write leaky: {error}");
+        }
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let loaded = match load_projects(&paths, ResolutionMode::Deferred) {
+            Ok(loaded) => loaded,
+            Err(error) => panic!("load: {error}"),
+        };
+
+        assert_eq!(loaded.projects.len(), 0);
+        assert_eq!(loaded.failures.len(), 1, "got: {:?}", loaded.failures);
+        let failure = &loaded.failures[0];
+        assert!(
+            failure.path.ends_with("leaky.toml"),
+            "got path: {}",
+            failure.path.display()
+        );
+        assert!(
+            !failure.error.contains(SENTINEL),
+            "failure error must not include secret: {}",
+            failure.error
+        );
+        assert!(
+            failure.error.contains("failed to parse")
+                || failure.error.contains("line")
+                || failure.error.contains("TOML")
+                || failure.error.contains("toml")
+                || !failure.error.is_empty(),
+            "diagnostics must remain non-empty and actionable: {}",
+            failure.error
         );
     }
 

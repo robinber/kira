@@ -478,6 +478,86 @@ command = "echo"
 }
 
 #[test]
+fn list_redacts_toml_source_secrets_from_config_diagnostics() {
+    // Malformed literal env value: toml Display embeds the source line, which
+    // would leak the secret into list/json and warn logs if left unredacted.
+    const SENTINEL: &str = "super-secret-value-do-not-leak";
+
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    write_file(
+        &bed.projects_dir().join("leaky.toml"),
+        &format!("env = {{ TOKEN = \"{SENTINEL}\n"),
+    );
+
+    // Force warn logs so the skip-path tracing::warn is visible even if
+    // defaults change; secrets must still be absent from stderr.
+    let list_json = bed.kira_with_env(
+        &["list", "--json"],
+        &[("KIRA_MUX_LOG", "warn"), ("RUST_LOG", "warn")],
+    );
+    assert_eq!(
+        exit_code(&list_json),
+        2,
+        "list --json must exit 2, stderr: {:?}",
+        stderr_of(&list_json)
+    );
+
+    let json_out = stdout_of(&list_json);
+    let json_err = stderr_of(&list_json);
+    assert!(
+        !json_out.contains(SENTINEL),
+        "list --json stdout must not contain secret: {json_out}"
+    );
+    assert!(
+        !json_err.contains(SENTINEL),
+        "list --json stderr must not contain secret: {json_err}"
+    );
+
+    let value = parse_json(&list_json);
+    let rows = value
+        .as_array()
+        .unwrap_or_else(|| panic!("list --json must be an array, got: {value}"));
+    let leaky = rows.iter().find(|row| {
+        row["state"] == "config_error"
+            && row["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("leaky.toml"))
+    });
+    let leaky = leaky.unwrap_or_else(|| panic!("leaky.toml must surface as config_error: {value}"));
+    let error = leaky["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("config_error row needs error string: {leaky}"));
+    assert!(!error.is_empty(), "error diagnostic must remain actionable");
+    assert!(
+        !error.contains(SENTINEL),
+        "structured error must not contain secret: {error}"
+    );
+
+    let list_text = bed.kira_with_env(&["list"], &[("KIRA_MUX_LOG", "warn"), ("RUST_LOG", "warn")]);
+    assert_eq!(
+        exit_code(&list_text),
+        2,
+        "list must exit 2, stderr: {:?}",
+        stderr_of(&list_text)
+    );
+    let text_out = stdout_of(&list_text);
+    let text_err = stderr_of(&list_text);
+    assert!(
+        !text_out.contains(SENTINEL),
+        "list stdout must not contain secret: {text_out}"
+    );
+    assert!(
+        !text_err.contains(SENTINEL),
+        "list stderr must not contain secret: {text_err}"
+    );
+    assert!(
+        text_out.contains("config_error") || text_err.contains("failed to load"),
+        "text mode must still surface the failure: stdout={text_out:?} stderr={text_err:?}"
+    );
+}
+
+#[test]
 fn init_writes_config_files_and_never_clobbers_them() {
     let bed = TestBed::new();
 
