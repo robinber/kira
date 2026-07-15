@@ -15,17 +15,23 @@ pub(crate) fn print_list(summaries: &[ProjectSummary], json: bool) -> Result<()>
         print_json(&summaries)?;
     } else {
         for row in summaries {
-            println!(
-                "{:<24} {:<10} {:>2} agents  {}",
-                display_id(&row.id, &row.profile_id),
-                row.state,
-                row.agent_count,
-                row.root,
-            );
+            println!("{}", list_line(row));
         }
     }
 
     Ok(())
+}
+
+/// One text row of `list`: id/profile, name, state, agent count, root.
+fn list_line(row: &ProjectSummary) -> String {
+    format!(
+        "{:<24} {:<20} {:<10} {:>2} agents  {}",
+        display_id(&row.id, &row.profile_id),
+        row.name,
+        row.state,
+        row.agent_count,
+        row.root,
+    )
 }
 
 pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
@@ -165,7 +171,8 @@ fn agent_display_name(id: &str, label: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::agent_display_name;
+    use super::{agent_display_name, display_id, list_line};
+    use crate::model::{ProjectState, ProjectSummary};
 
     #[test]
     fn agent_display_name_omits_redundant_label() {
@@ -176,5 +183,28 @@ mod tests {
     #[test]
     fn agent_display_name_includes_distinct_label() {
         assert_eq!(agent_display_name("alpha", Some("Coder")), "alpha (Coder)");
+    }
+
+    #[test]
+    fn display_id_joins_project_and_profile() {
+        assert_eq!(display_id("demo", "default"), "demo/default");
+        assert_eq!(display_id("demo", "pool-1"), "demo/pool-1");
+    }
+
+    #[test]
+    fn list_line_includes_project_name() {
+        let line = list_line(&ProjectSummary {
+            id: "my-app".to_string(),
+            profile_id: "default".to_string(),
+            name: "My App".to_string(),
+            root: "/tmp/demo".to_string(),
+            state: ProjectState::Running,
+            agent_count: 2,
+        });
+
+        assert!(line.contains("my-app/default"), "got: {line}");
+        assert!(line.contains("My App"), "got: {line}");
+        assert!(line.contains("running"), "got: {line}");
+        assert!(line.ends_with("2 agents  /tmp/demo"), "got: {line}");
     }
 }

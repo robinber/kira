@@ -98,8 +98,35 @@ shell_command = "npm test -- --watch"
 
 - `mode = "direct"` (default) runs `command` (+ optional `args`)
 - `mode = "shell"` runs `shell_command` through the configured shell
+  (`args` are not used in shell mode and are rejected at config load)
 - Profiles (`[profiles.<name>]`) select alternate agent layouts for the same
   project when you need more than one workspace shape
+
+### What causes workspace drift
+
+Each managed session stores a **config fingerprint**. Commands like `status`,
+`send`, `restart`, and `list` compare the live session to the resolved project.
+A mismatch is reported as **drifted** (exit code 4 for commands that fail on
+drift) — fix by `kill` then `start`/`open`, or align config with the running
+workspace.
+
+**Included in the fingerprint** (changing these drifts a live session):
+
+- project id, profile id, root path
+- layout, main pane ratio, window name
+- default shell, remain-on-exit
+- per agent: id, mode, command / shell_command / args (mode-aware), cwd, env
+  (literal values are hashed; `$VAR` references fingerprint the variable name)
+
+**Excluded on purpose** (cosmetic / non-topology — no drift):
+
+- project `name`, agent `label`
+- `capabilities`, `groups`, `prompt_template`
+- `session_prefix`, `tmux_bin` — changing the prefix renames the session, so
+  the old workspace shows as **stopped** (not drifted); `tmux_bin` only
+  changes how tmux is invoked
+
+Literal env values never appear in the fingerprint material; only digests do.
 
 ## Layout
 
