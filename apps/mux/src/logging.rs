@@ -29,11 +29,18 @@ pub fn init_logging() {
 /// set by the operator. When `--json` appears in the process arguments, the
 /// default drops to `error` so WARN-level tracing does not contaminate
 /// machine-readable stdout for callers that merge stderr into stdout (`2>&1`).
+///
+/// Arguments after a `--` separator are positional values (e.g. a prompt that
+/// happens to contain `--json`) and are not scanned.
 fn default_log_level<I>(args: I) -> &'static str
 where
     I: IntoIterator<Item = String>,
 {
-    if args.into_iter().any(|a| a == "--json") {
+    if args
+        .into_iter()
+        .take_while(|a| a != "--")
+        .any(|a| a == "--json")
+    {
         "error"
     } else {
         "warn"
@@ -86,6 +93,19 @@ mod tests {
             "pool-1".to_string(),
         ];
         assert_eq!(default_log_level(args), "error");
+    }
+
+    #[test]
+    fn default_log_level_ignores_json_after_double_dash() {
+        let args = vec![
+            "kira-mux".to_string(),
+            "send".to_string(),
+            "demo".to_string(),
+            "alpha".to_string(),
+            "--".to_string(),
+            "--json".to_string(),
+        ];
+        assert_eq!(default_log_level(args), "warn");
     }
 
     #[test]

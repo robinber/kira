@@ -13,6 +13,7 @@ pub(crate) struct PaneCapture {
     pub pane_id: String,
     pub pane_dead: bool,
     pub pane_dead_status: Option<i32>,
+    /// Requested line limit, not the number of lines actually returned.
     pub lines: usize,
     pub output: String,
 }
@@ -42,8 +43,6 @@ pub(crate) fn capture_output(
 mod tests {
     use super::*;
     use crate::test_support::{err, ok};
-    use crate::tmux::metadata::{WINDOW_ROLE, WINDOW_ROLE_AGENTS};
-    use crate::workspace::session_name;
 
     #[test]
     fn capture_output_returns_content() {
@@ -67,38 +66,7 @@ mod tests {
     fn capture_output_dead_pane_allowed() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", true);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
+        crate::test_support::setup_session_with_dead_panes(&fake, &project, &[0]);
         fake.set_pane_content("%0", "dead pane output");
 
         let capture = ok(

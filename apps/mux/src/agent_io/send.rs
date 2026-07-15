@@ -4,34 +4,39 @@ use anyhow::{Result, bail};
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
-use crate::model::ResolvedProject;
-use crate::tmux::TmuxAdapter;
+use crate::model::{ResolvedAgent, ResolvedProject};
+use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
+use crate::tmux::{PaneInfo, TmuxAdapter};
 
-pub(crate) struct PreparedPrompt {
-    pub final_prompt: String,
-}
+/// Delay between typing literal text and submitting it, so the TUI has
+/// rendered the input before the Enter arrives.
+const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
+/// Delay before the second Enter for double-enter agents.
+const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 
-/// Resolve the target pane and render the final prompt without mutating
-/// tmux.
+/// Render the final prompt for `agent_id` and deliver it to the agent's
+/// managed pane. Returns the rendered prompt that was sent.
 ///
-/// Fails fast on pane resolution so callers still see `SessionAbsent`,
-/// `UnknownAgentId`, and dead-pane errors before delivery. Call
-/// [`send_rendered_prompt`] separately to paste the rendered text.
-pub(crate) fn prepare_prompt(
+/// # Errors
+///
+/// Fails when the session is absent, the agent is unknown, the pane is dead,
+/// or tmux rejects the delivery.
+pub(crate) fn send_prompt(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     agent_id: &str,
     prompt: &str,
     no_template: bool,
-) -> Result<PreparedPrompt> {
-    let (pane, _agent) = resolve_managed_pane(tmux, project, agent_id)?;
+) -> Result<String> {
+    let (pane, agent) = resolve_managed_pane(tmux, project, agent_id)?;
     if pane.pane_dead {
         bail!("cannot send to dead pane for agent '{agent_id}'");
     }
 
     let final_prompt = render_final_prompt(tmux, project, agent_id, prompt, no_template);
-    Ok(PreparedPrompt { final_prompt })
+    paste_and_submit(tmux, &pane, agent, &final_prompt)?;
+    Ok(final_prompt)
 }
 
 /// Compute the final prompt text for `agent_id` without mutating tmux.
@@ -39,10 +44,8 @@ pub(crate) fn prepare_prompt(
 /// Applies the agent's `prompt_template` (when present and `no_template`
 /// is `false`) using a rich pane-topology context, falling back to a
 /// minimal context when tmux inspection fails. Returns the raw prompt
-/// unchanged when no template applies. Performs no paste, no `send_keys`,
-/// no pane resolution — tests and callers can rely on this being
-/// side-effect free on the tmux mutation channels.
-pub(crate) fn render_final_prompt(
+/// unchanged when no template applies.
+fn render_final_prompt(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     agent_id: &str,
@@ -56,17 +59,17 @@ pub(crate) fn render_final_prompt(
                 Ok(topology) => {
                     let (active_agents, agent_states) =
                         crate::prompt::extract_agent_state(&topology, project);
-                    crate::prompt::PromptContext::resolve(
-                        prompt.to_owned(),
-                        agent_id.to_owned(),
-                        project.name.clone(),
+                    PromptContext {
+                        user_prompt: prompt.to_owned(),
+                        agent_name: agent_id.to_owned(),
+                        project_name: project.name.clone(),
                         active_agents,
                         agent_states,
-                    )
+                    }
                 }
                 Err(e) => {
                     tracing::debug!(error = %e, "tmux topology inspection failed; using minimal prompt context");
-                    crate::prompt::PromptContext::minimal(agent_id, &project.name, prompt)
+                    PromptContext::minimal(agent_id, &project.name, prompt)
                 }
             };
             crate::prompt::render(template, &ctx)
@@ -75,37 +78,18 @@ pub(crate) fn render_final_prompt(
     }
 }
 
-/// Deliver an already-rendered prompt to the managed pane for `agent_id`.
-///
-/// Does not re-render the prompt against any template — callers supply the
-/// exact bytes to paste.
-pub(crate) fn send_rendered_prompt(
-    tmux: &dyn TmuxAdapter,
-    project: &ResolvedProject,
-    agent_id: &str,
-    final_prompt: &str,
-) -> Result<()> {
-    let (pane, agent) = resolve_managed_pane(tmux, project, agent_id)?;
-    if pane.pane_dead {
-        bail!("cannot send to dead pane for agent '{agent_id}'");
-    }
-    paste_and_submit(tmux, &pane, &agent, final_prompt)
-}
-
 /// Paste `final_prompt` (when non-empty) into `pane` and submit one or two
-/// `Enter` keys according to the agent's submit behavior. Extracted so
-/// callers of [`prepare_prompt`] and [`send_rendered_prompt`] share exactly the
-/// same delivery semantics.
+/// `Enter` keys according to the agent's submit behavior.
 fn paste_and_submit(
     tmux: &dyn TmuxAdapter,
-    pane: &crate::tmux::PaneInfo,
-    agent: &crate::model::ResolvedAgent,
+    pane: &PaneInfo,
+    agent: &ResolvedAgent,
     final_prompt: &str,
 ) -> Result<()> {
     let pane_command = tmux.get_pane_option(&pane.pane_id, PANE_AGENT_COMMAND)?;
     if !final_prompt.is_empty() && needs_send_keys_for_text(agent, pane_command.as_deref()) {
-        tmux.send_keys(&pane.pane_id, &[final_prompt])?;
-        std::thread::sleep(Duration::from_millis(100));
+        tmux.send_text(&pane.pane_id, final_prompt)?;
+        std::thread::sleep(SEND_TEXT_SETTLE);
         tmux.send_keys(&pane.pane_id, &["Enter"])?;
     } else {
         crate::tmux::paste_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
@@ -113,7 +97,7 @@ fn paste_and_submit(
 
     let behavior = infer_submit_behavior(agent, pane_command.as_deref());
     if behavior == SubmitBehavior::DoubleEnter {
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(DOUBLE_ENTER_DELAY);
         tmux.send_keys(&pane.pane_id, &["Enter"])?;
     }
     Ok(())
@@ -122,23 +106,7 @@ fn paste_and_submit(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Test-local composition of [`prepare_prompt`] + [`send_rendered_prompt`],
-    /// preserving the pre-split call shape these behavior tests were written
-    /// against.
-    fn send_prompt(
-        tmux: &dyn TmuxAdapter,
-        project: &ResolvedProject,
-        agent_id: &str,
-        prompt: &str,
-        no_template: bool,
-    ) -> Result<PreparedPrompt> {
-        let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
-        send_rendered_prompt(tmux, project, agent_id, &prepared.final_prompt)?;
-        Ok(prepared)
-    }
-    use crate::test_support::{FakeOp, TestResultExt};
-    use crate::tmux::metadata::{WINDOW_ROLE, WINDOW_ROLE_AGENTS};
+    use crate::test_support::{FakeOp, TestResultExt, setup_session_with_dead_panes};
     use crate::workspace::session_name;
 
     #[test]
@@ -202,6 +170,34 @@ mod tests {
     }
 
     #[test]
+    fn send_prompt_opencode_agent_types_literal_text() {
+        let fake = crate::test_support::FakeTmux::new();
+        let mut project = crate::test_support::test_project();
+        project.agents[0].command = Some("opencode".to_string());
+        crate::test_support::setup_healthy_session(&fake, &project);
+
+        // A prompt matching a tmux key name must arrive as literal text, not
+        // as a keypress.
+        send_prompt(&fake, &project, "alpha", "Enter", false).or_panic();
+
+        let ops = fake.ops();
+        assert_eq!(
+            ops[0],
+            FakeOp::SendText {
+                pane_id: "%0".to_string(),
+                text: "Enter".to_string(),
+            },
+            "prompt text must go through the literal-text channel, got: {ops:?}"
+        );
+        assert!(
+            ops[1..]
+                .iter()
+                .all(|op| matches!(op, FakeOp::SendKeys { keys, .. } if keys == &["Enter"])),
+            "remaining ops must be Enter submits, got: {ops:?}"
+        );
+    }
+
+    #[test]
     fn send_prompt_reads_pane_metadata_for_submit_behavior() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
@@ -259,38 +255,7 @@ mod tests {
     fn send_prompt_dead_pane_fails() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", true);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
+        setup_session_with_dead_panes(&fake, &project, &[0]);
 
         let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
         assert!(err.to_string().contains("dead pane"));
@@ -309,57 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn outbox_not_recorded_on_absent_session() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-
-        let result = send_prompt(&fake, &project, "alpha", "hello", false);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn outbox_not_recorded_on_dead_pane() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", true);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
-
-        let result = send_prompt(&fake, &project, "alpha", "hello", false);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn outbox_not_recorded_on_paste_failure() {
+    fn send_prompt_propagates_paste_failure() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
@@ -370,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn outbox_not_recorded_on_send_keys_failure() {
+    fn send_prompt_propagates_send_keys_failure() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
@@ -466,7 +381,7 @@ mod tests {
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
 
-        send_prompt(&fake, &project, "alpha", "thread message", false).or_panic();
+        send_prompt(&fake, &project, "alpha", "one message", false).or_panic();
 
         let ops = fake.ops();
         let paste_count = ops
@@ -482,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_prompt_uses_rendered_template_not_raw() {
+    fn send_prompt_returns_rendered_prompt_not_raw() {
         let fake = crate::test_support::FakeTmux::new();
         let mut project = crate::test_support::test_project();
         project.agents[0].prompt_template =
@@ -491,49 +406,29 @@ mod tests {
 
         let sent = send_prompt(&fake, &project, "alpha", "hello world", false).or_panic();
         assert_eq!(
-            sent.final_prompt, "Agent alpha in Test: hello world",
+            sent, "Agent alpha in Test: hello world",
             "send_prompt must return the rendered prompt, not the raw input"
         );
     }
 
     #[test]
-    fn outbox_skipped_when_raw_prompt_is_slash_command() {
+    fn send_prompt_returns_raw_slash_command_unchanged() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
 
         let sent = send_prompt(&fake, &project, "alpha", "/help", false).or_panic();
-        assert_eq!(sent.final_prompt, "/help");
+        assert_eq!(sent, "/help");
     }
 
     #[test]
-    fn outbox_skipped_when_rendered_prompt_is_slash_command() {
+    fn send_prompt_returns_rendered_slash_command() {
         let fake = crate::test_support::FakeTmux::new();
         let mut project = crate::test_support::test_project();
         project.agents[0].prompt_template = Some("/cmd {{user_prompt}}".to_string());
         crate::test_support::setup_healthy_session(&fake, &project);
 
         let sent = send_prompt(&fake, &project, "alpha", "args here", false).or_panic();
-        assert_eq!(sent.final_prompt, "/cmd args here");
-    }
-
-    #[test]
-    fn outbox_records_to_specified_thread() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        crate::test_support::setup_healthy_session(&fake, &project);
-
-        let sent = send_prompt(&fake, &project, "alpha", "threaded msg", false).or_panic();
-        assert_eq!(sent.final_prompt, "threaded msg");
-    }
-
-    #[test]
-    fn outbox_routes_to_default_when_no_thread() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        crate::test_support::setup_healthy_session(&fake, &project);
-
-        let sent = send_prompt(&fake, &project, "alpha", "default msg", false).or_panic();
-        assert_eq!(sent.final_prompt, "default msg");
+        assert_eq!(sent, "/cmd args here");
     }
 }

@@ -7,11 +7,38 @@ use crate::model::{ResolvedAgent, ResolvedProject};
 
 type Result<T> = std::result::Result<T, ConfigError>;
 use super::fingerprint::{
-    FingerprintAgentMaterial, FingerprintInput, compute_fingerprint, env_fingerprint,
+    EnvValue, FingerprintAgentMaterial, FingerprintInput, classify_env_value, compute_fingerprint,
+    env_fingerprint,
 };
 use super::model::{
     AgentMode, AgentTemplate, EnvResolutionMode, GlobalConfig, Layout, ProjectAgent, ProjectFile,
 };
+
+/// Characters rejected in identifiers that end up in tmux session names or
+/// target syntax (`session:window.pane`).
+const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &['\t', '\n', ':', '.'];
+
+fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
+    if let Some(ch) = id
+        .chars()
+        .find(|ch| FORBIDDEN_IDENTIFIER_CHARS.contains(ch))
+    {
+        return Err(ConfigError::InvalidIdentifierChar {
+            kind,
+            id: id.to_string(),
+            ch,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_main_pane_ratio(ratio: u8) -> Result<()> {
+    if (30..=70).contains(&ratio) {
+        Ok(())
+    } else {
+        Err(ConfigError::MainPaneRatioOutOfRange)
+    }
+}
 
 pub(crate) fn resolve_project(
     project: ProjectFile,
@@ -20,16 +47,12 @@ pub(crate) fn resolve_project(
     env_mode: EnvResolutionMode,
 ) -> Result<ResolvedProject> {
     validate_project_shape(&project)?;
-
-    if profile_id.contains('\t') {
-        return Err(ConfigError::TabInIdentifier {
-            kind: "profile id",
-            id: profile_id.to_string(),
-        });
-    }
+    validate_identifier("profile id", profile_id)?;
+    validate_identifier("session prefix", &global.session_prefix)?;
 
     let (root, layout, main_pane_ratio, window_name, name) =
         resolve_workspace_defaults(&project, global)?;
+    validate_identifier("window name", &window_name)?;
     let template_map = build_template_map(&global.agent_templates)?;
     let (agents, fingerprint_agents, seen_agents) =
         resolve_agents(project.agents, &template_map, &root, env_mode)?;
@@ -79,9 +102,7 @@ fn resolve_workspace_defaults(
         .unwrap_or_else(|| global.window_name.clone());
     let name = project.name.clone().unwrap_or_else(|| project.id.clone());
 
-    if !(30..=70).contains(&main_pane_ratio) {
-        return Err(ConfigError::MainPaneRatioOutOfRange);
-    }
+    validate_main_pane_ratio(main_pane_ratio)?;
 
     Ok((root, layout, main_pane_ratio, window_name, name))
 }
@@ -171,7 +192,6 @@ fn resolve_single_agent(
 
     let fingerprint_material = FingerprintAgentMaterial {
         id: agent.id.clone(),
-        label: label.clone(),
         mode,
         command: command.clone(),
         shell_command: shell_command.clone(),
@@ -227,9 +247,7 @@ fn resolve_single_agent(
 }
 
 pub(crate) fn validate_global_config(global: &GlobalConfig) -> Result<()> {
-    if !(30..=70).contains(&global.main_pane_ratio) {
-        return Err(ConfigError::MainPaneRatioOutOfRange);
-    }
+    validate_main_pane_ratio(global.main_pane_ratio)?;
 
     let _ = build_template_map(&global.agent_templates)?;
     Ok(())
@@ -239,12 +257,7 @@ fn validate_project_shape(project: &ProjectFile) -> Result<()> {
     if project.id.trim().is_empty() {
         return Err(ConfigError::EmptyProjectId);
     }
-    if project.id.contains('\t') {
-        return Err(ConfigError::TabInIdentifier {
-            kind: "project id",
-            id: project.id.clone(),
-        });
-    }
+    validate_identifier("project id", &project.id)?;
     if project.root.trim().is_empty() {
         return Err(ConfigError::EmptyProjectRoot);
     }
@@ -255,12 +268,7 @@ fn validate_project_shape(project: &ProjectFile) -> Result<()> {
         if agent.id.trim().is_empty() {
             return Err(ConfigError::EmptyAgentId);
         }
-        if agent.id.contains('\t') {
-            return Err(ConfigError::TabInIdentifier {
-                kind: "agent id",
-                id: agent.id.clone(),
-            });
-        }
+        validate_identifier("agent id", &agent.id)?;
     }
 
     Ok(())
@@ -411,16 +419,16 @@ fn resolve_env_map(
     let mut resolved = BTreeMap::new();
 
     for (key, value) in env_map {
-        if let Some(reference) = value.strip_prefix('$') {
-            let resolved_value =
+        let resolved_value = match classify_env_value(&value) {
+            EnvValue::Reference(reference) => {
                 env::var(reference).map_err(|_source| ConfigError::UnresolvedEnvVar {
                     agent_id: agent_id.to_string(),
                     var_name: reference.to_string(),
-                })?;
-            resolved.insert(key, resolved_value);
-        } else {
-            resolved.insert(key, value);
-        }
+                })?
+            }
+            EnvValue::Literal(_) => value,
+        };
+        resolved.insert(key, resolved_value);
     }
 
     Ok(resolved)
@@ -504,15 +512,8 @@ fn check_symlink_escape(path: &Path, project_root: &Path) -> Option<PathBuf> {
     }
 }
 
-fn map_home_dir_error(_source: anyhow::Error) -> ConfigError {
-    ConfigError::FileRead {
-        path: PathBuf::from("~"),
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"),
-    }
-}
-
 fn home_dir() -> Result<PathBuf> {
-    crate::paths::home_dir().map_err(map_home_dir_error)
+    crate::paths::home_dir().map_err(|_source| ConfigError::HomeDirUnavailable)
 }
 
 #[cfg(test)]
@@ -544,17 +545,18 @@ mod tests {
     }
 
     #[test]
-    fn home_dir_error_preserves_existing_contract() {
-        let error = map_home_dir_error(anyhow::anyhow!("ignored source"));
-        let display = error.to_string();
-        let ConfigError::FileRead { path, source } = error else {
-            panic!("expected config file read error");
-        };
+    fn forbidden_identifier_chars_are_rejected() {
+        for (id, expected_ch) in [("a:b", ':'), ("a.b", '.'), ("a\tb", '\t'), ("a\nb", '\n')] {
+            let error = validate_identifier("agent id", id).err_or_panic();
+            let ConfigError::InvalidIdentifierChar { kind, id: got, ch } = error else {
+                panic!("expected InvalidIdentifierChar for {id:?}");
+            };
+            assert_eq!(kind, "agent id");
+            assert_eq!(got, id);
+            assert_eq!(ch, expected_ch);
+        }
 
-        assert_eq!(path, PathBuf::from("~"));
-        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
-        assert_eq!(source.to_string(), "HOME is not set");
-        assert_eq!(display, "failed to read config file ~: HOME is not set");
+        validate_identifier("agent id", "plain-id_09").or_panic();
     }
 
     #[cfg(unix)]

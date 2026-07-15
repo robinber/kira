@@ -46,7 +46,7 @@ pub(crate) struct RawWorkspacePane<'a> {
     pub(crate) pane_dead: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct RawWorkspaceSnapshot<'a> {
     pub(crate) fingerprint: Option<&'a str>,
     pub(crate) project_id: Option<&'a str>,
@@ -55,7 +55,7 @@ pub(crate) struct RawWorkspaceSnapshot<'a> {
     pub(crate) panes: Vec<RawWorkspacePane<'a>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum SharedTopology {
     Healthy { ordered_pane_indexes: Vec<usize> },
     Degraded { ordered_pane_indexes: Vec<usize> },
@@ -92,7 +92,7 @@ fn classify_managed_panes(
         .iter()
         .map(|agent| agent.id.as_str())
         .collect::<BTreeSet<_>>();
-    let mut pane_indexes_by_agent = BTreeMap::new();
+    let mut pane_indexes_by_agent = BTreeMap::<&str, usize>::new();
 
     for (index, pane) in panes.iter().enumerate() {
         let Some(agent_id) = pane.agent_id else {
@@ -107,10 +107,7 @@ fn classify_managed_panes(
             };
         }
 
-        if pane_indexes_by_agent
-            .insert(agent_id.to_string(), index)
-            .is_some()
-        {
+        if pane_indexes_by_agent.insert(agent_id, index).is_some() {
             return SharedTopology::Drifted {
                 reason: WorkspaceDriftReason::DuplicateManagedAgentId(agent_id.to_string()),
             };
@@ -169,7 +166,7 @@ fn classify_window_shape(
 
 fn order_managed_pane_indexes(
     project: &ResolvedProject,
-    pane_indexes_by_agent: &BTreeMap<String, usize>,
+    pane_indexes_by_agent: &BTreeMap<&str, usize>,
 ) -> std::result::Result<Vec<usize>, WorkspaceDriftReason> {
     project
         .agents
@@ -223,17 +220,26 @@ pub(crate) fn inspect(
     }
 
     let window_target = window_target(&session, &project.window_name);
-    // Keep managed-window transport failures outside the shared classifier so
-    // inspect() preserves the exact lifecycle-facing ManagedWindowMissing reason.
-    let Ok(window_role) = tmux.get_window_option(&window_target, WINDOW_ROLE) else {
-        return Ok(WorkspaceTopology::Drifted {
-            reason: WorkspaceDriftReason::ManagedWindowMissing,
-        });
+    // Only a missing window/target is drift; other tmux failures (server
+    // crash, transport error) must propagate as errors, not masquerade as a
+    // drifted workspace.
+    let window_role = match tmux.get_window_option(&window_target, WINDOW_ROLE) {
+        Ok(role) => role,
+        Err(error) if TmuxError::is_missing_target(&error) => {
+            return Ok(WorkspaceTopology::Drifted {
+                reason: WorkspaceDriftReason::ManagedWindowMissing,
+            });
+        }
+        Err(error) => return Err(error),
     };
-    let Ok(panes) = tmux.list_panes(Some(&window_target)) else {
-        return Ok(WorkspaceTopology::Drifted {
-            reason: WorkspaceDriftReason::ManagedWindowMissing,
-        });
+    let panes = match tmux.list_panes(&window_target) {
+        Ok(panes) => panes,
+        Err(error) if TmuxError::is_missing_target(&error) => {
+            return Ok(WorkspaceTopology::Drifted {
+                reason: WorkspaceDriftReason::ManagedWindowMissing,
+            });
+        }
+        Err(error) => return Err(error),
     };
     if let Some(reason) = classify_window_shape(project, window_role.as_deref(), panes.len()) {
         return Ok(WorkspaceTopology::Drifted { reason });
@@ -315,14 +321,6 @@ mod tests {
         }
     }
 
-    fn classify(project: &ResolvedProject, snapshot: &RawWorkspaceSnapshot<'_>) -> SharedTopology {
-        classify_snapshot(project, snapshot)
-    }
-
-    fn session_name_for(project: &ResolvedProject) -> String {
-        session_name(project)
-    }
-
     #[test]
     fn inspect_absent_session() {
         let fake = FakeTmux::new();
@@ -344,39 +342,7 @@ mod tests {
     fn inspect_degraded_with_dead_pane() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name_for(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", true);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
+        crate::test_support::setup_session_with_dead_panes(&fake, &project, &[1]);
 
         let result = inspect(&fake, &project).or_panic();
         assert!(matches!(result, WorkspaceTopology::Degraded(_)));
@@ -386,7 +352,7 @@ mod tests {
     fn inspect_drifted_fingerprint_mismatch() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name_for(&project);
+        let session = session_name(&project);
 
         fake.add_session(&session);
         fake.set_session_opt(
@@ -409,7 +375,7 @@ mod tests {
     fn inspect_drifted_pane_count_mismatch() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name_for(&project);
+        let session = session_name(&project);
 
         fake.add_session(&session);
         fake.set_session_opt(
@@ -448,7 +414,7 @@ mod tests {
     fn inspect_drifted_unknown_agent_id() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name_for(&project);
+        let session = session_name(&project);
 
         fake.add_session(&session);
         fake.set_session_opt(
@@ -495,7 +461,7 @@ mod tests {
     fn inspect_drifted_duplicate_agent_id() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let session = session_name_for(&project);
+        let session = session_name(&project);
 
         fake.add_session(&session);
         fake.set_session_opt(
@@ -541,7 +507,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_healthy_workspace() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(
                 &project,
@@ -558,7 +524,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_degraded_workspace() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(
                 &project,
@@ -597,7 +563,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_fingerprint_mismatch() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &RawWorkspaceSnapshot {
                 fingerprint: Some("wrong-fingerprint"),
@@ -622,7 +588,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_project_metadata_mismatch() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &RawWorkspaceSnapshot {
                 project_id: Some("other-project"),
@@ -647,7 +613,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_profile_metadata_mismatch() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &RawWorkspaceSnapshot {
                 profile_id: Some("other-profile"),
@@ -672,7 +638,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_window_role_mismatch() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &RawWorkspaceSnapshot {
                 window_role: Some("other-role"),
@@ -697,7 +663,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_pane_count_mismatch() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(&project, vec![raw_pane(Some("alpha"), false)]),
         );
@@ -713,7 +679,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_missing_pane_metadata() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(
                 &project,
@@ -732,7 +698,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_unknown_agent_id() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(
                 &project,
@@ -754,7 +720,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_duplicate_agent_id() {
         let project = test_project();
-        let result = classify(
+        let result = classify_snapshot(
             &project,
             &raw_snapshot(
                 &project,
@@ -776,7 +742,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_missing_managed_pane() {
         let project = test_project();
-        let pane_indexes_by_agent = BTreeMap::from([(String::from("alpha"), 0usize)]);
+        let pane_indexes_by_agent = BTreeMap::from([("alpha", 0usize)]);
 
         let result = order_managed_pane_indexes(&project, &pane_indexes_by_agent);
 

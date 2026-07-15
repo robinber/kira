@@ -32,14 +32,20 @@ pub enum ConfigError {
     /// No project file matched the requested project ID.
     #[error("unknown project id: {0}")]
     UnknownProjectId(String),
-    /// A config identifier contains a tab character.
-    #[error("{kind} contains a tab character: {id:?}")]
-    TabInIdentifier {
-        /// Kind of identifier that contained the tab.
+    /// A config identifier contains a character that corrupts tmux target
+    /// syntax or option formats.
+    #[error("{kind} contains forbidden character {ch:?}: {id:?}")]
+    InvalidIdentifierChar {
+        /// Kind of identifier that contained the character.
         kind: &'static str,
         /// Offending identifier value.
         id: String,
+        /// The forbidden character.
+        ch: char,
     },
+    /// The HOME directory could not be resolved from the environment.
+    #[error("HOME is not set")]
+    HomeDirUnavailable,
     /// A project ID was empty.
     #[error("project id cannot be empty")]
     EmptyProjectId,

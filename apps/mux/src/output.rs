@@ -1,19 +1,24 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::model::{
-    AgentInfo, AgentRunState, AgentState, AgentsOutput, ProjectState, ProjectStatus, ProjectSummary,
-};
+use crate::model::{AgentInfo, AgentRunState, AgentsOutput, ProjectStatus, ProjectSummary};
+
+/// Print any `--json` payload with one shared policy: compact single-line
+/// JSON on stdout.
+pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string(value)?);
+    Ok(())
+}
 
 pub(crate) fn print_list(summaries: &[ProjectSummary], json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(summaries)?);
+        print_json(&summaries)?;
     } else {
         for row in summaries {
             println!(
                 "{:<24} {:<10} {:>2} agents  {}",
                 display_id(&row.id, &row.profile_id),
-                project_state_label(&row.state),
+                row.state,
                 row.agent_count,
                 row.root,
             );
@@ -25,17 +30,17 @@ pub(crate) fn print_list(summaries: &[ProjectSummary], json: bool) -> Result<()>
 
 pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(status)?);
+        print_json(status)?;
     } else {
         println!("Project: {} ({})", status.name, status.id);
         if status.profile_id != "default" {
             println!("Profile: {}", status.profile_id);
         }
         println!("Root:    {}", status.root);
-        println!("State:   {}", project_state_label(&status.state));
+        println!("State:   {}", status.state);
         println!();
         for agent in &status.agents {
-            println!("  {:<16} {}", agent.id, agent_state_label(agent.state));
+            println!("  {:<16} {}", agent.id, agent.state);
         }
     }
 
@@ -59,11 +64,7 @@ pub(crate) fn print_agents_table(output: &AgentsOutput) {
         let groups = agent.groups.join(", ");
         println!(
             "{:<12} {:<10} {:<10} {:<26} {}",
-            agent.id,
-            agent.command,
-            agent_run_state_label(agent.state),
-            caps,
-            groups,
+            agent.id, agent.command, agent.state, caps, groups,
         );
     }
 }
@@ -75,8 +76,8 @@ pub(crate) struct AgentCapabilitiesOutput {
     pub state: AgentRunState,
 }
 
-impl AgentCapabilitiesOutput {
-    pub(crate) fn from(agent: &AgentInfo) -> Self {
+impl From<&AgentInfo> for AgentCapabilitiesOutput {
+    fn from(agent: &AgentInfo) -> Self {
         Self {
             agent: agent.id.clone(),
             capabilities: agent.capabilities.clone(),
@@ -87,7 +88,7 @@ impl AgentCapabilitiesOutput {
 
 pub(crate) fn print_agent_capabilities(agent: &AgentInfo) {
     println!("Agent: {}", agent.id);
-    println!("State: {}", agent_run_state_label(agent.state));
+    println!("State: {}", agent.state);
     println!(
         "Capabilities: {}",
         if agent.capabilities.is_empty() {
@@ -128,38 +129,10 @@ impl GroupOutput {
 pub(crate) fn print_group(group_name: &str, members: &[&AgentInfo]) {
     println!("Group: {group_name}");
     for agent in members {
-        println!("  {:<12} {}", agent.id, agent_run_state_label(agent.state));
+        println!("  {:<12} {}", agent.id, agent.state);
     }
 }
 
-fn agent_run_state_label(state: AgentRunState) -> &'static str {
-    match state {
-        AgentRunState::Running => "running",
-        AgentRunState::Dead => "dead",
-        AgentRunState::Absent => "absent",
-    }
-}
-
-pub(crate) fn display_id(project_id: &str, profile_id: &str) -> String {
+fn display_id(project_id: &str, profile_id: &str) -> String {
     format!("{project_id}/{profile_id}")
-}
-
-fn project_state_label(state: &ProjectState) -> &'static str {
-    match state {
-        ProjectState::Stopped => "stopped",
-        ProjectState::Running => "running",
-        ProjectState::Degraded => "degraded",
-        ProjectState::Drifted => "drifted",
-        ProjectState::Error => "error",
-    }
-}
-
-fn agent_state_label(state: AgentState) -> &'static str {
-    match state {
-        AgentState::Running => "running",
-        AgentState::ExitedClean => "exited (0)",
-        AgentState::ExitedFailed => "exited (failed)",
-        AgentState::MissingPane => "missing",
-        AgentState::Error => "error",
-    }
 }

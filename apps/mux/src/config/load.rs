@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, ConfigError>;
 /// read, the global config is invalid, or multiple files define the same
 /// project ID. Invalid individual project files and profiles are logged and
 /// skipped.
-pub fn load_projects(
+pub(crate) fn load_projects(
     paths: &AppPaths,
     env_mode: EnvResolutionMode,
 ) -> Result<Vec<ResolvedProject>> {
@@ -76,15 +76,14 @@ pub fn load_projects(
 /// Returns an error when configuration cannot be read or parsed, the project
 /// or profile does not exist, or the selected project fails validation or
 /// environment resolution.
-pub fn load_project(
+pub(crate) fn load_project(
     paths: &AppPaths,
     project_id: &str,
     profile_id: Option<&str>,
     env_mode: EnvResolutionMode,
 ) -> Result<ResolvedProject> {
     let global = load_global_config(&paths.global_config_path())?;
-    let path = find_project_file(paths, project_id)?;
-    let raw = parse_project_raw(&path)?;
+    let raw = find_project_raw(paths, project_id)?;
     let effective_profile = resolve_profile_id(&raw, profile_id)?;
     resolve_profile(&raw, &effective_profile, &global, env_mode)
 }
@@ -114,36 +113,38 @@ fn resolve_profile(
 }
 
 fn select_profile(raw: &ProjectFileRaw, profile_id: &str) -> Result<ProjectFile> {
-    let groups = raw.groups.clone().unwrap_or_default();
-    match &raw.profiles {
+    // Only layout, ratio, and agents vary between the flat and profiled
+    // shapes; everything else always comes from the top level.
+    let (layout, main_pane_ratio, agents) = match &raw.profiles {
         Some(profiles) => {
             let profile = profiles
                 .get(profile_id)
                 .ok_or_else(|| ConfigError::UnknownProfile {
                     id: profile_id.to_string(),
                 })?;
-            Ok(ProjectFile {
-                id: raw.id.clone(),
-                name: raw.name.clone(),
-                root: raw.root.clone(),
-                layout: profile.layout,
-                main_pane_ratio: profile.main_pane_ratio,
-                window_name: raw.window_name.clone(),
-                agents: profile.agents.clone(),
-                groups,
-            })
+            (
+                profile.layout,
+                profile.main_pane_ratio,
+                profile.agents.clone(),
+            )
         }
-        None => Ok(ProjectFile {
-            id: raw.id.clone(),
-            name: raw.name.clone(),
-            root: raw.root.clone(),
-            layout: raw.layout,
-            main_pane_ratio: raw.main_pane_ratio,
-            window_name: raw.window_name.clone(),
-            agents: raw.agents.clone().unwrap_or_default(),
-            groups,
-        }),
-    }
+        None => (
+            raw.layout,
+            raw.main_pane_ratio,
+            raw.agents.clone().unwrap_or_default(),
+        ),
+    };
+
+    Ok(ProjectFile {
+        id: raw.id.clone(),
+        name: raw.name.clone(),
+        root: raw.root.clone(),
+        layout,
+        main_pane_ratio,
+        window_name: raw.window_name.clone(),
+        agents,
+        groups: raw.groups.clone().unwrap_or_default(),
+    })
 }
 
 fn profile_ids(raw: &ProjectFileRaw) -> Vec<&str> {
@@ -239,7 +240,8 @@ fn project_files(paths: &AppPaths) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn find_project_file(paths: &AppPaths, project_id: &str) -> Result<PathBuf> {
+/// Locate and fully parse the single project file matching `project_id`.
+fn find_project_raw(paths: &AppPaths, project_id: &str) -> Result<ProjectFileRaw> {
     let mut matched = None;
 
     for path in project_files(paths)? {
@@ -259,7 +261,8 @@ fn find_project_file(paths: &AppPaths, project_id: &str) -> Result<PathBuf> {
         }
     }
 
-    matched.ok_or_else(|| ConfigError::UnknownProjectId(project_id.to_string()))
+    let path = matched.ok_or_else(|| ConfigError::UnknownProjectId(project_id.to_string()))?;
+    parse_project_raw(&path)
 }
 
 fn project_id_from_file(path: &Path) -> Result<String> {
