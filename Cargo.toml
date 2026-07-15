@@ -87,7 +87,8 @@ verbose_file_reads = "warn"
 
 [workspace.dependencies]
 anyhow = "1"
-clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+# Keep workspace feature sets aligned with what members actually enable.
+clap = { version = "4.5", features = ["derive"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -95,7 +96,7 @@ sha2 = "0.11"
 thiserror = "2"
 toml = "1.1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3"
 
 [profile.release]
