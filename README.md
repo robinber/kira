@@ -99,6 +99,9 @@ shell_command = "npm test -- --watch"
 - `mode = "direct"` (default) runs `command` (+ optional `args`)
 - `mode = "shell"` runs `shell_command` through the configured shell
   (`args` are not used in shell mode and are rejected at config load)
+- `root` must be absolute or `~/...` (not process-CWD-relative) so session
+  identity stays stable no matter where you invoke `kira-mux`
+- Agent `cwd` may still be relative to `root`
 - Profiles (`[profiles.<name>]`) select alternate agent layouts for the same
   project when you need more than one workspace shape
 

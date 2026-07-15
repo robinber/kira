@@ -52,6 +52,15 @@ pub enum ConfigError {
     /// A project root was empty.
     #[error("project root cannot be empty")]
     EmptyProjectRoot,
+    /// A project root was relative to the process working directory.
+    ///
+    /// Relative roots make session identity depend on where `kira-mux` is
+    /// invoked, so the same config can target different tmux sessions.
+    #[error(
+        "project root must be absolute or start with ~/ (got {0:?}); \
+         relative paths follow process CWD and break session identity"
+    )]
+    RelativeProjectRoot(String),
     /// A project defined no agents.
     #[error("project must define at least one agent")]
     NoAgents,
