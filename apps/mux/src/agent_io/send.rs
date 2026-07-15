@@ -36,12 +36,12 @@ pub(crate) fn send_prompt(
         return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
     }
 
-    let final_prompt = render_final_prompt(project, agent_id, prompt, no_template, &topology);
+    let final_prompt = render_final_prompt(project, agent, prompt, no_template, &topology);
     paste_and_submit(tmux, &pane, agent, &final_prompt)?;
     Ok(final_prompt)
 }
 
-/// Compute the final prompt text for `agent_id` without mutating tmux.
+/// Compute the final prompt text for `agent` without mutating tmux.
 ///
 /// Applies the agent's `prompt_template` (when present and `no_template`
 /// is `false`) using the topology already inspected for pane resolution, so
@@ -50,19 +50,19 @@ pub(crate) fn send_prompt(
 /// no template applies.
 fn render_final_prompt(
     project: &ResolvedProject,
-    agent_id: &str,
+    agent: &ResolvedAgent,
     prompt: &str,
     no_template: bool,
     topology: &WorkspaceTopology,
 ) -> String {
-    let agent = project.agents.iter().find(|a| a.id == agent_id);
-    match agent.and_then(|a| a.prompt_template.as_deref()) {
+    match agent.prompt_template.as_deref() {
         Some(template) if !no_template => {
             let (active_agents, agent_states) =
                 crate::prompt::extract_agent_state(topology, project);
             let ctx = PromptContext {
                 user_prompt: prompt.to_owned(),
-                agent_name: agent_id.to_owned(),
+                // Prefer the configured label so templates see the human name.
+                agent_name: agent.label.clone(),
                 project_name: project.name.clone(),
                 active_agents,
                 agent_states,
@@ -327,9 +327,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 FakeOp::PasteText { text, .. }
-                    if text == "Agent alpha in Test: hello world"
+                    if text == "Agent Alpha in Test: hello world"
             )),
-            "expected rendered template in paste, got: {ops:?}"
+            "expected rendered template (label as agent_name) in paste, got: {ops:?}"
         );
     }
 
@@ -404,7 +404,7 @@ mod tests {
 
         let sent = send_prompt(&fake, &project, "alpha", "hello world", false).or_panic();
         assert_eq!(
-            sent, "Agent alpha in Test: hello world",
+            sent, "Agent Alpha in Test: hello world",
             "send_prompt must return the rendered prompt, not the raw input"
         );
     }
