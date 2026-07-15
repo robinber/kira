@@ -122,6 +122,9 @@ workspace.
 
 - project `name`, agent `label`
 - `capabilities`, `groups`, `prompt_template`
+- `session_prefix`, `tmux_bin` — changing the prefix renames the session, so
+  the old workspace shows as **stopped** (not drifted); `tmux_bin` only
+  changes how tmux is invoked
 
 Literal env values never appear in the fingerprint material; only digests do.
 
