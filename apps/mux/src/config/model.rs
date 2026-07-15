@@ -303,7 +303,7 @@ pub(crate) struct ProjectIdOnly {
 
 /// Default tmux session-name prefix.
 pub(crate) fn default_session_prefix() -> String {
-    "ai".to_string()
+    "kira".to_string()
 }
 
 /// Default main-pane ratio.
@@ -353,7 +353,7 @@ command = "codex"
     #[test]
     fn global_config_defaults_parse() {
         let config: GlobalConfig = toml::from_str("").unwrap_or_else(|err| panic!("parse: {err}"));
-        assert_eq!(config.session_prefix, "ai");
+        assert_eq!(config.session_prefix, "kira");
         assert_eq!(config.main_pane_ratio, 50);
     }
 }
