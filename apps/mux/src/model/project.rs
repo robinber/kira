@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::config::{AgentMode, Layout, OrchestrationConfig, RemainOnExit};
+use crate::config::{AgentMode, Layout, RemainOnExit};
 
-/// Fully resolved project configuration ready for tmux orchestration.
+/// Fully resolved project configuration ready for tmux workspace management.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedProject {
     /// Stable project ID from config.
@@ -36,8 +36,6 @@ pub struct ResolvedProject {
     pub fingerprint: String,
     /// Named agent groups keyed by group name.
     pub groups: BTreeMap<String, Vec<String>>,
-    /// Optional orchestration settings for this project.
-    pub orchestration: Option<OrchestrationConfig>,
 }
 
 impl ResolvedProject {

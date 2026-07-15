@@ -17,21 +17,10 @@ use super::parse::{
 };
 
 const TEST_SOCKET_ENV: &str = "KIRA_MUX_TMUX_SOCKET_NAME";
-const LEGACY_TEST_SOCKET_ENV: &str = "AI_MUX_TMUX_SOCKET_NAME";
 
 #[derive(Debug, Clone)]
 pub(crate) struct PaneSummary {
-    #[expect(
-        dead_code,
-        reason = "pane identity remains part of the complete tmux snapshot contract"
-    )]
-    pub pane_id: String,
     pub pane_dead: bool,
-    #[expect(
-        dead_code,
-        reason = "pane exit status remains part of the complete tmux snapshot contract"
-    )]
-    pub pane_dead_status: Option<i32>,
     pub agent_id: Option<String>,
 }
 
@@ -149,26 +138,12 @@ impl TmuxClient {
     }
 
     /// Build a client and pick up the test socket from
-    /// `KIRA_MUX_TMUX_SOCKET_NAME`, falling back to the legacy
-    /// `AI_MUX_TMUX_SOCKET_NAME`.
+    /// `KIRA_MUX_TMUX_SOCKET_NAME` when set.
     pub fn from_env(tmux_bin: impl Into<String>) -> Self {
         Self {
             tmux_bin: tmux_bin.into(),
             socket_name: socket_name_from_env_vars(|key| env::var(key).ok()),
         }
-    }
-
-    /// Return a copy of the client pinned to a specific tmux socket name.
-    #[must_use]
-    pub fn with_socket_name(mut self, socket_name: impl Into<String>) -> Self {
-        self.socket_name = Some(socket_name.into());
-        self
-    }
-
-    /// The socket name, if one was configured.
-    #[must_use]
-    pub fn socket_name(&self) -> Option<&str> {
-        self.socket_name.as_deref()
     }
 
     /// Check whether a tmux session currently exists.
@@ -225,21 +200,6 @@ impl TmuxClient {
             window_name.to_string(),
         ];
         self.run(args)
-    }
-
-    /// List tmux session names visible to this client.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the tmux process cannot be started. A
-    /// non-successful `list-sessions` command is represented by an empty list.
-    pub fn list_sessions(&self) -> Result<Vec<String>> {
-        let output = self.output(["list-sessions", "-F", "#{session_name}"])?;
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
-
-        Ok(stdout_lines(&output))
     }
 
     /// List panes for one target, or all panes when `target` is `None`.
@@ -397,42 +357,6 @@ impl TmuxClient {
         } else {
             Ok(lines.join("\n") + "\n")
         }
-    }
-
-    /// Capture the currently visible screen contents of a pane, preserving
-    /// escape sequences and using the alternate screen when active.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the alternate-screen query or pane capture
-    /// cannot be executed successfully.
-    pub fn capture_visible_pane(&self, pane_id: &str) -> Result<String> {
-        let args = if self.pane_uses_alternate_screen(pane_id)? {
-            vec![
-                "capture-pane".to_string(),
-                "-a".to_string(),
-                "-e".to_string(),
-                "-N".to_string(),
-                "-p".to_string(),
-                "-t".to_string(),
-                pane_id.to_string(),
-            ]
-        } else {
-            vec![
-                "capture-pane".to_string(),
-                "-e".to_string(),
-                "-N".to_string(),
-                "-p".to_string(),
-                "-t".to_string(),
-                pane_id.to_string(),
-            ]
-        };
-
-        let output = self.output(args)?;
-        if !output.status.success() {
-            bail!(command_error(&output));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     /// Paste literal text into a pane via a temporary tmux buffer.
@@ -672,15 +596,6 @@ impl TmuxClient {
         Ok(output.status.success())
     }
 
-    fn pane_uses_alternate_screen(&self, pane_id: &str) -> Result<bool> {
-        let output = self.output(["display-message", "-p", "-t", pane_id, "#{alternate_on}"])?;
-        if !output.status.success() {
-            bail!(command_error(&output));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim() == "1")
-    }
-
     pub(crate) fn snapshot_summary(
         &self,
         session_name: &str,
@@ -721,8 +636,7 @@ impl TmuxClient {
         let (fingerprint, project_id, profile_id, window_role) =
             parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
 
-        let pane_fmt =
-            format!("#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{{PANE_AGENT_ID}}}");
+        let pane_fmt = format!("#{{pane_dead}}\t#{{{PANE_AGENT_ID}}}");
         let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
         if !pane_output.status.success() {
             return Ok(Some(WorkspaceSummarySnapshot {
@@ -766,17 +680,11 @@ fn parse_display_message_line(
 }
 
 fn parse_pane_summary_line(line: &str) -> PaneSummary {
-    let mut parts = line.splitn(4, '\t');
-    let pane_id = parts.next().unwrap_or("").to_string();
+    let mut parts = line.splitn(2, '\t');
     let pane_dead = parts.next().unwrap_or("0") == "1";
-    let pane_dead_status = parts
-        .next()
-        .and_then(|v| if v.is_empty() { None } else { v.parse().ok() });
     let agent_id = parts.next().and_then(non_empty);
     PaneSummary {
-        pane_id,
         pane_dead,
-        pane_dead_status,
         agent_id,
     }
 }
@@ -791,20 +699,17 @@ fn non_empty(s: &str) -> Option<String> {
 }
 
 fn socket_name_from_env_vars(mut get_env: impl FnMut(&str) -> Option<String>) -> Option<String> {
-    [TEST_SOCKET_ENV, LEGACY_TEST_SOCKET_ENV]
-        .into_iter()
-        .find_map(|key| get_env(key).and_then(|value| non_empty(&value)))
+    get_env(TEST_SOCKET_ENV).and_then(|value| non_empty(&value))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LEGACY_TEST_SOCKET_ENV, TEST_SOCKET_ENV, socket_name_from_env_vars};
+    use super::{TEST_SOCKET_ENV, socket_name_from_env_vars};
 
     #[test]
-    fn socket_env_prefers_kira_mux_name() {
+    fn socket_env_reads_kira_mux_name() {
         let socket = socket_name_from_env_vars(|key| match key {
             TEST_SOCKET_ENV => Some("primary".to_string()),
-            LEGACY_TEST_SOCKET_ENV => Some("legacy".to_string()),
             _ => None,
         });
 
@@ -812,23 +717,18 @@ mod tests {
     }
 
     #[test]
-    fn socket_env_falls_back_to_legacy_ai_mux_name() {
-        let socket = socket_name_from_env_vars(|key| match key {
-            LEGACY_TEST_SOCKET_ENV => Some("legacy".to_string()),
-            _ => None,
-        });
-
-        assert_eq!(socket.as_deref(), Some("legacy"));
-    }
-
-    #[test]
     fn socket_env_ignores_empty_values() {
         let socket = socket_name_from_env_vars(|key| match key {
             TEST_SOCKET_ENV => Some(" ".to_string()),
-            LEGACY_TEST_SOCKET_ENV => Some("legacy".to_string()),
             _ => None,
         });
 
-        assert_eq!(socket.as_deref(), Some("legacy"));
+        assert_eq!(socket, None);
+    }
+
+    #[test]
+    fn socket_env_absent_when_unset() {
+        let socket = socket_name_from_env_vars(|_| None);
+        assert_eq!(socket, None);
     }
 }

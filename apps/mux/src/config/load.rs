@@ -8,7 +8,7 @@ use super::model::{
     default_session_prefix, default_shell, default_tmux_bin, default_window_name,
 };
 use super::resolve::{resolve_project, validate_global_config};
-use crate::domain::ResolvedProject;
+use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
 
 type Result<T> = std::result::Result<T, ConfigError>;
@@ -131,7 +131,6 @@ fn select_profile(raw: &ProjectFileRaw, profile_id: &str) -> Result<ProjectFile>
                 window_name: raw.window_name.clone(),
                 agents: profile.agents.clone(),
                 groups,
-                orchestration: raw.orchestration.clone(),
             })
         }
         None => Ok(ProjectFile {
@@ -143,7 +142,6 @@ fn select_profile(raw: &ProjectFileRaw, profile_id: &str) -> Result<ProjectFile>
             window_name: raw.window_name.clone(),
             agents: raw.agents.clone().unwrap_or_default(),
             groups,
-            orchestration: raw.orchestration.clone(),
         }),
     }
 }

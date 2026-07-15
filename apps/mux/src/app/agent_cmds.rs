@@ -1,27 +1,26 @@
-//! Agent listing, send, and capture handlers (no durable bus).
+//! Agent listing, send, and capture handlers.
 
 use anyhow::Result;
 
+use super::load_project_context;
 use crate::cli::{AgentsArgs, AgentsCommand};
-use crate::config::{EnvResolutionMode, load_project};
-use crate::error::AiMuxError;
+use crate::config::EnvResolutionMode;
+use crate::error::KiraMuxError;
 use crate::output;
-use crate::paths::AppPaths;
-use crate::tmux::TmuxClient;
 
 pub(super) fn resolve_agents_args(args: AgentsArgs) -> Result<AgentsCommand> {
     if let Some(sub) = args.command {
         return Ok(sub);
     }
-    let project_id = args.legacy.project_id.ok_or_else(|| {
-        AiMuxError::MissingArgument(
+    let project_id = args.list.project_id.ok_or_else(|| {
+        KiraMuxError::MissingArgument(
             "project id is required\n\nUsage: kira-mux agents <PROJECT_ID> or kira-mux agents list <PROJECT_ID>".into(),
         )
     })?;
     Ok(AgentsCommand::List {
         project_id,
-        profile: args.legacy.profile,
-        json: args.legacy.json,
+        profile: args.list.profile,
+        json: args.list.json,
     })
 }
 
@@ -43,11 +42,9 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             ..
         } => (project_id.as_str(), profile.as_deref()),
     };
-    let paths = AppPaths::from_env()?;
-    let project = load_project(&paths, project_id, profile, EnvResolutionMode::Deferred)?;
-    let tmux = TmuxClient::from_env(project.tmux_bin.clone());
+    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
     let topology = crate::inspector::inspect(&tmux, &project)?;
-    let agents_output = crate::domain::build_agents_output(&project, &topology);
+    let agents_output = crate::model::build_agents_output(&project, &topology);
 
     match sub {
         AgentsCommand::List { json, .. } => {
@@ -62,7 +59,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
                 .agents
                 .iter()
                 .find(|a| a.id == agent_id)
-                .ok_or_else(|| AiMuxError::UnknownAgentId(agent_id.clone()))?;
+                .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.clone()))?;
             if json {
                 println!(
                     "{}",
@@ -78,7 +75,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             let members = agents_output
                 .groups
                 .get(&group_name)
-                .ok_or_else(|| AiMuxError::UnknownGroupName(group_name.clone()))?;
+                .ok_or_else(|| KiraMuxError::UnknownGroupName(group_name.clone()))?;
             let group_members: Vec<_> = members
                 .iter()
                 .filter_map(|id| agents_output.agents.iter().find(|a| &a.id == id))
@@ -106,9 +103,7 @@ pub(super) fn cmd_send(
     prompt: &str,
     no_template: bool,
 ) -> Result<()> {
-    let paths = AppPaths::from_env()?;
-    let project = load_project(&paths, project_id, profile, EnvResolutionMode::Deferred)?;
-    let tmux = TmuxClient::from_env(project.tmux_bin.clone());
+    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
     let prepared = crate::agent_io::prepare_prompt(&tmux, &project, agent_id, prompt, no_template)?;
     crate::agent_io::send_rendered_prompt(&tmux, &project, agent_id, &prepared.final_prompt)
 }
@@ -120,9 +115,7 @@ pub(super) fn cmd_capture(
     lines: usize,
     json: bool,
 ) -> Result<()> {
-    let paths = AppPaths::from_env()?;
-    let project = load_project(&paths, project_id, profile, EnvResolutionMode::Deferred)?;
-    let tmux = TmuxClient::from_env(project.tmux_bin.clone());
+    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
     let capture = crate::agent_io::capture_output(&tmux, &project, agent_id, lines)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&capture)?);

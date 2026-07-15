@@ -1,4 +1,4 @@
-//! Clap definitions for the product-A `kira-mux` CLI.
+//! Clap definitions for the `kira-mux` CLI.
 
 use clap::{Parser, Subcommand};
 

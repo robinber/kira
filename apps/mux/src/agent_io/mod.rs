@@ -6,5 +6,4 @@ mod resolve;
 mod send;
 
 pub(crate) use capture::capture_output;
-pub(crate) use policy::{SubmitBehavior, infer_submit_behavior};
 pub(crate) use send::{prepare_prompt, send_rendered_prompt};
