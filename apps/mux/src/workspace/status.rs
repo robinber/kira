@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::config::EnvResolutionMode;
+use crate::config::ResolutionMode;
 use crate::inspector::{
     self, InspectedWorkspace, RawWorkspacePane, RawWorkspaceSnapshot, SharedTopology,
     WorkspaceTopology,
@@ -44,7 +44,7 @@ pub(crate) fn project_status(
 
 pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
     let paths = AppPaths::from_env()?;
-    let projects = crate::config::load_projects(&paths, EnvResolutionMode::Deferred)?;
+    let projects = crate::config::load_projects(&paths, ResolutionMode::Deferred)?;
 
     let mut summaries = Vec::new();
     for project in projects {
