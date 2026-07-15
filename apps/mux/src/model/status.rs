@@ -12,7 +12,10 @@ use crate::model::ResolvedProject;
 pub(crate) enum ProjectState {
     /// No managed session is running.
     Stopped,
-    /// All managed panes are healthy.
+    /// All managed panes are alive (not dead).
+    ///
+    /// Does **not** mean every agent TUI is ready for task input — see
+    /// `AgentState::Running` and the README “Running vs input-ready” section.
     Running,
     /// The session exists but one or more panes are degraded.
     Degraded,
@@ -42,7 +45,12 @@ impl fmt::Display for ProjectState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentState {
-    /// The pane is running normally.
+    /// The pane process is alive (`pane_dead` is false).
+    ///
+    /// This is **not** application readiness: first-run trust prompts, logins,
+    /// and other setup UIs still report `running`. `send` only gates on dead
+    /// panes; operators own interactive bootstrap (`open` / attach) before
+    /// unattended dispatch.
     Running,
     /// The pane exited with status 0.
     ExitedClean,
