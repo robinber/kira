@@ -94,6 +94,8 @@ impl TestBed {
             .args(args)
             .env("XDG_CONFIG_HOME", self.config_home.path())
             .env("KIRA_MUX_TMUX_SOCKET_NAME", &self.socket)
+            .env("HOME", self.config_home.path())
+            .env("SHELL", "/bin/sh")
             // Keep the server's socket inside the bed's tempdir so no tmux
             // state outlives the test, and a surrounding tmux session (a
             // developer running the suite inside tmux) is never visible.
@@ -110,6 +112,9 @@ impl TestBed {
             .arg("-L")
             .arg(&self.socket)
             .args(args)
+            .env("XDG_CONFIG_HOME", self.config_home.path())
+            .env("HOME", self.config_home.path())
+            .env("SHELL", "/bin/sh")
             .env("TMUX_TMPDIR", self.config_home.path())
             .env_remove("TMUX");
         run(&mut command)
@@ -143,7 +148,11 @@ impl Drop for TestBed {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
             .args(["-L", &self.socket, "kill-server"])
+            .env("XDG_CONFIG_HOME", self.config_home.path())
+            .env("HOME", self.config_home.path())
+            .env("SHELL", "/bin/sh")
             .env("TMUX_TMPDIR", self.config_home.path())
+            .env_remove("TMUX")
             .output();
     }
 }
@@ -289,40 +298,59 @@ fn kill_removes_the_session_and_repeating_kill_is_a_noop() {
 }
 
 #[test]
-fn kill_leaves_foreign_sessions_on_the_same_server_alone() {
+fn kill_refuses_an_untagged_same_name_session() {
     let bed = TestBed::new();
     bed.write_project(CAT_AGENT);
     assert_success(&bed.kira(&["start", "it"]), "start");
     bed.wait_for_state("running");
 
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_success(&sessions, "list managed session");
+    let managed_name = stdout_of(&sessions).trim().to_string();
+    assert!(
+        !managed_name.is_empty(),
+        "managed session name must be present"
+    );
+
+    assert_success(&bed.kira(&["kill", "it", "--yes"]), "initial kill");
     assert_success(
         &bed.tmux(&[
             "new-session",
             "-d",
             "-s",
-            "unrelated",
+            &managed_name,
             "-x",
             "80",
             "-y",
             "24",
         ]),
-        "create foreign session",
+        "create same-name foreign session",
     );
-    assert_success(&bed.kira(&["kill", "it", "--yes"]), "kill");
 
-    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    let names = stdout_of(&sessions);
+    let kill = bed.kira(&["kill", "it", "--yes"]);
     assert_eq!(
-        names.lines().collect::<Vec<_>>(),
-        vec!["unrelated"],
-        "kill must remove only the managed session"
+        exit_code(&kill),
+        4,
+        "kill must classify the untagged collision as drift: {:?}",
+        stderr_of(&kill)
+    );
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_success(&sessions, "list foreign session after refused kill");
+    assert_eq!(
+        stdout_of(&sessions).trim(),
+        managed_name,
+        "the untagged same-name session must remain alive"
     );
 }
 
 #[test]
 fn kill_succeeds_after_the_project_root_disappears() {
     let bed = TestBed::new();
-    bed.write_project(CAT_AGENT);
+    let agent_cwd = bed.project_root.path().join("agent-cwd");
+    if let Err(error) = fs::create_dir(&agent_cwd) {
+        panic!("failed to create explicit agent cwd: {error}");
+    }
+    bed.write_project(&format!("{CAT_AGENT}cwd = \"agent-cwd\"\n"));
     assert_success(&bed.kira(&["start", "it"]), "start");
     bed.wait_for_state("running");
 

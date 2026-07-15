@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use super::load_project_context;
 use crate::cli::AgentsCommand;
-use crate::config::EnvResolutionMode;
+use crate::config::ResolutionMode;
 use crate::error::KiraMuxError;
 use crate::output;
 
@@ -26,7 +26,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             ..
         } => (project_id.as_str(), profile.as_deref()),
     };
-    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
+    let (project, tmux) = load_project_context(project_id, profile, ResolutionMode::Deferred)?;
     let topology = crate::inspector::inspect(&tmux, &project)?;
     let agents_output = crate::model::build_agents_output(&project, &topology);
 
@@ -78,7 +78,7 @@ pub(super) fn cmd_send(
     prompt: &str,
     no_template: bool,
 ) -> Result<()> {
-    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
+    let (project, tmux) = load_project_context(project_id, profile, ResolutionMode::Deferred)?;
     crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
     Ok(())
 }
@@ -90,7 +90,7 @@ pub(super) fn cmd_capture(
     lines: usize,
     json: bool,
 ) -> Result<()> {
-    let (project, tmux) = load_project_context(project_id, profile, EnvResolutionMode::Deferred)?;
+    let (project, tmux) = load_project_context(project_id, profile, ResolutionMode::Deferred)?;
     let capture = crate::agent_io::capture_output(&tmux, &project, agent_id, lines)?;
     if json {
         output::print_json(&capture)?;
