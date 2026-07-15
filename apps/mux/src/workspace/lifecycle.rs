@@ -5,7 +5,7 @@ use super::{session_name, window_target};
 use crate::config::ConfigError;
 use crate::error::KiraMuxError;
 use crate::inspector::{self, ManagedPane, WorkspaceTopology};
-use crate::model::ResolvedProject;
+use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
@@ -33,7 +33,7 @@ pub(crate) fn start(
     let outcome = match inspector::inspect(tmux, project)? {
         WorkspaceTopology::Absent => create(tmux, project, &session)?,
         WorkspaceTopology::Healthy(_) => StartOutcome::Healthy,
-        WorkspaceTopology::Degraded(workspace) => repair(tmux, project, &workspace.panes),
+        WorkspaceTopology::Degraded(workspace) => repair(tmux, project, &workspace.panes)?,
         WorkspaceTopology::Drifted { reason } => {
             return Err(KiraMuxError::Drifted {
                 project_id: project.id.clone(),
@@ -62,6 +62,7 @@ pub(crate) fn attach(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Resul
         return Err(KiraMuxError::SessionAbsent.into());
     }
 
+    ensure_session_owned(tmux, project, &session)?;
     attach_to_session(tmux, &session)
 }
 
@@ -105,6 +106,7 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
         return Ok(());
     }
 
+    ensure_session_owned(tmux, project, &session)?;
     if let Err(error) = tmux.kill_session(&session) {
         // The session may have died between the existence check and the
         // kill; the goal is reached either way.
@@ -129,22 +131,7 @@ fn create(
     project: &ResolvedProject,
     session: &str,
 ) -> Result<StartOutcome> {
-    for agent in &project.agents {
-        if !agent.cwd.is_dir() {
-            let validation = if agent.cwd.exists() {
-                ConfigError::AgentCwdNotDirectory {
-                    agent_id: agent.id.clone(),
-                    path: agent.cwd.clone(),
-                }
-            } else {
-                ConfigError::AgentCwdNotFound {
-                    agent_id: agent.id.clone(),
-                    path: agent.cwd.clone(),
-                }
-            };
-            return Err(KiraMuxError::ConfigValidation(validation).into());
-        }
-    }
+    validate_launch_paths(project, project.agents.iter())?;
 
     let root = project.root.display().to_string();
     let window_target = window_target(session, &project.window_name);
@@ -219,7 +206,15 @@ fn repair(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     panes: &[ManagedPane],
-) -> StartOutcome {
+) -> Result<StartOutcome> {
+    validate_launch_paths(
+        project,
+        panes
+            .iter()
+            .filter(|managed| managed.pane.pane_dead)
+            .map(|managed| &managed.agent),
+    )?;
+
     let mut any_launch_failed = false;
     for managed in panes {
         if managed.pane.pane_dead {
@@ -238,9 +233,9 @@ fn repair(
     }
 
     if any_launch_failed {
-        StartOutcome::Degraded
+        Ok(StartOutcome::Degraded)
     } else {
-        StartOutcome::Healthy
+        Ok(StartOutcome::Healthy)
     }
 }
 
@@ -255,9 +250,12 @@ fn restart_managed_panes(
             .iter()
             .find(|pane| pane.agent.id == agent_id)
             .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
+        validate_launch_paths(project, std::iter::once(&managed.agent))?;
         launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
         return Ok(());
     }
+
+    validate_launch_paths(project, panes.iter().map(|managed| &managed.agent))?;
 
     // Match create()/repair(): keep going past individual failures and
     // report the workspace as degraded, instead of stopping half-restarted
@@ -283,6 +281,71 @@ fn restart_managed_panes(
     Ok(())
 }
 
+fn validate_launch_paths<'a>(
+    project: &ResolvedProject,
+    agents: impl IntoIterator<Item = &'a ResolvedAgent>,
+) -> Result<()> {
+    if !project.root.exists() {
+        return Err(
+            KiraMuxError::ConfigValidation(ConfigError::ProjectRootNotFound(project.root.clone()))
+                .into(),
+        );
+    }
+    if !project.root.is_dir() {
+        return Err(
+            KiraMuxError::ConfigValidation(ConfigError::ProjectRootNotDirectory(
+                project.root.clone(),
+            ))
+            .into(),
+        );
+    }
+
+    for agent in agents {
+        if !agent.cwd.exists() {
+            return Err(
+                KiraMuxError::ConfigValidation(ConfigError::AgentCwdNotFound {
+                    agent_id: agent.id.clone(),
+                    path: agent.cwd.clone(),
+                })
+                .into(),
+            );
+        }
+        if !agent.cwd.is_dir() {
+            return Err(
+                KiraMuxError::ConfigValidation(ConfigError::AgentCwdNotDirectory {
+                    agent_id: agent.id.clone(),
+                    path: agent.cwd.clone(),
+                })
+                .into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_session_owned(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+    session: &str,
+) -> Result<()> {
+    let stored_project_id = tmux.get_session_option(session, SESSION_PROJECT_ID)?;
+    let stored_profile_id = tmux.get_session_option(session, SESSION_PROFILE_ID)?;
+    if let Some(reason) = inspector::classify_session_ownership(
+        project,
+        stored_project_id.as_deref(),
+        stored_profile_id.as_deref(),
+    ) {
+        return Err(KiraMuxError::Drifted {
+            project_id: project.id.clone(),
+            reason,
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,14 +354,18 @@ mod tests {
     use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
     use crate::workspace::session_name;
 
-    #[test]
-    fn start_creates_new_workspace_from_absent() {
-        let fake = FakeTmux::new();
-        let mut project = test_project();
+    fn make_launchable(project: &mut ResolvedProject) {
         project.root = std::env::temp_dir();
         for agent in &mut project.agents {
             agent.cwd = std::env::temp_dir();
         }
+    }
+
+    #[test]
+    fn start_creates_new_workspace_from_absent() {
+        let fake = FakeTmux::new();
+        let mut project = test_project();
+        make_launchable(&mut project);
 
         let outcome = start(&fake, &project, false).or_panic();
         assert_eq!(outcome, StartOutcome::Healthy);
@@ -318,11 +385,31 @@ mod tests {
     #[test]
     fn start_repairs_degraded_session() {
         let fake = FakeTmux::new();
-        let project = test_project();
+        let mut project = test_project();
+        make_launchable(&mut project);
         crate::test_support::setup_session_with_dead_panes(&fake, &project, &[1]);
 
         let outcome = start(&fake, &project, false).or_panic();
         assert_eq!(outcome, StartOutcome::Healthy);
+    }
+
+    #[test]
+    fn start_repair_rejects_missing_project_root_before_respawn() {
+        let fake = FakeTmux::new();
+        let base = tempfile::tempdir().or_panic();
+        let mut project = test_project();
+        project.root = base.path().join("missing-root");
+        project.agents[0].cwd = project.root.clone();
+        crate::test_support::setup_session_with_dead_panes(&fake, &project, &[0]);
+
+        let error = start(&fake, &project, false).err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::ConfigValidation(
+                ConfigError::ProjectRootNotFound(_)
+            ))
+        ));
     }
 
     #[test]
@@ -342,7 +429,8 @@ mod tests {
     #[test]
     fn restart_all_agents_on_healthy_session() {
         let fake = FakeTmux::new();
-        let project = test_project();
+        let mut project = test_project();
+        make_launchable(&mut project);
         setup_healthy_session(&fake, &project);
 
         restart(&fake, &project, None).or_panic();
@@ -351,7 +439,8 @@ mod tests {
     #[test]
     fn restart_all_reports_degraded_after_attempting_every_pane() {
         let fake = FakeTmux::new();
-        let project = test_project();
+        let mut project = test_project();
+        make_launchable(&mut project);
         setup_healthy_session(&fake, &project);
         fake.set_fail_respawn(true);
 
@@ -368,10 +457,30 @@ mod tests {
     #[test]
     fn restart_single_agent() {
         let fake = FakeTmux::new();
-        let project = test_project();
+        let mut project = test_project();
+        make_launchable(&mut project);
         setup_healthy_session(&fake, &project);
 
         restart(&fake, &project, Some("alpha")).or_panic();
+    }
+
+    #[test]
+    fn restart_rejects_missing_agent_cwd_before_respawn() {
+        let fake = FakeTmux::new();
+        let base = tempfile::tempdir().or_panic();
+        let mut project = test_project();
+        project.root = base.path().to_path_buf();
+        project.agents[0].cwd = base.path().join("missing-cwd");
+        setup_healthy_session(&fake, &project);
+
+        let error = restart(&fake, &project, Some("alpha")).err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::ConfigValidation(
+                ConfigError::AgentCwdNotFound { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -438,13 +547,60 @@ mod tests {
     }
 
     #[test]
+    fn kill_refuses_untagged_session_name_collision() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        let session = session_name(&project);
+        fake.add_session(&session);
+
+        let error = kill(&fake, &project).err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::Drifted {
+                reason: WorkspaceDriftReason::ProjectMetadataMismatch,
+                ..
+            })
+        ));
+        assert!(fake.session_exists(&session).or_panic());
+    }
+
+    #[test]
+    fn attach_refuses_untagged_session_name_collision() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        let session = session_name(&project);
+        fake.add_session(&session);
+
+        let error = attach(&fake, &project).err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::Drifted {
+                reason: WorkspaceDriftReason::ProjectMetadataMismatch,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn kill_allows_owned_session_with_fingerprint_drift() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        let session = session_name(&project);
+        setup_healthy_session(&fake, &project);
+        fake.set_session_opt(&session, SESSION_CONFIG_FINGERPRINT, "stale");
+
+        kill(&fake, &project).or_panic();
+
+        assert!(!fake.session_exists(&session).or_panic());
+    }
+
+    #[test]
     fn launch_sets_command_metadata() {
         let fake = FakeTmux::new();
         let mut project = test_project();
-        project.root = std::env::temp_dir();
-        for agent in &mut project.agents {
-            agent.cwd = std::env::temp_dir();
-        }
+        make_launchable(&mut project);
 
         let outcome = start(&fake, &project, false).or_panic();
         assert_eq!(outcome, StartOutcome::Healthy);
@@ -459,11 +615,8 @@ mod tests {
     fn launch_sets_path_basename() {
         let fake = FakeTmux::new();
         let mut project = test_project();
-        project.root = std::env::temp_dir();
+        make_launchable(&mut project);
         project.agents[0].command = Some("/usr/bin/codex".to_string());
-        for agent in &mut project.agents {
-            agent.cwd = std::env::temp_dir();
-        }
 
         start(&fake, &project, false).or_panic();
 
@@ -477,13 +630,10 @@ mod tests {
     fn launch_sets_shell_sentinel() {
         let fake = FakeTmux::new();
         let mut project = test_project();
-        project.root = std::env::temp_dir();
+        make_launchable(&mut project);
         project.agents[0].mode = AgentMode::Shell;
         project.agents[0].command = None;
         project.agents[0].shell_command = Some("codex --full-auto".to_string());
-        for agent in &mut project.agents {
-            agent.cwd = std::env::temp_dir();
-        }
 
         start(&fake, &project, false).or_panic();
 

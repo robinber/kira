@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::cli::{Cli, CommandKind};
-use crate::config::{EnvResolutionMode, load_project};
+use crate::config::{ResolutionMode, load_project};
 use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
 use crate::tmux::TmuxClient;
@@ -89,10 +89,10 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 pub(super) fn load_project_context(
     project_id: &str,
     profile: Option<&str>,
-    env_mode: EnvResolutionMode,
+    resolution_mode: ResolutionMode,
 ) -> Result<(ResolvedProject, TmuxClient)> {
     let paths = AppPaths::from_env()?;
-    let project = load_project(&paths, project_id, profile, env_mode)?;
+    let project = load_project(&paths, project_id, profile, resolution_mode)?;
     let tmux = TmuxClient::from_env(project.tmux_bin.clone());
     Ok((project, tmux))
 }

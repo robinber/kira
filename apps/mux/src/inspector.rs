@@ -139,9 +139,22 @@ fn classify_session_metadata(
     project_id: Option<&str>,
     profile_id: Option<&str>,
 ) -> Option<WorkspaceDriftReason> {
-    if fingerprint != Some(project.fingerprint.as_str()) {
+    if fingerprint == Some(project.fingerprint.as_str()) {
+        classify_session_ownership(project, project_id, profile_id)
+    } else {
         Some(WorkspaceDriftReason::FingerprintMismatch)
-    } else if project_id != Some(project.id.as_str()) {
+    }
+}
+
+/// Classify only the metadata that proves a session belongs to a project and
+/// profile. Destructive commands use this subset so config fingerprint drift
+/// does not prevent cleanup of an otherwise owned session.
+pub(crate) fn classify_session_ownership(
+    project: &ResolvedProject,
+    project_id: Option<&str>,
+    profile_id: Option<&str>,
+) -> Option<WorkspaceDriftReason> {
+    if project_id != Some(project.id.as_str()) {
         Some(WorkspaceDriftReason::ProjectMetadataMismatch)
     } else if profile_id != Some(project.profile_id.as_str()) {
         Some(WorkspaceDriftReason::ProfileMetadataMismatch)
