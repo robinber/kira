@@ -129,6 +129,16 @@ fn create(
     project: &ResolvedProject,
     session: &str,
 ) -> Result<StartOutcome> {
+    // Existence is launch's concern, not resolution's: kill/status must keep
+    // working on a project whose directory was deleted, but launching into a
+    // missing root would only produce broken panes.
+    if !project.root.is_dir() {
+        return Err(
+            KiraMuxError::ConfigValidation(ConfigError::ProjectRootNotFound(project.root.clone()))
+                .into(),
+        );
+    }
+
     for agent in &project.agents {
         if !agent.cwd.is_dir() {
             let validation = if agent.cwd.exists() {

@@ -289,6 +289,66 @@ fn kill_removes_the_session_and_repeating_kill_is_a_noop() {
 }
 
 #[test]
+fn kill_leaves_foreign_sessions_on_the_same_server_alone() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    assert_success(
+        &bed.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "unrelated",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ]),
+        "create foreign session",
+    );
+    assert_success(&bed.kira(&["kill", "it", "--yes"]), "kill");
+
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    let names = stdout_of(&sessions);
+    assert_eq!(
+        names.lines().collect::<Vec<_>>(),
+        vec!["unrelated"],
+        "kill must remove only the managed session"
+    );
+}
+
+#[test]
+fn kill_succeeds_after_the_project_root_disappears() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    // Deleting the project root must not strand the session: kill resolves
+    // the project from config alone and never needs the directory back.
+    if let Err(error) = fs::remove_dir_all(bed.project_root.path()) {
+        panic!("failed to remove project root: {error}");
+    }
+    assert_success(
+        &bed.kira(&["kill", "it", "--yes"]),
+        "kill after root removal",
+    );
+    bed.wait_for_state("stopped");
+
+    // Relaunching into the missing root must fail loudly (typed config
+    // validation), not create broken panes.
+    let start = bed.kira(&["start", "it"]);
+    assert_eq!(
+        exit_code(&start),
+        2,
+        "start into a deleted root must exit 2, stderr: {:?}",
+        stderr_of(&start)
+    );
+}
+
+#[test]
 fn status_and_list_report_stopped_before_any_start() {
     let bed = TestBed::new();
     bed.write_project(CAT_AGENT);

@@ -15,8 +15,10 @@ use super::model::{
 };
 
 /// Characters rejected in identifiers that end up in tmux session names or
-/// target syntax (`session:window.pane`).
-const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &['\t', '\n', ':', '.'];
+/// target syntax (`session:window.pane`). Whitespace is included because
+/// identifiers round-trip through tmux options, which are trimmed on read —
+/// a padded id would never compare equal again and report permanent drift.
+const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &['\t', '\n', '\r', ' ', ':', '.'];
 
 fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
     if let Some(ch) = id
@@ -338,19 +340,46 @@ fn validate_agent(
 fn normalize_project_root(root: &str) -> Result<PathBuf> {
     let expanded = expand_path(root, None)?;
 
-    if !expanded.exists() {
-        return Err(ConfigError::ProjectRootNotFound(expanded));
-    }
-    if !expanded.is_dir() {
+    if expanded.exists() && !expanded.is_dir() {
         return Err(ConfigError::ProjectRootNotDirectory(expanded));
     }
 
-    expanded
-        .canonicalize()
-        .map_err(|source| ConfigError::PathResolution {
-            path: expanded.clone(),
-            source,
-        })
+    // A missing root must still resolve: kill/status/list have to keep
+    // working after the project directory is deleted, or the workspace can
+    // never be cleaned up. Launch preflights existence separately.
+    canonicalize_allowing_missing_tail(&expanded).map_err(|source| ConfigError::PathResolution {
+        path: expanded.clone(),
+        source,
+    })
+}
+
+/// Canonicalize `path`, tolerating a missing tail: the deepest existing
+/// ancestor is canonicalized (resolving symlinks such as macOS `/var` →
+/// `/private/var`) and the missing components are re-appended. This keeps a
+/// project root's identity — and therefore its derived tmux session name —
+/// stable across deletion of the directory.
+fn canonicalize_allowing_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(canonical) => Ok(canonical),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let normalized = normalize_path(path);
+            let mut ancestor = normalized.as_path();
+            let mut tail: Vec<std::ffi::OsString> = Vec::new();
+            while !ancestor.exists() {
+                let Some(parent) = ancestor.parent() else {
+                    break;
+                };
+                if let Some(name) = ancestor.file_name() {
+                    tail.push(name.to_os_string());
+                }
+                ancestor = parent;
+            }
+            let mut canonical = ancestor.canonicalize()?;
+            canonical.extend(tail.iter().rev());
+            Ok(canonical)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn resolve_agent_cwd(agent_id: &str, raw: Option<&str>, project_root: &Path) -> Result<PathBuf> {
@@ -554,7 +583,17 @@ mod tests {
 
     #[test]
     fn forbidden_identifier_chars_are_rejected() {
-        for (id, expected_ch) in [("a:b", ':'), ("a.b", '.'), ("a\tb", '\t'), ("a\nb", '\n')] {
+        for (id, expected_ch) in [
+            ("a:b", ':'),
+            ("a.b", '.'),
+            ("a\tb", '\t'),
+            ("a\nb", '\n'),
+            ("a\rb", '\r'),
+            // Padded ids round-trip through trimmed tmux options and would
+            // report permanent drift.
+            ("a b", ' '),
+            ("a ", ' '),
+        ] {
             let error = validate_identifier("agent id", id).err_or_panic();
             let ConfigError::InvalidIdentifierChar { kind, id: got, ch } = error else {
                 panic!("expected InvalidIdentifierChar for {id:?}");
@@ -598,6 +637,31 @@ mod tests {
             &["--full-auto".to_string()],
         )
         .or_panic();
+    }
+
+    #[test]
+    fn project_root_identity_survives_directory_deletion() {
+        let base = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("failed to create tempdir: {error}"),
+        };
+        let root = base.path().join("workdir");
+        if let Err(error) = std::fs::create_dir(&root) {
+            panic!("failed to create workdir: {error}");
+        }
+        let configured = root.display().to_string();
+
+        let before = normalize_project_root(&configured).or_panic();
+        if let Err(error) = std::fs::remove_dir(&root) {
+            panic!("failed to remove workdir: {error}");
+        }
+        let after = normalize_project_root(&configured).or_panic();
+
+        assert_eq!(
+            before, after,
+            "resolved root (and thus the derived session name) must be \
+             identical before and after the directory disappears"
+        );
     }
 
     #[test]

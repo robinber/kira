@@ -149,7 +149,7 @@ Quality floor is intentional and strict:
 - CI on push and pull requests (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 
 ```bash
-just check
+just check   # requires https://github.com/casey/just — the recipes only wrap the commands below
 # or
 cargo +nightly fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
