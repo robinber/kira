@@ -11,22 +11,6 @@ pub(crate) struct PromptContext {
 }
 
 impl PromptContext {
-    pub(crate) fn resolve(
-        user_prompt: String,
-        agent_name: String,
-        project_name: String,
-        active_agents: String,
-        agent_states: String,
-    ) -> Self {
-        Self {
-            user_prompt,
-            agent_name,
-            project_name,
-            active_agents,
-            agent_states,
-        }
-    }
-
     pub(crate) fn minimal(agent_id: &str, project_name: &str, user_prompt: &str) -> Self {
         Self {
             user_prompt: user_prompt.to_owned(),
@@ -44,52 +28,41 @@ pub(crate) fn extract_agent_state(
 ) -> (String, String) {
     match topology {
         WorkspaceTopology::Healthy(ws) | WorkspaceTopology::Degraded(ws) => {
-            let active: Vec<String> = project
-                .agents
-                .iter()
-                .filter_map(|agent| {
-                    let alive = ws
-                        .panes
-                        .iter()
-                        .any(|p| p.agent.id == agent.id && !p.pane.pane_dead);
-                    if alive {
-                        if agent.capabilities.is_empty() {
-                            Some(agent.id.clone())
-                        } else {
-                            Some(format!("{} ({})", agent.id, agent.capabilities.join(", ")))
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let mut active: Vec<String> = Vec::new();
+            let mut states: Vec<String> = Vec::with_capacity(project.agents.len());
 
-            let states: Vec<String> = project
-                .agents
-                .iter()
-                .map(|agent| {
-                    let alive = ws
-                        .panes
-                        .iter()
-                        .any(|p| p.agent.id == agent.id && !p.pane.pane_dead);
-                    let groups = project.groups_for(&agent.id);
-                    let group_str = if groups.is_empty() {
-                        String::new()
+            for agent in &project.agents {
+                let alive = ws
+                    .panes
+                    .iter()
+                    .any(|p| p.agent.id == agent.id && !p.pane.pane_dead);
+
+                if alive {
+                    if agent.capabilities.is_empty() {
+                        active.push(agent.id.clone());
                     } else {
-                        format!(" [{}]", groups.join(", "))
-                    };
-                    format!(
-                        "{}:{}{}",
-                        agent.id,
-                        if alive { "running" } else { "dead" },
-                        group_str
-                    )
-                })
-                .collect();
+                        active.push(format!("{} ({})", agent.id, agent.capabilities.join(", ")));
+                    }
+                }
+
+                let groups = project.groups_for(&agent.id);
+                let group_str = if groups.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", groups.join(", "))
+                };
+                states.push(format!(
+                    "{}:{}{}",
+                    agent.id,
+                    if alive { "running" } else { "dead" },
+                    group_str
+                ));
+            }
 
             (active.join(", "), states.join(", "))
         }
-        _ => ("(workspace absent)".into(), String::new()),
+        WorkspaceTopology::Absent => ("(workspace absent)".into(), String::new()),
+        WorkspaceTopology::Drifted { .. } => ("(workspace drifted)".into(), String::new()),
     }
 }
 
@@ -148,7 +121,6 @@ mod tests {
             .map(|(i, agent)| ManagedPane {
                 pane: PaneInfo {
                     pane_id: format!("%{i}"),
-                    window_id: "@w-agents".to_string(),
                     pane_dead: false,
                     pane_dead_status: None,
                 },
@@ -251,7 +223,6 @@ mod tests {
             ManagedPane {
                 pane: PaneInfo {
                     pane_id: "%0".to_string(),
-                    window_id: "@w-agents".to_string(),
                     pane_dead: false,
                     pane_dead_status: None,
                 },
@@ -260,7 +231,6 @@ mod tests {
             ManagedPane {
                 pane: PaneInfo {
                     pane_id: "%1".to_string(),
-                    window_id: "@w-agents".to_string(),
                     pane_dead: true,
                     pane_dead_status: Some(1),
                 },

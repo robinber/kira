@@ -9,9 +9,6 @@ use crate::config::ConfigError;
 /// Domain errors surfaced to the CLI exit-code layer.
 #[derive(Debug, Error)]
 pub enum KiraMuxError {
-    /// The requested project ID does not exist.
-    #[error("unknown project id: {0}")]
-    UnknownProjectId(String),
     /// The requested agent ID does not exist in the resolved project.
     #[error("unknown agent id: {0}")]
     UnknownAgentId(String),

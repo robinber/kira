@@ -7,5 +7,5 @@ mod model;
 mod resolve;
 
 pub use error::ConfigError;
-pub use load::{load_project, load_projects};
-pub use model::{AgentMode, AgentTemplate, EnvResolutionMode, GlobalConfig, Layout, RemainOnExit};
+pub(crate) use load::{load_project, load_projects};
+pub(crate) use model::{AgentMode, EnvResolutionMode, Layout, RemainOnExit};

@@ -8,8 +8,7 @@ pub(crate) mod metadata;
 mod parse;
 mod paste;
 
-pub use adapter::PaneInfo;
-pub(crate) use adapter::TmuxAdapter;
-pub use client::TmuxClient;
-pub use error::TmuxError;
+pub(crate) use adapter::{PaneInfo, TmuxAdapter};
+pub(crate) use client::TmuxClient;
+pub(crate) use error::TmuxError;
 pub(crate) use paste::paste_then_submit_text;

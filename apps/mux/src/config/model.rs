@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// When environment-variable placeholders are resolved during config loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnvResolutionMode {
+pub(crate) enum EnvResolutionMode {
     /// Keep `$VARS` unresolved until runtime use.
     Deferred,
     /// Resolve `$VARS` during config loading.
@@ -12,9 +12,9 @@ pub enum EnvResolutionMode {
 }
 
 /// Supported tmux pane layouts for a workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum Layout {
+pub(crate) enum Layout {
     /// Let kira-mux choose a layout automatically.
     #[default]
     Auto,
@@ -46,9 +46,9 @@ impl Layout {
 }
 
 /// Launch mode for an agent pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum AgentMode {
+pub(crate) enum AgentMode {
     /// Execute the configured command directly.
     #[default]
     Direct,
@@ -66,9 +66,9 @@ impl AgentMode {
 }
 
 /// Policy for keeping panes open after the child process exits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum RemainOnExit {
+pub(crate) enum RemainOnExit {
     /// Never keep exited panes open.
     Off,
     /// Keep only panes that exited with failure.
@@ -89,9 +89,9 @@ impl RemainOnExit {
 }
 
 /// Global kira-mux defaults loaded from the user config file.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct GlobalConfig {
+pub(crate) struct GlobalConfig {
     /// Prefix used when deriving tmux session names.
     pub session_prefix: String,
     /// Default layout for projects that do not set one.
@@ -132,9 +132,9 @@ impl Default for GlobalConfig {
 }
 
 /// Reusable agent template from global config.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentTemplate {
+pub(crate) struct AgentTemplate {
     /// Template name referenced by project agents.
     pub name: String,
     /// Optional display label override.
@@ -235,13 +235,6 @@ pub(crate) struct ProjectAgent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProfileDef {
-    /// Optional profile label for future UI use.
-    #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "the label remains accepted for profile-file compatibility"
-    )]
-    pub label: Option<String>,
     /// Optional layout override for the profile.
     #[serde(default)]
     pub layout: Option<Layout>,
@@ -285,6 +278,9 @@ pub(crate) struct ProjectFileRaw {
 
 impl ProjectFileRaw {
     /// Validate that the raw project uses exactly one supported config shape.
+    ///
+    /// An empty agent list is not checked here — profile selection funnels
+    /// every shape through `resolve_project`, which rejects it as `NoAgents`.
     pub(crate) fn validate_shape(&self) -> Result<(), crate::config::ConfigError> {
         if let Some(profiles) = &self.profiles {
             if profiles.is_empty() {
@@ -293,14 +289,8 @@ impl ProjectFileRaw {
             if self.layout.is_some() || self.main_pane_ratio.is_some() || self.agents.is_some() {
                 return Err(crate::config::ConfigError::MixedConfigShape);
             }
-            Ok(())
-        } else {
-            let agents = self.agents.as_deref().unwrap_or_default();
-            if agents.is_empty() {
-                return Err(crate::config::ConfigError::NoAgents);
-            }
-            Ok(())
         }
+        Ok(())
     }
 }
 

@@ -60,6 +60,9 @@ mod tests {
     #[test]
     fn paste_then_submit_records_paste_then_enter() {
         let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "w");
+        fake.add_pane("s", "w", "%0", false);
 
         paste_then_submit_text(&fake, "%0", "hello").or_panic();
 

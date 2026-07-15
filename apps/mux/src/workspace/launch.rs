@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use crate::config::{AgentMode, Layout};
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::TmuxAdapter;
-use crate::tmux::metadata::PANE_AGENT_COMMAND;
+use crate::tmux::metadata::{PANE_AGENT_COMMAND, PANE_COMMAND_SHELL};
 
 pub(super) struct TopologyGuard<'a> {
     tmux: &'a dyn TmuxAdapter,
@@ -56,34 +56,26 @@ pub(super) fn apply_layout(
     project: &ResolvedProject,
     window_target: &str,
 ) -> Result<()> {
-    let layout = match project.layout {
+    // One decision point per layout: the tmux layout preset plus the
+    // main-pane option (if any) that must be set before applying it.
+    let (layout, main_pane_option) = match project.layout {
         Layout::Auto => match project.agents.len() {
-            0 | 1 => None,
-            2 => Some("even-horizontal"),
-            3 => Some("main-vertical"),
-            _ => Some("tiled"),
+            0 | 1 => (None, None),
+            2 => (Some("even-horizontal"), None),
+            3 => (Some("main-vertical"), Some("main-pane-width")),
+            _ => (Some("tiled"), None),
         },
-        Layout::SideBySide => Some("even-horizontal"),
-        Layout::Stacked => Some("even-vertical"),
-        Layout::MainLeft => Some("main-vertical"),
-        Layout::MainTop => Some("main-horizontal"),
-        Layout::Grid => Some("tiled"),
+        Layout::SideBySide => (Some("even-horizontal"), None),
+        Layout::Stacked => (Some("even-vertical"), None),
+        Layout::MainLeft => (Some("main-vertical"), Some("main-pane-width")),
+        Layout::MainTop => (Some("main-horizontal"), Some("main-pane-height")),
+        Layout::Grid => (Some("tiled"), None),
     };
 
-    if matches!(project.layout, Layout::MainLeft)
-        || matches!(project.layout, Layout::Auto) && project.agents.len() == 3
-    {
+    if let Some(option) = main_pane_option {
         tmux.set_window_option(
             window_target,
-            "main-pane-width",
-            &format!("{}%", project.main_pane_ratio),
-        )?;
-    }
-
-    if matches!(project.layout, Layout::MainTop) {
-        tmux.set_window_option(
-            window_target,
-            "main-pane-height",
+            option,
             &format!("{}%", project.main_pane_ratio),
         )?;
     }
@@ -104,7 +96,7 @@ fn agent_command_basename(agent: &ResolvedAgent) -> Option<String> {
         AgentMode::Shell => agent
             .shell_command
             .as_ref()
-            .map(|_| "__shell__".to_string()),
+            .map(|_| PANE_COMMAND_SHELL.to_string()),
     }
 }
 
@@ -118,10 +110,6 @@ pub(super) fn launch_agent(
         .env
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<Vec<_>>();
-    let redacted_env = env_overrides
-        .iter()
-        .map(|(key, value)| crate::logging::redact_env_value(key, value))
         .collect::<Vec<_>>();
     let command = match agent.mode {
         AgentMode::Direct => {
@@ -144,7 +132,12 @@ pub(super) fn launch_agent(
         agent_id = agent.id.as_str(),
         pane_id,
         cwd = %agent.cwd.display(),
-        env = ?redacted_env,
+        // Field expressions are only evaluated when DEBUG is enabled, so the
+        // redaction pass costs nothing on the default WARN level.
+        env = ?env_overrides
+            .iter()
+            .map(|(key, value)| crate::logging::redact_env_value(key, value))
+            .collect::<Vec<_>>(),
         "launching agent pane"
     );
 

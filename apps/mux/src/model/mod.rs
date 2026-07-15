@@ -3,9 +3,8 @@
 pub(crate) mod project;
 pub(crate) mod status;
 
-pub use project::{ResolvedAgent, ResolvedProject};
+pub(crate) use project::{ResolvedAgent, ResolvedProject};
 pub(crate) use status::{
-    AgentInfo, AgentRunState, AgentState, AgentStatus, AgentsOutput, ProjectStatus,
-    build_agents_output,
+    AgentInfo, AgentRunState, AgentState, AgentStatus, AgentsOutput, ProjectState, ProjectStatus,
+    ProjectSummary, build_agents_output,
 };
-pub use status::{ProjectState, ProjectSummary};

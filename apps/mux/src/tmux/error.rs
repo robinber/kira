@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// Errors returned by tmux command execution and target resolution.
 #[derive(Debug, Error)]
-pub enum TmuxError {
+pub(crate) enum TmuxError {
     /// No tmux server is currently running.
     #[error("{0}")]
     NoServer(String),
@@ -15,4 +15,15 @@ pub enum TmuxError {
     /// tmux returned a non-success exit status.
     #[error("tmux command failed: {0}")]
     CommandFailure(String),
+}
+
+impl TmuxError {
+    /// True when `error` is a typed missing-session/window/pane failure, as
+    /// opposed to a transport or server error.
+    pub(crate) fn is_missing_target(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<Self>(),
+            Some(Self::MissingTarget(_) | Self::MissingSession(_))
+        )
+    }
 }

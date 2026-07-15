@@ -8,10 +8,15 @@ pub(crate) use workspace::{AgentsArgs, AgentsCommand};
 
 /// Top-level CLI parser.
 #[derive(Debug, Parser)]
-#[command(name = "kira-mux", version, about = "tmux multi-agent workspaces")]
+#[command(
+    name = "kira-mux",
+    version,
+    about = "tmux multi-agent workspaces",
+    arg_required_else_help = true
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    pub(crate) command: Option<CommandKind>,
+    pub(crate) command: CommandKind,
 }
 
 /// Product-A command surface.

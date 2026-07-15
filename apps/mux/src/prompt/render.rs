@@ -1,5 +1,18 @@
 use super::context::PromptContext;
 
+type ContextAccessor = fn(&PromptContext) -> &str;
+
+/// Single source of truth for template variables: name → accessor.
+/// `render` and `lint_template` both consult this table, so adding a
+/// variable is a one-line change.
+const PROMPT_VARIABLES: &[(&str, ContextAccessor)] = &[
+    ("user_prompt", |ctx| &ctx.user_prompt),
+    ("agent_name", |ctx| &ctx.agent_name),
+    ("project_name", |ctx| &ctx.project_name),
+    ("active_agents", |ctx| &ctx.active_agents),
+    ("agent_states", |ctx| &ctx.agent_states),
+];
+
 pub(crate) fn render(template: &str, ctx: &PromptContext) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
@@ -8,14 +21,10 @@ pub(crate) fn render(template: &str, ctx: &PromptContext) -> String {
         result.push_str(&rest[..start]);
         if let Some(end) = rest[start..].find("}}") {
             let var = rest[start + 2..start + end].trim();
-            let replacement = match var {
-                "user_prompt" => Some(ctx.user_prompt.as_str()),
-                "agent_name" => Some(ctx.agent_name.as_str()),
-                "project_name" => Some(ctx.project_name.as_str()),
-                "active_agents" => Some(ctx.active_agents.as_str()),
-                "agent_states" => Some(ctx.agent_states.as_str()),
-                _ => None,
-            };
+            let replacement = PROMPT_VARIABLES
+                .iter()
+                .find(|(name, _)| *name == var)
+                .map(|(_, get)| get(ctx));
             match replacement {
                 Some(val) => result.push_str(val),
                 None => result.push_str(&rest[start..start + end + 2]),
@@ -30,14 +39,6 @@ pub(crate) fn render(template: &str, ctx: &PromptContext) -> String {
     result
 }
 
-const KNOWN_VARIABLES: &[&str] = &[
-    "user_prompt",
-    "agent_name",
-    "project_name",
-    "active_agents",
-    "agent_states",
-];
-
 pub(crate) fn lint_template(template: &str) -> Vec<String> {
     let mut unknowns = Vec::new();
     let mut rest = template;
@@ -45,7 +46,7 @@ pub(crate) fn lint_template(template: &str) -> Vec<String> {
         match rest[start..].find("}}") {
             Some(end) => {
                 let var = rest[start + 2..start + end].trim();
-                if !KNOWN_VARIABLES.contains(&var) {
+                if !PROMPT_VARIABLES.iter().any(|(name, _)| *name == var) {
                     unknowns.push(format!("{{{{{var}}}}}"));
                 }
                 rest = &rest[start + end + 2..];
@@ -61,13 +62,13 @@ mod tests {
     use super::*;
 
     fn full_context() -> PromptContext {
-        PromptContext::resolve(
-            "deploy the service".into(),
-            "coder".into(),
-            "my-project".into(),
-            "coder, reviewer, tester".into(),
-            "coder:idle, reviewer:busy, tester:idle".into(),
-        )
+        PromptContext {
+            user_prompt: "deploy the service".into(),
+            agent_name: "coder".into(),
+            project_name: "my-project".into(),
+            active_agents: "coder, reviewer, tester".into(),
+            agent_states: "coder:idle, reviewer:busy, tester:idle".into(),
+        }
     }
 
     #[test]

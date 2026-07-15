@@ -7,11 +7,11 @@ use crate::tmux::metadata::{PANE_AGENT_ID, WINDOW_ROLE, WINDOW_ROLE_AGENTS};
 use crate::tmux::{PaneInfo, TmuxAdapter};
 use crate::workspace::{session_name, window_target};
 
-pub(super) fn resolve_managed_pane(
+pub(super) fn resolve_managed_pane<'a>(
     tmux: &dyn TmuxAdapter,
-    project: &ResolvedProject,
+    project: &'a ResolvedProject,
     agent_id: &str,
-) -> Result<(PaneInfo, ResolvedAgent)> {
+) -> Result<(PaneInfo, &'a ResolvedAgent)> {
     let agent = project
         .agents
         .iter()
@@ -24,12 +24,18 @@ pub(super) fn resolve_managed_pane(
     }
 
     let window_target = window_target(&session, &project.window_name);
-    let Ok(window_role) = tmux.get_window_option(&window_target, WINDOW_ROLE) else {
-        return Err(KiraMuxError::Drifted {
-            project_id: project.id.clone(),
-            reason: WorkspaceDriftReason::ManagedWindowMissing,
+    let window_role = match tmux.get_window_option(&window_target, WINDOW_ROLE) {
+        Ok(role) => role,
+        // Only a missing target means drift; other tmux failures (server
+        // crash, transport error) must surface as what they are.
+        Err(error) if crate::tmux::TmuxError::is_missing_target(&error) => {
+            return Err(KiraMuxError::Drifted {
+                project_id: project.id.clone(),
+                reason: WorkspaceDriftReason::ManagedWindowMissing,
+            }
+            .into());
         }
-        .into());
+        Err(error) => return Err(error),
     };
     if window_role.as_deref() != Some(WINDOW_ROLE_AGENTS) {
         return Err(KiraMuxError::Drifted {
@@ -39,7 +45,7 @@ pub(super) fn resolve_managed_pane(
         .into());
     }
 
-    let panes = tmux.list_panes(Some(&window_target))?;
+    let panes = tmux.list_panes(&window_target)?;
 
     let mut matches: Vec<PaneInfo> = Vec::new();
     for pane in panes {
@@ -50,13 +56,15 @@ pub(super) fn resolve_managed_pane(
         }
     }
 
-    match matches.len() {
-        0 => bail!("pane for agent '{agent_id}' not found in session"),
-        1 => match matches.into_iter().next() {
-            Some(pane) => Ok((pane, agent.clone())),
-            None => bail!("managed pane disappeared during resolution"),
-        },
-        n => bail!("agent '{agent_id}' is not uniquely resolvable: {n} panes match"),
+    if matches.len() > 1 {
+        bail!(
+            "agent '{agent_id}' is not uniquely resolvable: {} panes match",
+            matches.len()
+        );
+    }
+    match matches.pop() {
+        Some(pane) => Ok((pane, agent)),
+        None => bail!("pane for agent '{agent_id}' not found in session"),
     }
 }
 
@@ -130,11 +138,11 @@ mod tests {
             matches!(
                 err.downcast_ref::<KiraMuxError>(),
                 Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::WindowMetadataMismatch,
+                    reason: WorkspaceDriftReason::ManagedWindowMissing,
                     ..
                 })
             ),
-            "expected Drifted/WindowMetadataMismatch, got: {err}"
+            "expected Drifted/ManagedWindowMissing, got: {err}"
         );
     }
 
@@ -305,11 +313,11 @@ mod tests {
             matches!(
                 err.downcast_ref::<KiraMuxError>(),
                 Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::WindowMetadataMismatch,
+                    reason: WorkspaceDriftReason::ManagedWindowMissing,
                     ..
                 })
             ),
-            "expected Drifted/WindowMetadataMismatch, got: {err}"
+            "expected Drifted/ManagedWindowMissing, got: {err}"
         );
     }
 
