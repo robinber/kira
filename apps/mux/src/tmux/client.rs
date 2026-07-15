@@ -300,17 +300,7 @@ impl TmuxClient {
     {
         let output = self.output(args)?;
         if !output.status.success() {
-            let message = command_error(&output);
-            if is_missing_session_message(&message) {
-                return Err(TmuxError::MissingSession(target.to_string()).into());
-            }
-            if is_missing_target_message(&message) {
-                return Err(TmuxError::MissingTarget(target.to_string()).into());
-            }
-            if is_no_server_message(&message) {
-                return Err(TmuxError::NoServer(message).into());
-            }
-            return Err(TmuxError::CommandFailure(message).into());
+            return Err(failed_tmux_status(target, &output));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -476,8 +466,7 @@ impl TmuxClient {
 
 /// Map a failed tmux subprocess status into a typed error.
 ///
-/// Aligns with [`TmuxClient::list_panes`] / [`TmuxClient::read_option`]:
-/// missing targets stay distinguishable from generic command failures so
+/// Missing targets stay distinguishable from generic command failures so
 /// callers can classify drift vs hard errors.
 fn failed_tmux_status(target: &str, output: &Output) -> anyhow::Error {
     let message = command_error(output);
