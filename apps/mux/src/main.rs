@@ -23,31 +23,26 @@ fn main() -> ExitCode {
 }
 
 fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
-    use kira_mux::AiMuxError;
+    use kira_mux::KiraMuxError;
     use kira_mux::config::ConfigError;
 
     if error.downcast_ref::<ConfigError>().is_some() {
         return ExitCode::from(2);
     }
 
-    match error.downcast_ref::<AiMuxError>() {
+    match error.downcast_ref::<KiraMuxError>() {
         Some(
-            AiMuxError::UnknownProjectId(_)
-            | AiMuxError::UnknownAgentId(_)
-            | AiMuxError::UnknownGroupName(_)
-            | AiMuxError::MissingArgument(_)
-            | AiMuxError::InvalidOrchestratorProfile { .. }
-            | AiMuxError::OrchestratorAgentMismatch { .. }
-            | AiMuxError::AgentNotOrchestrator { .. }
-            | AiMuxError::OrchestratorShellModeUnsupported { .. }
-            | AiMuxError::OrchestratorPaneActive { .. }
-            | AiMuxError::ConfigValidation(_)
-            | AiMuxError::KillAborted,
+            KiraMuxError::UnknownProjectId(_)
+            | KiraMuxError::UnknownAgentId(_)
+            | KiraMuxError::UnknownGroupName(_)
+            | KiraMuxError::MissingArgument(_)
+            | KiraMuxError::ConfigValidation(_)
+            | KiraMuxError::KillAborted,
         ) => ExitCode::from(2),
-        Some(AiMuxError::MissingDependency(_)) => ExitCode::from(3),
-        Some(AiMuxError::Drifted { .. }) => ExitCode::from(4),
-        Some(AiMuxError::SessionAbsent) => ExitCode::from(5),
-        Some(AiMuxError::Degraded(_)) => ExitCode::from(6),
+        Some(KiraMuxError::MissingDependency(_)) => ExitCode::from(3),
+        Some(KiraMuxError::Drifted { .. }) => ExitCode::from(4),
+        Some(KiraMuxError::SessionAbsent) => ExitCode::from(5),
+        Some(KiraMuxError::Degraded(_)) => ExitCode::from(6),
         None => ExitCode::FAILURE,
     }
 }
@@ -56,19 +51,19 @@ fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
 mod tests {
     use std::process::ExitCode;
 
-    use kira_mux::AiMuxError;
+    use kira_mux::KiraMuxError;
 
     use super::exit_code_for_error;
 
     #[test]
     fn degraded_maps_to_exit_code_6() {
-        let err = anyhow::Error::new(AiMuxError::Degraded("demo".into()));
+        let err = anyhow::Error::new(KiraMuxError::Degraded("demo".into()));
         assert_eq!(exit_code_for_error(&err), ExitCode::from(6));
     }
 
     #[test]
     fn drifted_maps_to_exit_code_4() {
-        let err = anyhow::Error::new(AiMuxError::Drifted {
+        let err = anyhow::Error::new(KiraMuxError::Drifted {
             project_id: "demo".into(),
             reason: kira_mux::WorkspaceDriftReason::FingerprintMismatch,
         });

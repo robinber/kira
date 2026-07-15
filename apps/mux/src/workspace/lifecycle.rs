@@ -2,9 +2,9 @@ use anyhow::{Result, bail};
 
 use super::launch::{TopologyGuard, apply_layout, launch_agent};
 use super::{session_name, window_target};
-use crate::domain::ResolvedProject;
-use crate::error::AiMuxError;
+use crate::error::KiraMuxError;
 use crate::inspector::{self, ManagedPane, WorkspaceTopology};
+use crate::model::ResolvedProject;
 use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID,
@@ -34,7 +34,7 @@ pub(crate) fn start(
         WorkspaceTopology::Healthy(_) => StartOutcome::Healthy,
         WorkspaceTopology::Degraded(workspace) => repair(tmux, project, &workspace.panes),
         WorkspaceTopology::Drifted { reason } => {
-            return Err(AiMuxError::Drifted {
+            return Err(KiraMuxError::Drifted {
                 project_id: project.id.clone(),
                 reason,
             }
@@ -58,7 +58,7 @@ pub(crate) fn attach(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Resul
     );
 
     if !inspector::session_exists(tmux, &session)? {
-        return Err(AiMuxError::SessionAbsent.into());
+        return Err(KiraMuxError::SessionAbsent.into());
     }
 
     attach_to_session(tmux, &session)
@@ -78,10 +78,10 @@ pub(crate) fn restart(
     );
 
     let panes = match inspector::inspect(tmux, project)? {
-        WorkspaceTopology::Absent => return Err(AiMuxError::SessionAbsent.into()),
+        WorkspaceTopology::Absent => return Err(KiraMuxError::SessionAbsent.into()),
         WorkspaceTopology::Healthy(w) | WorkspaceTopology::Degraded(w) => w.panes,
         WorkspaceTopology::Drifted { reason } => {
-            return Err(AiMuxError::Drifted {
+            return Err(KiraMuxError::Drifted {
                 project_id: project.id.clone(),
                 reason,
             }
@@ -231,7 +231,7 @@ fn restart_managed_panes(
             let managed = panes
                 .iter()
                 .find(|pane| pane.agent.id == agent_id)
-                .ok_or_else(|| AiMuxError::UnknownAgentId(agent_id.to_string()))?;
+                .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
             launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)?;
         }
         None => {
@@ -329,7 +329,7 @@ mod tests {
         fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
 
         let err = start(&fake, &project, false).err_or_panic();
-        assert!(err.downcast_ref::<AiMuxError>().is_some());
+        assert!(err.downcast_ref::<KiraMuxError>().is_some());
     }
 
     #[test]
@@ -358,8 +358,8 @@ mod tests {
 
         let err = restart(&fake, &project, Some("nonexistent")).err_or_panic();
         assert!(matches!(
-            err.downcast_ref::<AiMuxError>(),
-            Some(AiMuxError::UnknownAgentId(_))
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::UnknownAgentId(_))
         ));
     }
 
@@ -370,8 +370,8 @@ mod tests {
 
         let err = restart(&fake, &project, None).err_or_panic();
         assert!(matches!(
-            err.downcast_ref::<AiMuxError>(),
-            Some(AiMuxError::SessionAbsent)
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::SessionAbsent)
         ));
     }
 
@@ -387,8 +387,8 @@ mod tests {
 
         let err = restart(&fake, &project, None).err_or_panic();
         assert!(matches!(
-            err.downcast_ref::<AiMuxError>(),
-            Some(AiMuxError::Drifted {
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::Drifted {
                 reason: WorkspaceDriftReason::FingerprintMismatch,
                 ..
             })

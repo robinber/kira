@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::resolve::resolve_managed_pane;
-use crate::domain::ResolvedProject;
+use crate::model::ResolvedProject;
 use crate::tmux::TmuxAdapter;
 
 #[derive(Debug, Serialize)]
@@ -118,8 +118,8 @@ mod tests {
             "capture_output should fail when the session is absent",
         );
         assert!(matches!(
-            err.downcast_ref::<crate::error::AiMuxError>(),
-            Some(crate::error::AiMuxError::SessionAbsent)
+            err.downcast_ref::<crate::error::KiraMuxError>(),
+            Some(crate::error::KiraMuxError::SessionAbsent)
         ));
     }
 
