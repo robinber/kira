@@ -136,6 +136,8 @@ pub(crate) struct AgentsOutput {
 pub(crate) struct AgentInfo {
     /// Stable agent ID.
     pub id: String,
+    /// Human-friendly label from config (defaults to the agent id).
+    pub label: String,
     /// Display command for the agent.
     pub command: String,
     /// Simplified runtime state for the agents view.
@@ -209,6 +211,7 @@ pub(crate) fn build_agents_output(
 
             AgentInfo {
                 id: agent.id.clone(),
+                label: agent.label.clone(),
                 command,
                 state,
                 pane_id,

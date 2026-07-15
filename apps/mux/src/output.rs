@@ -40,7 +40,11 @@ pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
         println!("State:   {}", status.state);
         println!();
         for agent in &status.agents {
-            println!("  {:<16} {}", agent.id, agent.state);
+            println!(
+                "  {:<28} {}",
+                agent_display_name(&agent.id, agent.label.as_deref()),
+                agent.state
+            );
         }
     }
 
@@ -55,16 +59,20 @@ pub(crate) fn print_agents_table(output: &AgentsOutput) {
     println!();
     println!();
     println!(
-        "{:<12} {:<10} {:<10} {:<26} GROUPS",
+        "{:<28} {:<10} {:<10} {:<22} GROUPS",
         "AGENT", "COMMAND", "STATE", "CAPABILITIES"
     );
-    println!("{}", "\u{2500}".repeat(70));
+    println!("{}", "\u{2500}".repeat(80));
     for agent in &output.agents {
         let caps = agent.capabilities.join(", ");
         let groups = agent.groups.join(", ");
         println!(
-            "{:<12} {:<10} {:<10} {:<26} {}",
-            agent.id, agent.command, agent.state, caps, groups,
+            "{:<28} {:<10} {:<10} {:<22} {}",
+            agent_display_name(&agent.id, Some(&agent.label)),
+            agent.command,
+            agent.state,
+            caps,
+            groups,
         );
     }
 }
@@ -87,7 +95,10 @@ impl From<&AgentInfo> for AgentCapabilitiesOutput {
 }
 
 pub(crate) fn print_agent_capabilities(agent: &AgentInfo) {
-    println!("Agent: {}", agent.id);
+    println!(
+        "Agent: {}",
+        agent_display_name(&agent.id, Some(&agent.label))
+    );
     println!("State: {}", agent.state);
     println!(
         "Capabilities: {}",
@@ -129,10 +140,39 @@ impl GroupOutput {
 pub(crate) fn print_group(group_name: &str, members: &[&AgentInfo]) {
     println!("Group: {group_name}");
     for agent in members {
-        println!("  {:<12} {}", agent.id, agent.state);
+        println!(
+            "  {:<28} {}",
+            agent_display_name(&agent.id, Some(&agent.label)),
+            agent.state
+        );
     }
 }
 
 fn display_id(project_id: &str, profile_id: &str) -> String {
     format!("{project_id}/{profile_id}")
+}
+
+/// Text display for an agent: `id` alone when the label matches, otherwise
+/// `id (label)` so config labels are visible without losing the stable id.
+fn agent_display_name(id: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) if label != id => format!("{id} ({label})"),
+        _ => id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_display_name;
+
+    #[test]
+    fn agent_display_name_omits_redundant_label() {
+        assert_eq!(agent_display_name("alpha", Some("alpha")), "alpha");
+        assert_eq!(agent_display_name("alpha", None), "alpha");
+    }
+
+    #[test]
+    fn agent_display_name_includes_distinct_label() {
+        assert_eq!(agent_display_name("alpha", Some("Coder")), "alpha (Coder)");
+    }
 }

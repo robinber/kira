@@ -88,6 +88,14 @@ pub enum ConfigError {
         /// Agent missing its shell command.
         agent_id: String,
     },
+    /// A shell-mode agent set `args`, which are only used in direct mode.
+    #[error(
+        "agent {agent_id}: args are not used in shell mode (fold flags into shell_command, or use mode = \"direct\")"
+    )]
+    ShellArgsNotSupported {
+        /// Agent that set unused args.
+        agent_id: String,
+    },
     /// An environment placeholder referenced an unset variable.
     #[error("agent {agent_id} references missing environment variable {var_name}")]
     UnresolvedEnvVar {
