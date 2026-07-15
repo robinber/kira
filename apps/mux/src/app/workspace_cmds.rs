@@ -52,7 +52,22 @@ pub(crate) fn cmd_kill(project_id: &str, profile: Option<&str>, yes: bool) -> Re
 
 pub(crate) fn cmd_list(json: bool) -> Result<()> {
     let summaries = workspace::load_project_summaries()?;
-    output::print_list(&summaries, json)
+    output::print_list(&summaries, json)?;
+
+    let failure_count = summaries
+        .iter()
+        .filter(|row| row.state == crate::model::ProjectState::ConfigError)
+        .count();
+    if failure_count > 0 {
+        // Entries already carry per-file diagnostics on stdout (text + JSON).
+        // Exit non-zero so automation does not treat a broken config as
+        // "project simply absent".
+        return Err(crate::config::ConfigError::ProjectConfigLoadFailures {
+            count: failure_count,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 pub(crate) fn cmd_status(project_id: &str, profile: Option<&str>, json: bool) -> Result<()> {

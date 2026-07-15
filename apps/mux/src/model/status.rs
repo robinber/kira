@@ -20,6 +20,8 @@ pub(crate) enum ProjectState {
     Drifted,
     /// Status collection failed unexpectedly.
     Error,
+    /// The project file or profile failed config load / validation.
+    ConfigError,
 }
 
 impl fmt::Display for ProjectState {
@@ -31,6 +33,7 @@ impl fmt::Display for ProjectState {
             Self::Degraded => "degraded",
             Self::Drifted => "drifted",
             Self::Error => "error",
+            Self::ConfigError => "config_error",
         })
     }
 }
@@ -78,6 +81,12 @@ pub(crate) struct ProjectSummary {
     pub state: ProjectState,
     /// Number of configured agents.
     pub agent_count: usize,
+    /// Source project file path when `state` is `config_error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Human-readable config failure when `state` is `config_error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Full project status including per-agent state, used by the status command.

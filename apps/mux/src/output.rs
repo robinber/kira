@@ -23,15 +23,24 @@ pub(crate) fn print_list(summaries: &[ProjectSummary], json: bool) -> Result<()>
 }
 
 /// One text row of `list`: id/profile, name, state, agent count, root.
+///
+/// Config failures append path + error on following indented lines so text
+/// mode stays consistent with the JSON `path` / `error` fields.
 fn list_line(row: &ProjectSummary) -> String {
-    format!(
-        "{:<24} {:<20} {:<10} {:>2} agents  {}",
+    let primary = format!(
+        "{:<24} {:<20} {:<12} {:>2} agents  {}",
         display_id(&row.id, &row.profile_id),
-        row.name,
+        if row.name.is_empty() { "-" } else { &row.name },
         row.state,
         row.agent_count,
-        row.root,
-    )
+        if row.root.is_empty() { "-" } else { &row.root },
+    );
+    match (&row.path, &row.error) {
+        (Some(path), Some(error)) => format!("{primary}\n  path:  {path}\n  error: {error}"),
+        (Some(path), None) => format!("{primary}\n  path:  {path}"),
+        (None, Some(error)) => format!("{primary}\n  error: {error}"),
+        (None, None) => primary,
+    }
 }
 
 pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
@@ -200,11 +209,34 @@ mod tests {
             root: "/tmp/demo".to_string(),
             state: ProjectState::Running,
             agent_count: 2,
+            path: None,
+            error: None,
         });
 
         assert!(line.contains("my-app/default"), "got: {line}");
         assert!(line.contains("My App"), "got: {line}");
         assert!(line.contains("running"), "got: {line}");
-        assert!(line.ends_with("2 agents  /tmp/demo"), "got: {line}");
+        assert!(line.contains("2 agents  /tmp/demo"), "got: {line}");
+    }
+
+    #[test]
+    fn list_line_surfaces_config_error_details() {
+        let line = list_line(&ProjectSummary {
+            id: "broken".to_string(),
+            profile_id: "default".to_string(),
+            name: String::new(),
+            root: String::new(),
+            state: ProjectState::ConfigError,
+            agent_count: 0,
+            path: Some("/cfg/projects/broken.toml".to_string()),
+            error: Some("unknown field `nope`".to_string()),
+        });
+
+        assert!(line.contains("config_error"), "got: {line}");
+        assert!(
+            line.contains("path:  /cfg/projects/broken.toml"),
+            "got: {line}"
+        );
+        assert!(line.contains("error: unknown field `nope`"), "got: {line}");
     }
 }

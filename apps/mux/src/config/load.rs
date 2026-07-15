@@ -13,21 +13,45 @@ use crate::paths::AppPaths;
 
 type Result<T> = std::result::Result<T, ConfigError>;
 
-/// Load every valid project and profile discovered under the XDG config
-/// directory.
+/// A project file or profile that failed discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectConfigFailure {
+    /// Path of the project TOML that failed.
+    pub path: PathBuf,
+    /// Best-effort project id (from partial parse, or empty when unknown).
+    pub project_id: Option<String>,
+    /// Profile id when a specific profile failed; `None` for whole-file errors.
+    pub profile_id: Option<String>,
+    /// Display form of the underlying config error.
+    pub error: String,
+}
+
+/// Outcome of scanning the XDG projects directory.
+#[derive(Debug, Default)]
+pub(crate) struct LoadedProjects {
+    /// Successfully resolved project/profile combinations.
+    pub projects: Vec<ResolvedProject>,
+    /// Invalid files and profiles that could not be resolved.
+    pub failures: Vec<ProjectConfigFailure>,
+}
+
+/// Load every project and profile discovered under the XDG config directory.
+///
+/// Invalid individual project files and profiles are collected in
+/// [`LoadedProjects::failures`] (and still logged at warn) so callers such as
+/// `list` can surface them without depending on log level.
 ///
 /// # Errors
 ///
 /// Returns an error when the global config or project directory cannot be
 /// read, the global config is invalid, or multiple files define the same
-/// project ID. Invalid individual project files and profiles are logged and
-/// skipped.
+/// project ID.
 pub(crate) fn load_projects(
     paths: &AppPaths,
     resolution_mode: ResolutionMode,
-) -> Result<Vec<ResolvedProject>> {
+) -> Result<LoadedProjects> {
     let global = load_global_config(&paths.global_config_path())?;
-    let mut projects = Vec::new();
+    let mut loaded = LoadedProjects::default();
     let mut ids = BTreeSet::new();
 
     for path in project_files(paths)? {
@@ -39,6 +63,12 @@ pub(crate) fn load_projects(
                     %error,
                     "skipping invalid project file"
                 );
+                loaded.failures.push(ProjectConfigFailure {
+                    path: path.clone(),
+                    project_id: best_effort_project_id(&path),
+                    profile_id: None,
+                    error: error.to_string(),
+                });
                 continue;
             }
         };
@@ -53,7 +83,7 @@ pub(crate) fn load_projects(
         for pid in profile_ids(&raw) {
             let resolved_profile = resolve_profile(&raw, pid, &global, resolution_mode);
             match resolved_profile {
-                Ok(project) => projects.push(project),
+                Ok(project) => loaded.projects.push(project),
                 Err(error) => {
                     tracing::warn!(
                         path = %path.display(),
@@ -61,12 +91,27 @@ pub(crate) fn load_projects(
                         %error,
                         "skipping invalid profile"
                     );
+                    loaded.failures.push(ProjectConfigFailure {
+                        path: path.clone(),
+                        project_id: Some(raw.id.clone()),
+                        profile_id: Some(pid.to_string()),
+                        error: error.to_string(),
+                    });
                 }
             }
         }
     }
 
-    Ok(projects)
+    Ok(loaded)
+}
+
+/// Best-effort id from a broken file so list rows stay identifiable.
+fn best_effort_project_id(path: &Path) -> Option<String> {
+    project_id_from_file(path).ok().or_else(|| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+    })
 }
 
 /// Load one resolved project by ID and optional profile.
@@ -350,5 +395,128 @@ id = "assistant"
         let profile = ok(resolve_profile_id(&raw, None), "resolve flat profile");
 
         assert_eq!(profile, "default");
+    }
+
+    #[test]
+    fn load_projects_collects_malformed_and_unknown_field_files() {
+        let config_home = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("config home: {error}"),
+        };
+        let projects = config_home.path().join("kira-mux/projects");
+        if let Err(error) = fs::create_dir_all(&projects) {
+            panic!("projects dir: {error}");
+        }
+
+        if let Err(error) = fs::write(
+            projects.join("good.toml"),
+            r#"
+id = "good"
+name = "Good"
+root = "/tmp/good"
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+        ) {
+            panic!("write good: {error}");
+        }
+
+        if let Err(error) = fs::write(projects.join("broken-toml.toml"), "id = [\nnot = toml\n") {
+            panic!("write broken toml: {error}");
+        }
+
+        if let Err(error) = fs::write(
+            projects.join("unknown-field.toml"),
+            r#"
+id = "mystery"
+root = "/tmp/mystery"
+nope = true
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+        ) {
+            panic!("write unknown field: {error}");
+        }
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let loaded = match load_projects(&paths, ResolutionMode::Deferred) {
+            Ok(loaded) => loaded,
+            Err(error) => panic!("load: {error}"),
+        };
+
+        assert_eq!(loaded.projects.len(), 1, "only good project resolves");
+        assert_eq!(loaded.projects[0].id, "good");
+        assert_eq!(
+            loaded.failures.len(),
+            2,
+            "malformed + unknown field must surface: {:?}",
+            loaded.failures
+        );
+        assert!(
+            loaded
+                .failures
+                .iter()
+                .any(|f| f.path.ends_with("broken-toml.toml")),
+            "got: {:?}",
+            loaded.failures
+        );
+        assert!(
+            loaded
+                .failures
+                .iter()
+                .any(|f| f.path.ends_with("unknown-field.toml")
+                    && f.project_id.as_deref() == Some("mystery")),
+            "unknown-field should still expose best-effort id: {:?}",
+            loaded.failures
+        );
+    }
+
+    #[test]
+    fn load_projects_collects_invalid_profile_resolution() {
+        let config_home = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("config home: {error}"),
+        };
+        let projects = config_home.path().join("kira-mux/projects");
+        if let Err(error) = fs::create_dir_all(&projects) {
+            panic!("projects dir: {error}");
+        }
+
+        // Relative root is rejected at resolve time (#15).
+        if let Err(error) = fs::write(
+            projects.join("bad-root.toml"),
+            r#"
+id = "bad-root"
+name = "Bad Root"
+root = "relative/path"
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+        ) {
+            panic!("write bad root: {error}");
+        }
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let loaded = match load_projects(&paths, ResolutionMode::Deferred) {
+            Ok(loaded) => loaded,
+            Err(error) => panic!("load: {error}"),
+        };
+
+        assert!(loaded.projects.is_empty());
+        assert_eq!(loaded.failures.len(), 1);
+        assert_eq!(loaded.failures[0].project_id.as_deref(), Some("bad-root"));
+        assert_eq!(loaded.failures[0].profile_id.as_deref(), Some("default"));
+        assert!(
+            loaded.failures[0].error.contains("absolute")
+                || loaded.failures[0].error.contains("relative"),
+            "got: {}",
+            loaded.failures[0].error
+        );
     }
 }
