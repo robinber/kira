@@ -2,7 +2,8 @@ use anyhow::Result;
 
 use crate::config::EnvResolutionMode;
 use crate::inspector::{
-    self, RawWorkspacePane, RawWorkspaceSnapshot, SharedTopology, WorkspaceTopology,
+    self, InspectedWorkspace, RawWorkspacePane, RawWorkspaceSnapshot, SharedTopology,
+    WorkspaceTopology,
 };
 use crate::model::{
     AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
@@ -20,30 +21,8 @@ pub(crate) fn project_status(
             ProjectState::Stopped,
             offline_agent_statuses(project, AgentState::MissingPane),
         ),
-        WorkspaceTopology::Healthy(w) | WorkspaceTopology::Degraded(w) => {
-            let is_degraded = w.panes.iter().any(|p| p.pane.pane_dead);
-            let agents: Vec<AgentStatus> = w
-                .panes
-                .into_iter()
-                .map(|managed| AgentStatus {
-                    id: managed.agent.id.clone(),
-                    state: agent_state_from_pane(&managed.pane),
-                    label: Some(managed.agent.label.clone()),
-                    command: managed
-                        .agent
-                        .command
-                        .clone()
-                        .or_else(|| managed.agent.shell_command.clone()),
-                    pane_id: Some(managed.pane.pane_id.clone()),
-                })
-                .collect();
-            let state = if is_degraded {
-                ProjectState::Degraded
-            } else {
-                ProjectState::Running
-            };
-            (state, agents)
-        }
+        WorkspaceTopology::Healthy(w) => (ProjectState::Running, live_agent_statuses(&w)),
+        WorkspaceTopology::Degraded(w) => (ProjectState::Degraded, live_agent_statuses(&w)),
         WorkspaceTopology::Drifted { .. } => (
             ProjectState::Drifted,
             offline_agent_statuses(project, AgentState::Error),
@@ -123,6 +102,24 @@ fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<Pro
         SharedTopology::Degraded { .. } => ProjectState::Degraded,
         SharedTopology::Drifted { .. } => ProjectState::Drifted,
     })
+}
+
+fn live_agent_statuses(workspace: &InspectedWorkspace) -> Vec<AgentStatus> {
+    workspace
+        .panes
+        .iter()
+        .map(|managed| AgentStatus {
+            id: managed.agent.id.clone(),
+            state: agent_state_from_pane(&managed.pane),
+            label: Some(managed.agent.label.clone()),
+            command: managed
+                .agent
+                .command
+                .clone()
+                .or_else(|| managed.agent.shell_command.clone()),
+            pane_id: Some(managed.pane.pane_id.clone()),
+        })
+        .collect()
 }
 
 fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<AgentStatus> {

@@ -1,17 +1,18 @@
 use anyhow::Result;
-use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Summary of a tmux pane returned by `list-panes`.
-pub struct PaneInfo {
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror tmux's pane_* format variables"
+)]
+pub(crate) struct PaneInfo {
     /// Pane target ID such as `%1`.
-    pub pane_id: String,
-    /// Owning window target ID such as `@3`.
-    pub window_id: String,
+    pub(crate) pane_id: String,
     /// Whether tmux reports the pane process as exited.
-    pub pane_dead: bool,
+    pub(crate) pane_dead: bool,
     /// Exit status recorded by tmux when the pane is dead.
-    pub pane_dead_status: Option<i32>,
+    pub(crate) pane_dead_status: Option<i32>,
 }
 
 pub(crate) trait TmuxAdapter {
@@ -23,7 +24,7 @@ pub(crate) trait TmuxAdapter {
         window_name: &str,
         pane_count: usize,
     ) -> Result<()>;
-    fn list_panes(&self, target: Option<&str>) -> Result<Vec<PaneInfo>>;
+    fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>>;
     fn split_window(&self, target: &str, start_directory: &str) -> Result<()>;
     fn select_layout(&self, target: &str, layout: &str) -> Result<()>;
     fn respawn_pane(
@@ -43,6 +44,10 @@ pub(crate) trait TmuxAdapter {
     fn set_pane_option(&self, target: &str, name: &str, value: &str) -> Result<()>;
     fn get_pane_option(&self, target: &str, name: &str) -> Result<Option<String>>;
     fn paste_text(&self, target_pane: &str, text: &str) -> Result<()>;
+    /// Send named tmux keys (e.g. `Enter`, `C-c`) to a pane.
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()>;
+    /// Type `text` into a pane literally, never interpreting it as key names
+    /// or `send-keys` flags.
+    fn send_text(&self, target_pane: &str, text: &str) -> Result<()>;
     fn capture_pane(&self, pane_id: &str, history_limit: usize) -> Result<String>;
 }

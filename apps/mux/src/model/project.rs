@@ -1,13 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
-
 use crate::config::{AgentMode, Layout, RemainOnExit};
 
 /// Fully resolved project configuration ready for tmux workspace management.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ResolvedProject {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedProject {
     /// Stable project ID from config.
     pub id: String,
     /// Active profile ID.
@@ -41,7 +39,7 @@ pub struct ResolvedProject {
 impl ResolvedProject {
     /// Returns the groups that contain the given agent.
     #[must_use]
-    pub fn groups_for(&self, agent_id: &str) -> Vec<String> {
+    pub(crate) fn groups_for(&self, agent_id: &str) -> Vec<String> {
         self.groups
             .iter()
             .filter(|(_, members)| members.iter().any(|m| m == agent_id))
@@ -51,8 +49,8 @@ impl ResolvedProject {
 }
 
 /// Fully resolved agent configuration ready for pane creation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ResolvedAgent {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedAgent {
     /// Stable agent ID from config.
     pub id: String,
     /// Human-friendly agent label.

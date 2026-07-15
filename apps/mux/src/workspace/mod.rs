@@ -1,6 +1,6 @@
 //! Tmux workspace lifecycle for project-scoped agent sessions.
 
-pub(crate) mod identity;
+mod identity;
 mod launch;
 mod lifecycle;
 mod status;
