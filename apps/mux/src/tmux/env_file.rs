@@ -7,19 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
-/// Process-env variables forwarded to every tmux agent pane this client
-/// respawns.
-///
-/// The tmux server keeps a frozen copy of the environment it was started with,
-/// so panes do not reliably inherit variables that the calling kira-mux
-/// process loads later (for example, entries from `.env`). Every name in this
-/// list is looked up in the process env when a pane is respawned and delivered
-/// through a 0600 env file sourced by the pane wrapper. Names that are not set
-/// in the process env are silently skipped.
-///
-/// Kept deliberately narrow to avoid leaking unrelated secrets into tmux
-/// sessions. Add names here only when every agent pane must inherit them.
-const FORWARDED_ENV_VARS: &[&str] = &[];
 const ENV_WRAPPER_SHELL: &str = "/bin/sh";
 const ENV_WRAPPER_ARG0: &str = "kira-mux-env";
 const ENV_WRAPPER_SCRIPT: &str =
@@ -27,8 +14,13 @@ const ENV_WRAPPER_SCRIPT: &str =
 
 static ENV_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A 0600 temp file carrying env values for one pane launch.
+///
+/// The file is deleted on drop unless [`ShellEnvFile::defuse`] was called,
+/// which hands deletion ownership to the pane wrapper script.
 pub(super) struct ShellEnvFile {
     path: PathBuf,
+    handed_off: bool,
 }
 
 impl ShellEnvFile {
@@ -81,7 +73,10 @@ impl ShellEnvFile {
                 });
             }
 
-            return Ok(Self { path });
+            return Ok(Self {
+                path,
+                handed_off: false,
+            });
         }
 
         bail!(
@@ -97,7 +92,18 @@ impl ShellEnvFile {
             .ok_or_else(|| anyhow::anyhow!("tmux env file path is not valid UTF-8"))
     }
 
-    pub(super) fn remove_best_effort(&self) {
+    /// Hand deletion ownership to the pane wrapper script; drop no longer
+    /// removes the file.
+    pub(super) fn defuse(&mut self) {
+        self.handed_off = true;
+    }
+}
+
+impl Drop for ShellEnvFile {
+    fn drop(&mut self) {
+        if self.handed_off {
+            return;
+        }
         match fs::remove_file(&self.path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -105,24 +111,11 @@ impl ShellEnvFile {
                 tracing::warn!(
                     path = %self.path.display(),
                     %error,
-                    "failed to remove tmux env file after spawn failure"
+                    "failed to remove tmux env file after launch failure"
                 );
             }
         }
     }
-}
-
-pub(super) fn forwarded_env_pairs_from<F>(mut lookup: F) -> Vec<(String, String)>
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    let mut pairs = Vec::with_capacity(FORWARDED_ENV_VARS.len());
-    for &key in FORWARDED_ENV_VARS {
-        if let Some(value) = lookup(key) {
-            pairs.push((key.to_string(), value));
-        }
-    }
-    pairs
 }
 
 pub(super) fn respawn_pane_args(
@@ -187,27 +180,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::{
-        FORWARDED_ENV_VARS, ShellEnvFile, forwarded_env_pairs_from, respawn_pane_args,
-        shell_env_file_contents, wrap_command_with_env_file,
+        ShellEnvFile, respawn_pane_args, shell_env_file_contents, wrap_command_with_env_file,
     };
     use crate::test_support::TestResultExt;
-
-    #[test]
-    fn forwarded_env_whitelist_is_empty_by_default() {
-        assert!(
-            FORWARDED_ENV_VARS.is_empty(),
-            "keep the default whitelist empty; only add names agents must inherit"
-        );
-    }
-
-    #[test]
-    fn forwarded_env_pairs_from_is_empty_with_empty_whitelist() {
-        let pairs = forwarded_env_pairs_from(|key| match key {
-            "SHOULD_NOT_FORWARD" => Some("secret".to_string()),
-            _ => None,
-        });
-        assert!(pairs.is_empty());
-    }
 
     #[test]
     fn env_file_wrapper_argv_never_contains_resolved_secret_values() {
@@ -281,6 +256,36 @@ mod tests {
     }
 
     #[test]
+    fn env_file_removed_on_drop_unless_defused() {
+        let temp = tempfile::tempdir().or_panic();
+        let env_file = ShellEnvFile::create_in(
+            &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
+            temp.path(),
+        )
+        .or_panic();
+        let path = env_file.path.clone();
+        assert!(path.exists());
+
+        drop(env_file);
+        assert!(!path.exists(), "dropped env file must be deleted");
+    }
+
+    #[test]
+    fn defused_env_file_survives_drop() {
+        let temp = tempfile::tempdir().or_panic();
+        let mut env_file = ShellEnvFile::create_in(
+            &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
+            temp.path(),
+        )
+        .or_panic();
+        let path = env_file.path.clone();
+        env_file.defuse();
+
+        drop(env_file);
+        assert!(path.exists(), "defused env file is owned by the wrapper");
+    }
+
+    #[test]
     fn env_file_contents_exports_values_with_shell_quoting() {
         let contents = shell_env_file_contents(&[
             ("KIRA_TEST_TOKEN".to_string(), "value:pa'ss".to_string()),
@@ -289,11 +294,5 @@ mod tests {
 
         assert!(contents.contains("export 'KIRA_TEST_TOKEN=value:pa'\\''ss'"));
         assert!(contents.contains("export 'KIRA_MODE=worker pool'"));
-    }
-
-    #[test]
-    fn forwarded_env_pairs_from_is_empty_when_lookup_returns_none() {
-        let pairs = forwarded_env_pairs_from(|_| None);
-        assert!(pairs.is_empty());
     }
 }

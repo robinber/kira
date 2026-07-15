@@ -13,9 +13,8 @@ pub(super) fn stdout_lines(output: &Output) -> Vec<String> {
 }
 
 pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
-    let mut parts = line.splitn(4, '|');
+    let mut parts = line.splitn(3, '|');
     let pane_id = parts.next().context("missing pane_id")?.to_string();
-    let window_id = parts.next().context("missing window_id")?.to_string();
     let pane_dead = parts.next().context("missing pane_dead")? == "1";
     let pane_dead_status = parts.next().and_then(|value| {
         if value.is_empty() {
@@ -27,7 +26,6 @@ pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
 
     Ok(PaneInfo {
         pane_id,
-        window_id,
         pane_dead,
         pane_dead_status,
     })
@@ -56,6 +54,15 @@ pub(super) fn is_missing_session_message(message: &str) -> bool {
     message.starts_with("can't find session") || message.starts_with("session not found")
 }
 
+/// Match tmux errors for a missing window or pane target (a missing session
+/// also counts — the target's session component no longer resolves).
+pub(super) fn is_missing_target_message(message: &str) -> bool {
+    is_missing_session_message(message)
+        || message.starts_with("can't find window")
+        || message.starts_with("can't find pane")
+        || message.starts_with("window not found")
+}
+
 pub(super) fn is_no_server_message(message: &str) -> bool {
     message.starts_with("no server running on ")
         || (message.starts_with("error connecting to ")
@@ -74,14 +81,13 @@ pub(super) fn map_spawn_error(error: std::io::Error, tmux_bin: &str) -> anyhow::
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
     use std::io;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
 
     use super::{
-        command_error, is_missing_session_message, is_no_server_message, map_spawn_error,
-        normalize_args, parse_pane_line, stdout_lines,
+        command_error, is_missing_session_message, is_missing_target_message, is_no_server_message,
+        map_spawn_error, parse_pane_line, stdout_lines,
     };
     use crate::error::KiraMuxError;
     use crate::test_support::{TestOptionExt, TestResultExt};
@@ -115,27 +121,25 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_alive_pane() {
-        let pane = parse_pane_line("%5|@2|0|").or_panic();
+        let pane = parse_pane_line("%5|0|").or_panic();
 
         assert_eq!(pane.pane_id, "%5");
-        assert_eq!(pane.window_id, "@2");
         assert!(!pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
     }
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_exit_code() {
-        let pane = parse_pane_line("%5|@2|1|137").or_panic();
+        let pane = parse_pane_line("%5|1|137").or_panic();
 
         assert_eq!(pane.pane_id, "%5");
-        assert_eq!(pane.window_id, "@2");
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, Some(137));
     }
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_empty_status() {
-        let pane = parse_pane_line("%5|@2|1|").or_panic();
+        let pane = parse_pane_line("%5|1|").or_panic();
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -143,7 +147,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_ignores_non_numeric_dead_status() {
-        let pane = parse_pane_line("%5|@2|1|not-a-number").or_panic();
+        let pane = parse_pane_line("%5|1|not-a-number").or_panic();
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -151,33 +155,33 @@ mod tests {
 
     #[test]
     fn parse_pane_line_preserves_empty_pane_id_field() {
-        let pane = parse_pane_line("|@2|0|").or_panic();
+        let pane = parse_pane_line("|0|").or_panic();
 
         assert_eq!(pane.pane_id, "");
-        assert_eq!(pane.window_id, "@2");
         assert!(!pane.pane_dead);
     }
 
     #[test]
-    fn parse_pane_line_rejects_missing_window_id_field() {
-        let error = parse_pane_line("%5").err_or_panic();
-
-        assert_eq!(error.to_string(), "missing window_id");
-    }
-
-    #[test]
     fn parse_pane_line_rejects_missing_pane_dead_field() {
-        let error = parse_pane_line("%5|@2").err_or_panic();
+        let error = parse_pane_line("%5").err_or_panic();
 
         assert_eq!(error.to_string(), "missing pane_dead");
     }
 
     #[test]
-    fn parse_pane_line_keeps_extra_status_separator_in_status_field() {
-        let pane = parse_pane_line("%5|@2|1|137|extra").or_panic();
+    fn parse_pane_line_treats_status_remainder_as_opaque() {
+        let pane = parse_pane_line("%5|1|137|extra").or_panic();
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
+    }
+
+    #[test]
+    fn is_missing_target_message_matches_window_pane_and_session() {
+        assert!(is_missing_target_message("can't find window: agents"));
+        assert!(is_missing_target_message("can't find pane: %7"));
+        assert!(is_missing_target_message("can't find session: demo"));
+        assert!(!is_missing_target_message("some other tmux error"));
     }
 
     #[test]
@@ -205,24 +209,6 @@ mod tests {
             command_error(&output),
             format!("tmux command failed with status {}", output.status)
         );
-    }
-
-    #[test]
-    fn normalize_args_accepts_empty_iterator() {
-        let args: Vec<String> = normalize_args(Vec::<String>::new());
-
-        assert!(args.is_empty());
-    }
-
-    #[test]
-    fn normalize_args_accepts_borrowed_and_owned_strings() {
-        let args = normalize_args([
-            Cow::Borrowed("list-panes"),
-            Cow::Owned(String::from("-F")),
-            Cow::Borrowed("#{pane_id}"),
-        ]);
-
-        assert_eq!(args, ["list-panes", "-F", "#{pane_id}"]);
     }
 
     #[test]
