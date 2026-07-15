@@ -104,7 +104,7 @@ mod tests {
             layout: Layout::Auto,
             main_pane_ratio: 50,
             window_name: "agents".to_string(),
-            session_prefix: "ai".to_string(),
+            session_prefix: "kira".to_string(),
             default_shell: "/bin/sh".to_string(),
             remain_on_exit: RemainOnExit::Failed,
             tmux_bin: "tmux".to_string(),
