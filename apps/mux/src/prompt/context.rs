@@ -11,6 +11,9 @@ pub(crate) struct PromptContext {
 }
 
 impl PromptContext {
+    /// Context with only the identity fields set; test convenience since
+    /// production callers always render from an inspected topology.
+    #[cfg(test)]
     pub(crate) fn minimal(agent_id: &str, project_name: &str, user_prompt: &str) -> Self {
         Self {
             user_prompt: user_prompt.to_owned(),
