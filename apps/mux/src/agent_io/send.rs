@@ -62,7 +62,8 @@ fn render_final_prompt(
                 crate::prompt::extract_agent_state(topology, project);
             let ctx = PromptContext {
                 user_prompt: prompt.to_owned(),
-                agent_name: agent_id.to_owned(),
+                // Prefer the configured label so templates see the human name.
+                agent_name: agent.map_or_else(|| agent_id.to_owned(), |a| a.label.clone()),
                 project_name: project.name.clone(),
                 active_agents,
                 agent_states,
@@ -327,9 +328,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 FakeOp::PasteText { text, .. }
-                    if text == "Agent alpha in Test: hello world"
+                    if text == "Agent Alpha in Test: hello world"
             )),
-            "expected rendered template in paste, got: {ops:?}"
+            "expected rendered template (label as agent_name) in paste, got: {ops:?}"
         );
     }
 
@@ -404,7 +405,7 @@ mod tests {
 
         let sent = send_prompt(&fake, &project, "alpha", "hello world", false).or_panic();
         assert_eq!(
-            sent, "Agent alpha in Test: hello world",
+            sent, "Agent Alpha in Test: hello world",
             "send_prompt must return the rendered prompt, not the raw input"
         );
     }
