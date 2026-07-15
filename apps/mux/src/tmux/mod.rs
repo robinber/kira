@@ -9,6 +9,6 @@ mod parse;
 mod paste;
 
 pub(crate) use adapter::{PaneInfo, TmuxAdapter};
-pub(crate) use client::TmuxClient;
+pub(crate) use client::{PaneSummary, TmuxClient, WorkspaceSummarySnapshot};
 pub(crate) use error::TmuxError;
 pub(crate) use paste::paste_then_submit_text;
