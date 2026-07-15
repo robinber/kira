@@ -339,6 +339,11 @@ fn validate_agent(
 }
 
 fn normalize_project_root(root: &str, resolution_mode: ResolutionMode) -> Result<PathBuf> {
+    // Session names hash the project root. Resolving relative roots against
+    // process CWD would make the same XDG config target different sessions
+    // depending on where kira-mux is invoked — reject that footgun.
+    require_stable_project_root(root)?;
+
     let expanded = expand_path(root, None)?;
 
     if !expanded.exists() && resolution_mode == ResolutionMode::Runtime {
@@ -353,6 +358,18 @@ fn normalize_project_root(root: &str, resolution_mode: ResolutionMode) -> Result
     // symlink becomes broken after launch, making the session impossible to
     // find for status or cleanup.
     Ok(expanded)
+}
+
+/// Project roots must be absolute or `~/...` so resolution never depends on
+/// the process current directory. Agent `cwd` may still be relative to root.
+fn require_stable_project_root(root: &str) -> Result<()> {
+    if root == "~" || root.starts_with("~/") {
+        return Ok(());
+    }
+    if Path::new(root).is_absolute() {
+        return Ok(());
+    }
+    Err(ConfigError::RelativeProjectRoot(root.to_string()))
 }
 
 fn resolve_agent_cwd(
@@ -657,6 +674,89 @@ mod tests {
             "resolved root (and thus the derived session name) must be \
              identical before and after the directory disappears"
         );
+    }
+
+    #[test]
+    fn project_root_rejects_relative_paths() {
+        for root in [".", "relative", "../sibling", "tmp/project"] {
+            let error = normalize_project_root(root, ResolutionMode::Deferred).err_or_panic();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::RelativeProjectRoot(got) if got == root
+                ),
+                "expected RelativeProjectRoot for {root:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_project_root_is_stable_across_process_cwd() {
+        // `set_current_dir` is process-global; serialize tests that mutate it.
+        static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let base = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("failed to create tempdir: {error}"),
+        };
+        let project = base.path().join("proj");
+        let cwd_a = base.path().join("cwd-a");
+        let cwd_b = base.path().join("cwd-b");
+        for dir in [&project, &cwd_a, &cwd_b] {
+            if let Err(error) = std::fs::create_dir(dir) {
+                panic!("failed to create {}: {error}", dir.display());
+            }
+        }
+        let configured = project.display().to_string();
+        assert!(
+            Path::new(&configured).is_absolute(),
+            "temp paths must be absolute for this test"
+        );
+
+        let original = env::current_dir().or_panic();
+        let restore = |path: &Path| {
+            if let Err(error) = env::set_current_dir(path) {
+                panic!("failed to restore cwd {}: {error}", path.display());
+            }
+        };
+
+        if let Err(error) = env::set_current_dir(&cwd_a) {
+            panic!("failed to chdir a: {error}");
+        }
+        let from_a = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+        let relative_from_a = normalize_project_root(".", ResolutionMode::Deferred).err_or_panic();
+
+        if let Err(error) = env::set_current_dir(&cwd_b) {
+            restore(&original);
+            panic!("failed to chdir b: {error}");
+        }
+        let from_b = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+        let relative_from_b = normalize_project_root(".", ResolutionMode::Deferred).err_or_panic();
+        restore(&original);
+
+        assert_eq!(
+            from_a, from_b,
+            "absolute roots must resolve identically from every CWD"
+        );
+        assert!(matches!(
+            relative_from_a,
+            ConfigError::RelativeProjectRoot(_)
+        ));
+        assert!(matches!(
+            relative_from_b,
+            ConfigError::RelativeProjectRoot(_)
+        ));
+    }
+
+    #[test]
+    fn home_relative_project_root_is_accepted() {
+        // HOME may be unset in some environments; expand_path would fail then.
+        // We only assert the stability gate accepts the form.
+        require_stable_project_root("~/projects/demo").or_panic();
+        require_stable_project_root("~").or_panic();
     }
 
     #[test]
