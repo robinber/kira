@@ -1,6 +1,7 @@
 use crate::config::AgentMode;
 use crate::model::ResolvedAgent;
 use crate::tmux::metadata::PANE_COMMAND_SHELL;
+use crate::util::command_basename;
 
 const DOUBLE_ENTER_TOOLS: &[&str] = &["codex", "claude", "opencode", "qwen", "grok"];
 const SEND_KEYS_TEXT_TOOLS: &[&str] = &["opencode"];
@@ -36,10 +37,7 @@ fn effective_basename<'a>(
             if agent.mode != AgentMode::Direct {
                 return None;
             }
-            agent
-                .command
-                .as_deref()
-                .map(|cmd| cmd.rsplit('/').next().unwrap_or(cmd))
+            agent.command.as_deref().map(command_basename)
         })
 }
 
@@ -59,7 +57,7 @@ fn contains_tool(command: &str, tools: &[&str]) -> bool {
                     '\'' | '"' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>'
                 )
         })
-        .map(|token| token.rsplit('/').next().unwrap_or(token))
+        .map(command_basename)
         .any(|token| tools.contains(&token))
 }
 
