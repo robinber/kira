@@ -431,7 +431,7 @@ impl TmuxClient {
         if output.status.success() {
             return Ok(());
         }
-        bail!(command_error(&output));
+        Err(failed_tmux_stdin_status(&output))
     }
 
     pub(crate) fn snapshot_summary(
@@ -507,6 +507,16 @@ fn failed_tmux_status(target: &str, output: &Output) -> anyhow::Error {
     }
 }
 
+/// Classify a failed stdin command without changing generic error semantics.
+fn failed_tmux_stdin_status(output: &Output) -> anyhow::Error {
+    let message = command_error(output);
+    if is_no_server_message(&message) {
+        TmuxError::NoServer(message).into()
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
 /// Escape a trailing `;` so tmux does not treat the final argument as a
 /// command separator.
 fn escape_trailing_semicolon(text: &str) -> Cow<'_, str> {
@@ -552,8 +562,8 @@ mod tests {
     use std::process::{ExitStatus, Output};
 
     use super::{
-        escape_trailing_semicolon, failed_tmux_status, parse_display_message_line,
-        parse_pane_summary_line,
+        escape_trailing_semicolon, failed_tmux_status, failed_tmux_stdin_status,
+        parse_display_message_line, parse_pane_summary_line,
     };
     use crate::tmux::TmuxError;
 
@@ -644,5 +654,23 @@ mod tests {
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::NoServer(_))
         ));
+    }
+
+    #[test]
+    fn failed_tmux_stdin_status_maps_no_server() {
+        let error = failed_tmux_stdin_status(&failed_output(
+            "no server running on /tmp/tmux-1000/default",
+        ));
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::NoServer(_))
+        ));
+    }
+
+    #[test]
+    fn failed_tmux_stdin_status_leaves_generic_failure_untyped() {
+        let error = failed_tmux_stdin_status(&failed_output("load-buffer failed"));
+        assert!(error.downcast_ref::<TmuxError>().is_none());
+        assert_eq!(error.to_string(), "load-buffer failed");
     }
 }

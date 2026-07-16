@@ -26,4 +26,13 @@ impl TmuxError {
             Some(Self::MissingTarget(_) | Self::MissingSession(_))
         )
     }
+
+    /// True when a previously resolved target can no longer be addressed,
+    /// including when its last pane disappearing stopped the tmux server.
+    pub(crate) fn is_target_unavailable(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<Self>(),
+            Some(Self::NoServer(_) | Self::MissingTarget(_) | Self::MissingSession(_))
+        )
+    }
 }

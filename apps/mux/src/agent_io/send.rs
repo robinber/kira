@@ -105,7 +105,7 @@ fn paste_and_submit(
     final_prompt: &str,
 ) -> Result<()> {
     match paste_and_submit_inner(tmux, pane, agent, final_prompt) {
-        Err(error) if TmuxError::is_missing_target(&error) => {
+        Err(error) if TmuxError::is_target_unavailable(&error) => {
             Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
         }
         other => other,
@@ -370,6 +370,25 @@ mod tests {
                 Some(KiraMuxError::DeadPane(id)) if id == "alpha"
             ),
             "vanished pane on send-text delivery must be typed DeadPane, got: {err}"
+        );
+    }
+
+    #[test]
+    fn send_prompt_maps_server_loss_mid_submit_to_dead_pane() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        // Removing the only pane also stops an isolated tmux server, which
+        // reports NoServer instead of MissingTarget on the next command.
+        fake.set_fail_delivery_no_server(true);
+
+        let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::DeadPane(id)) if id == "alpha"
+            ),
+            "server loss during submit must be typed DeadPane (exit 6), got: {err}"
         );
     }
 

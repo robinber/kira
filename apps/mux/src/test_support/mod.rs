@@ -23,6 +23,8 @@ pub(crate) struct FakeTmux {
     /// When set, paste/send delivery ops return typed `MissingTarget` so
     /// submit can exercise the mid-delivery vanished-pane race.
     fail_delivery_missing_target: AtomicBool,
+    /// When set, paste/send delivery ops report that the tmux server stopped.
+    fail_delivery_no_server: AtomicBool,
     /// When set, a successful `respawn_pane` marks the pane dead immediately
     /// so post-launch health checks observe an instant exit.
     respawn_exits_immediately: AtomicBool,
@@ -155,6 +157,7 @@ impl FakeTmux {
             fail_send_keys: AtomicBool::new(false),
             fail_respawn: AtomicBool::new(false),
             fail_delivery_missing_target: AtomicBool::new(false),
+            fail_delivery_no_server: AtomicBool::new(false),
             respawn_exits_immediately: AtomicBool::new(false),
         }
     }
@@ -175,6 +178,21 @@ impl FakeTmux {
     pub(crate) fn set_fail_delivery_missing_target(&self, fail: bool) {
         self.fail_delivery_missing_target
             .store(fail, Ordering::Relaxed);
+    }
+
+    /// Simulate an isolated tmux server stopping with its last pane.
+    pub(crate) fn set_fail_delivery_no_server(&self, fail: bool) {
+        self.fail_delivery_no_server.store(fail, Ordering::Relaxed);
+    }
+
+    fn delivery_failure(&self, target_pane: &str) -> Option<anyhow::Error> {
+        if self.fail_delivery_no_server.load(Ordering::Relaxed) {
+            Some(TmuxError::NoServer("no server running on fake socket".to_string()).into())
+        } else if self.fail_delivery_missing_target.load(Ordering::Relaxed) {
+            Some(TmuxError::MissingTarget(target_pane.to_string()).into())
+        } else {
+            None
+        }
     }
 
     pub(crate) fn set_respawn_exits_immediately(&self, exits: bool) {
@@ -561,8 +579,8 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn paste_text(&self, target_pane: &str, text: &str) -> Result<()> {
-        if self.fail_delivery_missing_target.load(Ordering::Relaxed) {
-            return Err(TmuxError::MissingTarget(target_pane.to_string()).into());
+        if let Some(error) = self.delivery_failure(target_pane) {
+            return Err(error);
         }
         if self.fail_paste.load(Ordering::Relaxed) {
             bail!("fake tmux paste_text failure");
@@ -579,8 +597,8 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()> {
-        if self.fail_delivery_missing_target.load(Ordering::Relaxed) {
-            return Err(TmuxError::MissingTarget(target_pane.to_string()).into());
+        if let Some(error) = self.delivery_failure(target_pane) {
+            return Err(error);
         }
         if self.fail_send_keys.load(Ordering::Relaxed) {
             bail!("fake tmux send_keys failure");
@@ -593,8 +611,8 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()> {
-        if self.fail_delivery_missing_target.load(Ordering::Relaxed) {
-            return Err(TmuxError::MissingTarget(target_pane.to_string()).into());
+        if let Some(error) = self.delivery_failure(target_pane) {
+            return Err(error);
         }
         if self.fail_send_keys.load(Ordering::Relaxed) {
             bail!("fake tmux send_text failure");
