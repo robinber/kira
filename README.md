@@ -86,6 +86,29 @@ config.
 | `restart` | Restart one agent, or all panes |
 | `kill` | Tear down the managed session |
 
+### Select the current project with `.`
+
+Every command that accepts a project id also accepts the exact target `.`.
+From anywhere inside a configured project root, Kira resolves `.` to that
+project:
+
+```bash
+cd ~/projects/my-app/crates/api
+kira-mux status .
+kira-mux send . coder "review this crate"
+kira-mux capture . coder --lines 80
+```
+
+Kira compares the physical current directory with configured project roots.
+If roots are nested, the deepest matching root wins. No match, or equally
+specific matches, is a configuration error (exit code 2); pass an explicit
+project id to disambiguate. Profile selection works exactly as it does with an
+explicit id, and the resolved project's configured id and root still determine
+the tmux session identity.
+
+`.` is a contextual project selector, not an arbitrary path argument. Other
+paths and project ids keep their existing meaning.
+
 ## Configuration sketch
 
 `~/.config/kira-mux/projects/my-app.toml`:

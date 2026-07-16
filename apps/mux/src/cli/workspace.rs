@@ -1,5 +1,7 @@
 use clap::Subcommand;
 
+use super::ProjectTarget;
+
 /// Arguments for `kira-mux agents`; a subcommand is required.
 #[derive(Debug, clap::Args)]
 pub(crate) struct AgentsArgs {
@@ -14,8 +16,8 @@ pub(crate) enum AgentsCommand {
     /// `running` means the pane process is alive, not that the agent is
     /// input-ready.
     List {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
@@ -25,8 +27,8 @@ pub(crate) enum AgentsCommand {
     },
     /// Show one agent's capabilities and live state.
     Capabilities {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Agent id within the project.
         agent_id: String,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
@@ -38,8 +40,8 @@ pub(crate) enum AgentsCommand {
     },
     /// Show the members of a named agent group.
     Group {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Group name as declared on agents under `groups`.
         group_name: String,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.

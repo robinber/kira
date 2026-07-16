@@ -1,5 +1,8 @@
 //! Clap definitions for the `kira-mux` CLI.
 
+use std::convert::Infallible;
+use std::str::FromStr;
+
 use clap::{Parser, Subcommand};
 
 pub(crate) mod workspace;
@@ -22,6 +25,27 @@ pub(crate) struct Cli {
     pub(crate) command: CommandKind,
 }
 
+/// Project selector accepted by commands that operate on one workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProjectTarget {
+    /// Stable project ID from the XDG registry.
+    Id(String),
+    /// Registered project whose root contains the process current directory.
+    CurrentDirectory,
+}
+
+impl FromStr for ProjectTarget {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "." {
+            Ok(Self::CurrentDirectory)
+        } else {
+            Ok(Self::Id(value.to_string()))
+        }
+    }
+}
+
 /// CLI command surface.
 #[derive(Debug, Subcommand)]
 pub(crate) enum CommandKind {
@@ -30,8 +54,8 @@ pub(crate) enum CommandKind {
     /// Prefer `open` for interactive agents on a cold start so you can finish
     /// first-run UI (trust directory, login, …) before unattended `send`.
     Open {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
@@ -41,16 +65,16 @@ pub(crate) enum CommandKind {
     /// Fine once agents are already bootstrapped. On a cold interactive first
     /// launch, use `open` (or `start` then `attach`) before the first `send`.
     Start {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
     },
     /// Attach to an existing workspace session.
     Attach {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
@@ -69,8 +93,8 @@ pub(crate) enum CommandKind {
     /// `running` means the pane process is alive, not that the agent TUI is
     /// past setup and ready for tasks.
     Status {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
@@ -85,8 +109,8 @@ pub(crate) enum CommandKind {
     /// Use after changing host env referenced by `$VAR` agent env entries so
     /// panes re-resolve and re-apply injections.
     Restart {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Agent id to restart; omit to restart every pane in the workspace.
         agent_id: Option<String>,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
@@ -95,8 +119,8 @@ pub(crate) enum CommandKind {
     },
     /// Kill the managed tmux session.
     Kill {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
@@ -116,8 +140,8 @@ pub(crate) enum CommandKind {
     /// cold interactive first launch, finish setup with `open` (or attach)
     /// before the first unattended send.
     Send {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Target agent id within the project.
         agent_id: String,
         /// Prompt text delivered to the pane (after optional template render).
@@ -141,8 +165,8 @@ pub(crate) enum CommandKind {
     },
     /// Capture recent pane output from a live agent.
     Capture {
-        /// Project id from `~/.config/kira-mux/projects/<id>.toml`.
-        project_id: String,
+        /// Project id, or `.` for the registered project containing the CWD.
+        project: ProjectTarget,
         /// Target agent id within the project.
         agent_id: String,
         /// Number of history lines to capture.
@@ -155,4 +179,25 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         profile: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectTarget;
+
+    #[test]
+    fn project_target_dot_selects_current_directory() {
+        assert_eq!(
+            ".".parse::<ProjectTarget>(),
+            Ok(ProjectTarget::CurrentDirectory)
+        );
+    }
+
+    #[test]
+    fn project_target_preserves_explicit_id() {
+        assert_eq!(
+            "demo".parse::<ProjectTarget>(),
+            Ok(ProjectTarget::Id("demo".to_string()))
+        );
+    }
 }

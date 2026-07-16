@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::cli::{Cli, CommandKind};
-use crate::config::{ResolutionMode, load_project};
+use crate::cli::{Cli, CommandKind, ProjectTarget};
+use crate::config::{ResolutionMode, load_project, load_project_from_current_directory};
 use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
 use crate::tmux::TmuxClient;
@@ -33,44 +33,41 @@ command = "codex"
 pub(crate) fn run(cli: Cli) -> Result<()> {
     match cli.command {
         CommandKind::Init { force } => init(force),
-        CommandKind::Open {
-            project_id,
-            profile,
-        } => workspace_cmds::cmd_open(&project_id, profile.as_deref()),
-        CommandKind::Start {
-            project_id,
-            profile,
-        } => workspace_cmds::cmd_start(&project_id, profile.as_deref(), false),
-        CommandKind::Attach {
-            project_id,
-            profile,
-        } => workspace_cmds::cmd_attach(&project_id, profile.as_deref()),
+        CommandKind::Open { project, profile } => {
+            workspace_cmds::cmd_open(&project, profile.as_deref())
+        }
+        CommandKind::Start { project, profile } => {
+            workspace_cmds::cmd_start(&project, profile.as_deref(), false)
+        }
+        CommandKind::Attach { project, profile } => {
+            workspace_cmds::cmd_attach(&project, profile.as_deref())
+        }
         CommandKind::List { json } => workspace_cmds::cmd_list(json),
         CommandKind::Status {
-            project_id,
+            project,
             profile,
             json,
-        } => workspace_cmds::cmd_status(&project_id, profile.as_deref(), json),
+        } => workspace_cmds::cmd_status(&project, profile.as_deref(), json),
         CommandKind::Agents(args) => agent_cmds::cmd_agents_dispatch(args.command),
         CommandKind::Restart {
-            project_id,
+            project,
             agent_id,
             profile,
-        } => workspace_cmds::cmd_restart(&project_id, profile.as_deref(), agent_id.as_deref()),
+        } => workspace_cmds::cmd_restart(&project, profile.as_deref(), agent_id.as_deref()),
         CommandKind::Kill {
-            project_id,
+            project,
             profile,
             yes,
-        } => workspace_cmds::cmd_kill(&project_id, profile.as_deref(), yes),
+        } => workspace_cmds::cmd_kill(&project, profile.as_deref(), yes),
         CommandKind::Send {
-            project_id,
+            project,
             agent_id,
             prompt,
             profile,
             no_template,
             wait,
         } => agent_cmds::cmd_send(
-            &project_id,
+            &project,
             profile.as_deref(),
             &agent_id,
             &prompt,
@@ -78,23 +75,30 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             wait,
         ),
         CommandKind::Capture {
-            project_id,
+            project,
             agent_id,
             lines,
             json,
             profile,
-        } => agent_cmds::cmd_capture(&project_id, profile.as_deref(), &agent_id, lines, json),
+        } => agent_cmds::cmd_capture(&project, profile.as_deref(), &agent_id, lines, json),
     }
 }
 
 /// Load a project and build a tmux client for command handlers.
 pub(super) fn load_project_context(
-    project_id: &str,
+    project_target: &ProjectTarget,
     profile: Option<&str>,
     resolution_mode: ResolutionMode,
 ) -> Result<(ResolvedProject, TmuxClient)> {
     let paths = AppPaths::from_env()?;
-    let project = load_project(&paths, project_id, profile, resolution_mode)?;
+    let project = match project_target {
+        ProjectTarget::Id(project_id) => {
+            load_project(&paths, project_id, profile, resolution_mode)?
+        }
+        ProjectTarget::CurrentDirectory => {
+            load_project_from_current_directory(&paths, profile, resolution_mode)?
+        }
+    };
     let tmux = TmuxClient::from_env(project.tmux_bin.clone());
     Ok((project, tmux))
 }

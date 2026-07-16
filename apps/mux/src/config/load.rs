@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
+
+use serde::de::DeserializeOwned;
 
 use super::error::ConfigError;
 use super::model::{
@@ -10,6 +12,8 @@ use super::model::{
 use super::resolve::{resolve_project, validate_global_config};
 use crate::model::ResolvedProject;
 use crate::paths::AppPaths;
+
+mod target;
 
 type Result<T> = std::result::Result<T, ConfigError>;
 
@@ -129,20 +133,64 @@ pub(crate) fn load_project(
 ) -> Result<ResolvedProject> {
     let global = load_global_config(&paths.global_config_path())?;
     let raw = find_project_raw(paths, project_id)?;
-    let effective_profile = resolve_profile_id(&raw, profile_id)?;
-    resolve_profile(&raw, &effective_profile, &global, resolution_mode)
+    resolve_loaded_project(&raw, profile_id, &global, resolution_mode)
+}
+
+/// Load the project whose registered root contains the process current
+/// directory.
+///
+/// # Errors
+///
+/// Returns an error when the current directory cannot be resolved, no unique
+/// registered root contains it, or the selected project/profile is invalid.
+pub(crate) fn load_project_from_current_directory(
+    paths: &AppPaths,
+    profile_id: Option<&str>,
+    resolution_mode: ResolutionMode,
+) -> Result<ResolvedProject> {
+    let directory = env::current_dir().map_err(|source| ConfigError::PathResolution {
+        path: PathBuf::from("."),
+        source,
+    })?;
+    load_project_from_directory(paths, &directory, profile_id, resolution_mode)
+}
+
+fn load_project_from_directory(
+    paths: &AppPaths,
+    directory: &Path,
+    profile_id: Option<&str>,
+    resolution_mode: ResolutionMode,
+) -> Result<ResolvedProject> {
+    let global = load_global_config(&paths.global_config_path())?;
+    let path = target::find_project_path(paths, directory)?;
+    let raw = parse_project_raw(&path)?;
+    resolve_loaded_project(&raw, profile_id, &global, resolution_mode)
+}
+
+fn resolve_loaded_project(
+    raw: &ProjectFileRaw,
+    profile_id: Option<&str>,
+    global: &GlobalConfig,
+    resolution_mode: ResolutionMode,
+) -> Result<ResolvedProject> {
+    let effective_profile = resolve_profile_id(raw, profile_id)?;
+    resolve_profile(raw, &effective_profile, global, resolution_mode)
 }
 
 fn parse_project_raw(path: &Path) -> Result<ProjectFileRaw> {
+    let raw: ProjectFileRaw = parse_project_file(path)?;
+    raw.validate_shape()?;
+
+    Ok(raw)
+}
+
+fn parse_project_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let source = fs::read_to_string(path).map_err(|source| ConfigError::FileRead {
         path: path.to_path_buf(),
         source,
     })?;
-    let raw: ProjectFileRaw = toml::from_str(&source)
-        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))?;
-    raw.validate_shape()?;
-
-    Ok(raw)
+    toml::from_str(&source)
+        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))
 }
 
 fn resolve_profile(
@@ -306,12 +354,7 @@ fn find_project_raw(paths: &AppPaths, project_id: &str) -> Result<ProjectFileRaw
 }
 
 fn project_id_from_file(path: &Path) -> Result<String> {
-    let source = fs::read_to_string(path).map_err(|source| ConfigError::FileRead {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let project: ProjectIdOnly = toml::from_str(&source)
-        .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))?;
+    let project: ProjectIdOnly = parse_project_file(path)?;
     Ok(project.id)
 }
 
@@ -319,6 +362,24 @@ fn project_id_from_file(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use crate::test_support::{err, ok};
+
+    fn contextual_fixture() -> (tempfile::TempDir, tempfile::TempDir, AppPaths) {
+        let config_home = ok(tempfile::tempdir(), "create config home");
+        let project_root = ok(tempfile::tempdir(), "create project root");
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        ok(
+            fs::create_dir_all(paths.projects_dir()),
+            "create projects directory",
+        );
+        (config_home, project_root, paths)
+    }
+
+    fn write_contextual_project(paths: &AppPaths, file_name: &str, contents: &str) {
+        ok(
+            fs::write(paths.projects_dir().join(file_name), contents),
+            "write contextual project",
+        );
+    }
 
     #[test]
     fn multi_profile_project_requires_explicit_profile_even_when_default_exists() {
@@ -387,6 +448,112 @@ id = "assistant"
         let profile = ok(resolve_profile_id(&raw, None), "resolve flat profile");
 
         assert_eq!(profile, "default");
+    }
+
+    #[test]
+    fn contextual_and_explicit_targets_resolve_identical_project_identity() {
+        let (_config_home, project_root, paths) = contextual_fixture();
+        write_contextual_project(
+            &paths,
+            "demo.toml",
+            &format!(
+                "id = \"demo\"\nroot = {:?}\n\n[[agents]]\nid = \"assistant\"\ncommand = \"echo\"\n",
+                project_root.path().display().to_string()
+            ),
+        );
+
+        let explicit = ok(
+            load_project(&paths, "demo", None, ResolutionMode::Deferred),
+            "load explicit project",
+        );
+        let contextual = ok(
+            load_project_from_directory(
+                &paths,
+                project_root.path(),
+                None,
+                ResolutionMode::Deferred,
+            ),
+            "load contextual project",
+        );
+
+        assert_eq!(contextual, explicit);
+    }
+
+    #[test]
+    fn contextual_target_applies_profile_selection_after_project_selection() {
+        let (_config_home, project_root, paths) = contextual_fixture();
+        write_contextual_project(
+            &paths,
+            "demo.toml",
+            &format!(
+                r#"id = "demo"
+root = {:?}
+
+[profiles.default]
+[[profiles.default.agents]]
+id = "assistant"
+command = "echo"
+
+[profiles.work]
+[[profiles.work.agents]]
+id = "worker"
+command = "echo"
+"#,
+                project_root.path().display().to_string()
+            ),
+        );
+
+        let missing_profile = err(
+            load_project_from_directory(
+                &paths,
+                project_root.path(),
+                None,
+                ResolutionMode::Deferred,
+            ),
+            "contextual multi-profile project should require a profile",
+        );
+        assert!(matches!(
+            missing_profile,
+            ConfigError::ProfileRequired { project_id, .. } if project_id == "demo"
+        ));
+
+        let selected = ok(
+            load_project_from_directory(
+                &paths,
+                project_root.path(),
+                Some("work"),
+                ResolutionMode::Deferred,
+            ),
+            "load contextual work profile",
+        );
+        assert_eq!(selected.id, "demo");
+        assert_eq!(selected.profile_id, "work");
+        assert_eq!(selected.agents[0].id, "worker");
+    }
+
+    #[test]
+    fn contextual_target_surfaces_selected_projects_full_parse_error() {
+        let (_config_home, project_root, paths) = contextual_fixture();
+        write_contextual_project(
+            &paths,
+            "demo.toml",
+            &format!(
+                "id = \"demo\"\nroot = {:?}\nunknown = true\n",
+                project_root.path().display().to_string()
+            ),
+        );
+
+        let error = err(
+            load_project_from_directory(
+                &paths,
+                project_root.path(),
+                None,
+                ResolutionMode::Deferred,
+            ),
+            "selected invalid project must fail full parsing",
+        );
+
+        assert!(matches!(error, ConfigError::FileParse { .. }));
     }
 
     #[test]
