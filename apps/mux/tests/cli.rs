@@ -92,9 +92,23 @@ impl TestBed {
         self.kira_with_env(args, &[])
     }
 
+    /// Run the CLI with an explicit process current directory.
+    fn kira_from(&self, current_dir: &std::path::Path, args: &[&str]) -> Output {
+        self.kira_with_env_from(args, &[], Some(current_dir))
+    }
+
     /// Like [`Self::kira`], with extra process environment entries (e.g. host
     /// values for `$VAR` agent env references).
     fn kira_with_env(&self, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+        self.kira_with_env_from(args, extra_env, None)
+    }
+
+    fn kira_with_env_from(
+        &self,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+        current_dir: Option<&std::path::Path>,
+    ) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_kira-mux"));
         command
             .args(args)
@@ -107,6 +121,9 @@ impl TestBed {
             // developer running the suite inside tmux) is never visible.
             .env("TMUX_TMPDIR", self.config_home.path())
             .env_remove("TMUX");
+        if let Some(current_dir) = current_dir {
+            command.current_dir(current_dir);
+        }
         for (key, value) in extra_env {
             command.env(key, value);
         }
@@ -399,6 +416,81 @@ fn status_and_list_report_stopped_before_any_start() {
     let list = bed.kira(&["list", "--json"]);
     assert_success(&list, "list");
     assert_eq!(parse_json(&list)[0]["state"], "stopped");
+}
+
+#[test]
+fn contextual_project_target_drives_workspace_from_nested_directory() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    let nested = bed.project_root.path().join("src/nested");
+    if let Err(error) = fs::create_dir_all(&nested) {
+        panic!("failed to create contextual nested directory: {error}");
+    }
+
+    assert_success(&bed.kira_from(&nested, &["start", "."]), "contextual start");
+
+    let status = bed.kira_from(&nested, &["status", ".", "--json"]);
+    assert_success(&status, "contextual status");
+    let status = parse_json(&status);
+    assert_eq!(status["id"], "it", "got: {status}");
+    assert_eq!(status["root"], bed.root(), "got: {status}");
+
+    let agents = bed.kira_from(&nested, &["agents", "list", ".", "--json"]);
+    assert_success(&agents, "contextual agents list");
+    assert_eq!(parse_json(&agents)["agents"][0]["id"], "alpha");
+
+    // An explicit ID must resolve the same session that contextual start made.
+    assert_success(&bed.kira(&["start", "it"]), "explicit idempotent start");
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_success(&sessions, "list contextual sessions");
+    assert_eq!(
+        stdout_of(&sessions).lines().count(),
+        1,
+        "contextual and explicit targets must share one session"
+    );
+
+    assert_success(
+        &bed.kira_from(&nested, &["send", ".", "alpha", "contextual hello"]),
+        "contextual send",
+    );
+    wait_until("contextual capture to contain delivered prompt", || {
+        let output = bed.kira_from(&nested, &["capture", ".", "alpha"]);
+        let text = stdout_of(&output);
+        (output.status.success() && text.contains("contextual hello")).then_some(text)
+    });
+
+    assert_success(
+        &bed.kira_from(&nested, &["restart", ".", "alpha"]),
+        "contextual restart",
+    );
+    assert_success(
+        &bed.kira_from(&nested, &["kill", ".", "--yes"]),
+        "contextual kill",
+    );
+    let stopped = bed.kira_from(&nested, &["status", ".", "--json"]);
+    assert_success(&stopped, "contextual stopped status");
+    assert_eq!(parse_json(&stopped)["state"], "stopped");
+}
+
+#[test]
+fn contextual_project_target_reports_zero_match() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    let outside = make_tempdir("outside contextual root");
+
+    let status = bed.kira_from(outside.path(), &["status", "."]);
+
+    assert_eq!(
+        exit_code(&status),
+        2,
+        "zero contextual match must exit 2, stderr: {:?}",
+        stderr_of(&status)
+    );
+    assert!(
+        stderr_of(&status).contains("no registered project contains current directory"),
+        "got stderr: {:?}",
+        stderr_of(&status)
+    );
 }
 
 #[test]
