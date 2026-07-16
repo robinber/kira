@@ -9,7 +9,7 @@ use crate::inspector::WorkspaceTopology;
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
-use crate::tmux::{PaneInfo, TmuxAdapter};
+use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 
 /// Delay between typing literal text and submitting it, so the TUI has
 /// rendered the input before the Enter arrives.
@@ -52,7 +52,7 @@ pub(crate) fn send_prompt(
     }
 
     let final_prompt = render_final_prompt(project, agent, prompt, no_template, &topology);
-    paste_and_submit(tmux, &pane, agent, &final_prompt)?;
+    paste_and_submit(tmux, &pane, agent, agent_id, &final_prompt)?;
     Ok(DeliveredPrompt {
         rendered: final_prompt,
         pane_id: pane.pane_id,
@@ -93,7 +93,26 @@ fn render_final_prompt(
 
 /// Paste `final_prompt` (when non-empty) into `pane` and submit one or two
 /// `Enter` keys according to the agent's submit behavior.
+///
+/// A pane that vanishes between the pre-submit liveness check and delivery
+/// surfaces as [`KiraMuxError::DeadPane`] (exit 6), matching the dead-pane
+/// gate above and the wait-path pattern in [`super::wait`].
 fn paste_and_submit(
+    tmux: &dyn TmuxAdapter,
+    pane: &PaneInfo,
+    agent: &ResolvedAgent,
+    agent_id: &str,
+    final_prompt: &str,
+) -> Result<()> {
+    match paste_and_submit_inner(tmux, pane, agent, final_prompt) {
+        Err(error) if TmuxError::is_missing_target(&error) => {
+            Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
+        }
+        other => other,
+    }
+}
+
+fn paste_and_submit_inner(
     tmux: &dyn TmuxAdapter,
     pane: &PaneInfo,
     agent: &ResolvedAgent,
@@ -298,8 +317,12 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
         fake.set_fail_paste(true);
 
-        let result = send_prompt(&fake, &project, "alpha", "hello", false);
-        assert!(result.is_err());
+        let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
+        // Generic transport failures stay untyped (exit 1), not DeadPane.
+        assert!(
+            err.downcast_ref::<KiraMuxError>().is_none(),
+            "generic paste failure must not map to DeadPane, got: {err}"
+        );
     }
 
     #[test]
@@ -311,6 +334,43 @@ mod tests {
 
         let result = send_prompt(&fake, &project, "alpha", "hello", false);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn send_prompt_maps_missing_target_mid_submit_to_dead_pane() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        // Pane is live at resolve time; delivery ops then report MissingTarget
+        // (pane killed between the liveness gate and paste/send-keys).
+        fake.set_fail_delivery_missing_target(true);
+
+        let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::DeadPane(id)) if id == "alpha"
+            ),
+            "vanished pane during submit must be typed DeadPane (exit 6), got: {err}"
+        );
+    }
+
+    #[test]
+    fn send_prompt_maps_missing_target_on_send_text_path_to_dead_pane() {
+        let fake = crate::test_support::FakeTmux::new();
+        let mut project = crate::test_support::test_project();
+        project.agents[0].command = Some("opencode".to_string());
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.set_fail_delivery_missing_target(true);
+
+        let err = send_prompt(&fake, &project, "alpha", "hello", false).err_or_panic();
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::DeadPane(id)) if id == "alpha"
+            ),
+            "vanished pane on send-text delivery must be typed DeadPane, got: {err}"
+        );
     }
 
     #[test]

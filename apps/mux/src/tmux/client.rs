@@ -215,16 +215,21 @@ impl TmuxAdapter for TmuxClient {
         let buffer_name = format!("kira_mux_send_{}", std::process::id());
         let buffer_ref = format!("{buffer_name}_{seq}");
         self.run_with_stdin(["load-buffer", "-b", &buffer_ref, "-"], text.as_bytes())?;
-        let result = self.run([
-            "paste-buffer",
-            "-p",
-            "-r",
-            "-t",
+        // Type missing-target failures so submit can map them to DeadPane
+        // instead of an untyped exit 1 (generic `run` only bails with stderr).
+        let result = self.run_on_target(
             target_pane,
-            "-b",
-            &buffer_ref,
-            "-d",
-        ]);
+            [
+                "paste-buffer",
+                "-p",
+                "-r",
+                "-t",
+                target_pane,
+                "-b",
+                &buffer_ref,
+                "-d",
+            ],
+        );
         if result.is_err() {
             let _ = self.run(["delete-buffer", "-b", &buffer_ref]);
         }
@@ -236,14 +241,17 @@ impl TmuxAdapter for TmuxClient {
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()> {
         let mut args = vec!["send-keys", "-t", target_pane];
         args.extend_from_slice(keys);
-        self.run(args)
+        self.run_on_target(target_pane, args)
     }
 
     /// Type literal text into a pane. `-l` disables key-name lookup and `--`
     /// stops flag parsing, so prompts like `Enter` or `-x` arrive as text.
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()> {
         let text = escape_trailing_semicolon(text);
-        self.run(["send-keys", "-l", "-t", target_pane, "--", text.as_ref()])
+        self.run_on_target(
+            target_pane,
+            ["send-keys", "-l", "-t", target_pane, "--", text.as_ref()],
+        )
     }
 
     /// Capture the visible and scrollback content of a pane, returning at
@@ -324,6 +332,22 @@ impl TmuxClient {
         }
 
         bail!(command_error(&output));
+    }
+
+    /// Like [`Self::run`], but classifies missing session/window/pane as
+    /// typed [`TmuxError`] so callers can map vanished targets without
+    /// parsing stderr strings.
+    fn run_on_target<I, S>(&self, target: &str, args: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let output = self.output(args)?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(failed_tmux_status(target, &output))
     }
 
     fn run_interactive<I, S>(&self, args: I) -> Result<()>
