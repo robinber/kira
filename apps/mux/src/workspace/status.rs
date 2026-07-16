@@ -1,17 +1,12 @@
 use anyhow::Result;
 
 use crate::config::ResolutionMode;
-use crate::inspector::{
-    self, InspectedWorkspace, RawWorkspacePane, RawWorkspaceSnapshot, SharedTopology,
-    WorkspaceTopology,
-};
+use crate::inspector::{self, InspectedWorkspace, SharedTopology, WorkspaceTopology};
 use crate::model::{
     AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
 };
 use crate::paths::AppPaths;
-use crate::tmux::{
-    PaneInfo, PaneSummary, TmuxAdapter, TmuxClient, TmuxError, WorkspaceSummarySnapshot,
-};
+use crate::tmux::{PaneInfo, TmuxAdapter, TmuxClient, TmuxError, WorkspaceSnapshot};
 use crate::workspace::session_name;
 
 pub(crate) fn project_status(
@@ -104,7 +99,7 @@ fn summary_from_config_failure(failure: crate::config::ProjectConfigFailure) -> 
 
 fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<ProjectState> {
     let session = session_name(project);
-    match tmux.snapshot_summary(&session, &project.window_name) {
+    match tmux.workspace_snapshot(&session, &project.window_name) {
         Ok(snapshot) => Ok(project_state_from_snapshot(project, snapshot.as_ref())),
         Err(error) => match classified_summary_error(&error) {
             Some(state) => Ok(state),
@@ -113,35 +108,19 @@ fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<Pro
     }
 }
 
-/// Classify a successful `snapshot_summary` payload for `list`.
+/// Classify a successful workspace snapshot payload for `list`.
 ///
 /// `None` means no session (or no server) — stopped. A present snapshot is
 /// fed through the shared topology classifier so list/status agree on drift.
 fn project_state_from_snapshot(
     project: &ResolvedProject,
-    snapshot: Option<&WorkspaceSummarySnapshot>,
+    snapshot: Option<&WorkspaceSnapshot>,
 ) -> ProjectState {
     let Some(snap) = snapshot else {
         return ProjectState::Stopped;
     };
 
-    let shared = inspector::classify_snapshot(
-        project,
-        &RawWorkspaceSnapshot {
-            fingerprint: snap.fingerprint.as_deref(),
-            project_id: snap.project_id.as_deref(),
-            profile_id: snap.profile_id.as_deref(),
-            window_role: snap.window_role.as_deref(),
-            panes: snap
-                .panes
-                .iter()
-                .map(|pane: &PaneSummary| RawWorkspacePane {
-                    agent_id: pane.agent_id.as_deref(),
-                    pane_dead: pane.pane_dead,
-                })
-                .collect(),
-        },
-    );
+    let shared = inspector::classify_workspace_snapshot(project, snap);
 
     match shared {
         SharedTopology::Healthy { .. } => ProjectState::Running,
@@ -150,7 +129,7 @@ fn project_state_from_snapshot(
     }
 }
 
-/// Map typed tmux failures from `snapshot_summary` to a list state.
+/// Map typed tmux failures from workspace inspection to a list state.
 ///
 /// Returns `None` when the error is not classifiable (transport / generic
 /// command failure) so the caller can surface `ProjectState::Error` instead
@@ -216,6 +195,7 @@ fn agent_state_from_pane(pane: &PaneInfo) -> AgentState {
 mod tests {
     use super::*;
     use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
+    use crate::tmux::{WorkspacePaneSnapshot, WorkspaceWindowSnapshot};
 
     #[test]
     fn classified_summary_error_maps_missing_target_to_drifted() {
@@ -268,22 +248,7 @@ mod tests {
     #[test]
     fn project_state_from_snapshot_healthy_is_running() {
         let project = crate::test_support::test_project();
-        let snap = WorkspaceSummarySnapshot {
-            fingerprint: Some(project.fingerprint.clone()),
-            project_id: Some(project.id.clone()),
-            profile_id: Some(project.profile_id.clone()),
-            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
-            panes: vec![
-                PaneSummary {
-                    pane_dead: false,
-                    agent_id: Some("alpha".into()),
-                },
-                PaneSummary {
-                    pane_dead: false,
-                    agent_id: Some("beta".into()),
-                },
-            ],
-        };
+        let snap = workspace_snapshot(&project, false);
         assert_eq!(
             project_state_from_snapshot(&project, Some(&snap)),
             ProjectState::Running
@@ -293,22 +258,7 @@ mod tests {
     #[test]
     fn project_state_from_snapshot_dead_pane_is_degraded() {
         let project = crate::test_support::test_project();
-        let snap = WorkspaceSummarySnapshot {
-            fingerprint: Some(project.fingerprint.clone()),
-            project_id: Some(project.id.clone()),
-            profile_id: Some(project.profile_id.clone()),
-            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
-            panes: vec![
-                PaneSummary {
-                    pane_dead: true,
-                    agent_id: Some("alpha".into()),
-                },
-                PaneSummary {
-                    pane_dead: false,
-                    agent_id: Some("beta".into()),
-                },
-            ],
-        };
+        let snap = workspace_snapshot(&project, true);
         assert_eq!(
             project_state_from_snapshot(&project, Some(&snap)),
             ProjectState::Degraded
@@ -316,11 +266,19 @@ mod tests {
     }
 
     #[test]
-    fn project_state_from_snapshot_empty_default_is_drifted_not_error() {
-        // A *successful* empty payload (e.g. untagged session) is real drift.
-        // Command failures must not reach here as Default — that was the bug.
+    fn project_state_from_snapshot_missing_metadata_is_drifted_not_error() {
+        // A successful but untagged payload is real drift. Command failures
+        // must not become an empty snapshot that is misclassified as drift.
         let project = crate::test_support::test_project();
-        let snap = WorkspaceSummarySnapshot::default();
+        let snap = WorkspaceSnapshot {
+            fingerprint: None,
+            project_id: None,
+            profile_id: None,
+            window: Some(WorkspaceWindowSnapshot {
+                role: None,
+                panes: Vec::new(),
+            }),
+        };
         assert_eq!(
             project_state_from_snapshot(&project, Some(&snap)),
             ProjectState::Drifted
@@ -330,25 +288,52 @@ mod tests {
     #[test]
     fn project_state_from_snapshot_fingerprint_mismatch_is_drifted() {
         let project = crate::test_support::test_project();
-        let snap = WorkspaceSummarySnapshot {
-            fingerprint: Some("wrong".into()),
-            project_id: Some(project.id.clone()),
-            profile_id: Some(project.profile_id.clone()),
-            window_role: Some(WINDOW_ROLE_AGENTS.to_string()),
-            panes: vec![
-                PaneSummary {
-                    pane_dead: false,
-                    agent_id: Some("alpha".into()),
-                },
-                PaneSummary {
-                    pane_dead: false,
-                    agent_id: Some("beta".into()),
-                },
-            ],
-        };
+        let mut snap = workspace_snapshot(&project, false);
+        snap.fingerprint = Some("wrong".into());
         assert_eq!(
             project_state_from_snapshot(&project, Some(&snap)),
             ProjectState::Drifted
         );
+    }
+
+    #[test]
+    fn project_state_from_snapshot_missing_window_is_drifted() {
+        let project = crate::test_support::test_project();
+        let mut snap = workspace_snapshot(&project, false);
+        snap.window = None;
+
+        assert_eq!(
+            project_state_from_snapshot(&project, Some(&snap)),
+            ProjectState::Drifted
+        );
+    }
+
+    fn workspace_snapshot(project: &ResolvedProject, first_pane_dead: bool) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            fingerprint: Some(project.fingerprint.clone()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
+            window: Some(WorkspaceWindowSnapshot {
+                role: Some(WINDOW_ROLE_AGENTS.to_string()),
+                panes: vec![
+                    WorkspacePaneSnapshot {
+                        pane: PaneInfo {
+                            pane_id: "%0".into(),
+                            pane_dead: first_pane_dead,
+                            pane_dead_status: first_pane_dead.then_some(1),
+                        },
+                        agent_id: Some("alpha".into()),
+                    },
+                    WorkspacePaneSnapshot {
+                        pane: PaneInfo {
+                            pane_id: "%1".into(),
+                            pane_dead: false,
+                            pane_dead_status: None,
+                        },
+                        agent_id: Some("beta".into()),
+                    },
+                ],
+            }),
+        }
     }
 }

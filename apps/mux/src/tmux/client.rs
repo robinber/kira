@@ -4,9 +4,11 @@ use std::io::Write;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
-use super::adapter::{PaneInfo, TmuxAdapter};
+use super::adapter::{
+    PaneInfo, TmuxAdapter, WorkspacePaneSnapshot, WorkspaceSnapshot, WorkspaceWindowSnapshot,
+};
 use super::env_file::{ShellEnvFile, respawn_pane_args};
 use super::error::TmuxError;
 use super::metadata::{
@@ -19,27 +21,11 @@ use super::parse::{
 
 const TEST_SOCKET_ENV: &str = "KIRA_MUX_TMUX_SOCKET_NAME";
 
-#[derive(Debug, Clone)]
-pub(crate) struct PaneSummary {
-    pub pane_dead: bool,
-    pub agent_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct WorkspaceSummarySnapshot {
-    pub fingerprint: Option<String>,
-    pub project_id: Option<String>,
-    pub profile_id: Option<String>,
-    pub window_role: Option<String>,
-    pub panes: Vec<PaneSummary>,
-}
-
-/// Session/window metadata read in one `display-message` round-trip.
-struct DisplayedWindowMetadata {
+/// Session metadata read in one `display-message` round-trip.
+struct DisplayedSessionMetadata {
     fingerprint: Option<String>,
     project_id: Option<String>,
     profile_id: Option<String>,
-    window_role: Option<String>,
 }
 
 static BUFFER_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -74,6 +60,72 @@ impl TmuxAdapter for TmuxClient {
         }
 
         Err(TmuxError::CommandFailure(message).into())
+    }
+
+    /// Read session ownership plus the managed window and all pane metadata.
+    ///
+    /// A present workspace takes three tmux subprocesses regardless of pane
+    /// count: `has-session`, one session metadata display, and one
+    /// `list-panes` call with pane/window options embedded in its format.
+    fn workspace_snapshot(
+        &self,
+        session_name: &str,
+        window_name: &str,
+    ) -> Result<Option<WorkspaceSnapshot>> {
+        let exists = match self.session_exists(session_name) {
+            Ok(exists) => exists,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<TmuxError>(),
+                    Some(TmuxError::NoServer(_))
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        if !exists {
+            return Ok(None);
+        }
+
+        let display_fmt = format!(
+            "#{{{SESSION_CONFIG_FINGERPRINT}}}\t#{{{SESSION_PROJECT_ID}}}\t#{{{SESSION_PROFILE_ID}}}",
+        );
+        let display_output =
+            self.output(["display-message", "-p", "-t", session_name, &display_fmt])?;
+        if !display_output.status.success() {
+            return Err(failed_tmux_status(session_name, &display_output));
+        }
+        let metadata = parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
+
+        let window_target = format!("{session_name}:{window_name}");
+        let pane_fmt = format!(
+            "#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{{PANE_AGENT_ID}}}\t#{{{WINDOW_ROLE}}}",
+        );
+        let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
+        let window = if pane_output.status.success() {
+            let parsed = stdout_lines(&pane_output)
+                .iter()
+                .map(|line| parse_workspace_pane_line(line))
+                .collect::<Result<Vec<_>>>()?;
+            let role = parsed.first().and_then(|(_, role)| role.clone());
+            let panes = parsed.into_iter().map(|(pane, _)| pane).collect();
+            Some(WorkspaceWindowSnapshot { role, panes })
+        } else {
+            let error = failed_tmux_status(&window_target, &pane_output);
+            if TmuxError::is_missing_target(&error) {
+                None
+            } else {
+                return Err(error);
+            }
+        };
+
+        Ok(Some(WorkspaceSnapshot {
+            fingerprint: metadata.fingerprint,
+            project_id: metadata.project_id,
+            profile_id: metadata.profile_id,
+            window,
+        }))
     }
 
     /// Create a detached session with a single managed window sized for
@@ -186,14 +238,6 @@ impl TmuxAdapter for TmuxClient {
     /// Set a window-scoped tmux option.
     fn set_window_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
         self.run(["set-option", "-w", "-q", "-t", target, name, value])
-    }
-
-    /// Read a window-scoped tmux option.
-    fn get_window_option(&self, target: &str, name: &str) -> Result<Option<String>> {
-        self.read_option(
-            target,
-            ["show-options", "-w", "-q", "-v", "-t", target, name],
-        )
     }
 
     /// Set a pane-scoped tmux option.
@@ -433,61 +477,6 @@ impl TmuxClient {
         }
         Err(failed_tmux_stdin_status(&output))
     }
-
-    pub(crate) fn snapshot_summary(
-        &self,
-        session_name: &str,
-        window_name: &str,
-    ) -> Result<Option<WorkspaceSummarySnapshot>> {
-        let exists = match self.session_exists(session_name) {
-            Ok(exists) => exists,
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<TmuxError>(),
-                    Some(TmuxError::NoServer(_))
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-        if !exists {
-            return Ok(None);
-        }
-
-        let window_target = format!("{session_name}:{window_name}");
-
-        let display_fmt = format!(
-            "#{{{SESSION_CONFIG_FINGERPRINT}}}\t#{{{SESSION_PROJECT_ID}}}\t#{{{SESSION_PROFILE_ID}}}\t#{{{WINDOW_ROLE}}}",
-        );
-        let display_output =
-            self.output(["display-message", "-p", "-t", &window_target, &display_fmt])?;
-        if !display_output.status.success() {
-            // Missing window/target is drift (caller maps); transport / command
-            // failures must not become an empty snapshot that classifies as
-            // FingerprintMismatch.
-            return Err(failed_tmux_status(&window_target, &display_output));
-        }
-        let metadata = parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
-
-        let pane_fmt = format!("#{{pane_dead}}\t#{{{PANE_AGENT_ID}}}");
-        let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
-        if !pane_output.status.success() {
-            return Err(failed_tmux_status(&window_target, &pane_output));
-        }
-        let panes = stdout_lines(&pane_output)
-            .iter()
-            .map(|line| parse_pane_summary_line(line))
-            .collect();
-
-        Ok(Some(WorkspaceSummarySnapshot {
-            fingerprint: metadata.fingerprint,
-            project_id: metadata.project_id,
-            profile_id: metadata.profile_id,
-            window_role: metadata.window_role,
-            panes,
-        }))
-    }
 }
 
 /// Map a failed tmux subprocess status into a typed error.
@@ -526,25 +515,41 @@ fn escape_trailing_semicolon(text: &str) -> Cow<'_, str> {
     }
 }
 
-fn parse_display_message_line(raw: &str) -> DisplayedWindowMetadata {
+fn parse_display_message_line(raw: &str) -> DisplayedSessionMetadata {
     let line = raw.trim();
-    let mut parts = line.splitn(4, '\t');
-    DisplayedWindowMetadata {
+    let mut parts = line.splitn(3, '\t');
+    DisplayedSessionMetadata {
         fingerprint: parts.next().and_then(non_empty),
         project_id: parts.next().and_then(non_empty),
         profile_id: parts.next().and_then(non_empty),
-        window_role: parts.next().and_then(non_empty),
     }
 }
 
-fn parse_pane_summary_line(line: &str) -> PaneSummary {
-    let mut parts = line.splitn(2, '\t');
-    let pane_dead = parts.next().unwrap_or("0") == "1";
+fn parse_workspace_pane_line(line: &str) -> Result<(WorkspacePaneSnapshot, Option<String>)> {
+    let mut parts = line.splitn(5, '\t');
+    let pane_id = parts.next().context("missing pane_id")?.to_string();
+    let pane_dead = parts.next().context("missing pane_dead")? == "1";
+    let pane_dead_status = parts.next().and_then(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            value.parse().ok()
+        }
+    });
     let agent_id = parts.next().and_then(non_empty);
-    PaneSummary {
-        pane_dead,
-        agent_id,
-    }
+    let window_role = parts.next().and_then(non_empty);
+
+    Ok((
+        WorkspacePaneSnapshot {
+            pane: PaneInfo {
+                pane_id,
+                pane_dead,
+                pane_dead_status,
+            },
+            agent_id,
+        },
+        window_role,
+    ))
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -558,14 +563,18 @@ fn non_empty(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
     use std::process::{ExitStatus, Output};
 
     use super::{
-        escape_trailing_semicolon, failed_tmux_status, failed_tmux_stdin_status,
-        parse_display_message_line, parse_pane_summary_line,
+        TmuxClient, escape_trailing_semicolon, failed_tmux_status, failed_tmux_stdin_status,
+        parse_display_message_line, parse_workspace_pane_line,
     };
-    use crate::tmux::TmuxError;
+    use crate::test_support::{TestOptionExt, TestResultExt};
+    use crate::tmux::{TmuxAdapter, TmuxError};
 
     fn failed_output(stderr: &str) -> Output {
         Output {
@@ -588,33 +597,66 @@ mod tests {
 
     #[test]
     fn parse_display_message_line_splits_tab_fields() {
-        let metadata = parse_display_message_line("fp\tproj\tprof\tagents\n");
+        let metadata = parse_display_message_line("fp\tproj\tprof\n");
 
         assert_eq!(metadata.fingerprint.as_deref(), Some("fp"));
         assert_eq!(metadata.project_id.as_deref(), Some("proj"));
         assert_eq!(metadata.profile_id.as_deref(), Some("prof"));
-        assert_eq!(metadata.window_role.as_deref(), Some("agents"));
     }
 
     #[test]
     fn parse_display_message_line_maps_empty_fields_to_none() {
-        let metadata = parse_display_message_line("\t\t\t\n");
+        let metadata = parse_display_message_line("\t\t\n");
 
         assert_eq!(metadata.fingerprint, None);
         assert_eq!(metadata.project_id, None);
         assert_eq!(metadata.profile_id, None);
-        assert_eq!(metadata.window_role, None);
     }
 
     #[test]
-    fn parse_pane_summary_line_reads_dead_flag_and_agent() {
-        let pane = parse_pane_summary_line("1\talpha");
-        assert!(pane.pane_dead);
-        assert_eq!(pane.agent_id.as_deref(), Some("alpha"));
+    fn parse_workspace_pane_line_reads_full_metadata() {
+        let (pane, role) = parse_workspace_pane_line("%5\t1\t137\talpha\tagents").or_panic();
 
-        let pane = parse_pane_summary_line("0\t");
-        assert!(!pane.pane_dead);
+        assert_eq!(pane.pane.pane_id, "%5");
+        assert!(pane.pane.pane_dead);
+        assert_eq!(pane.pane.pane_dead_status, Some(137));
+        assert_eq!(pane.agent_id.as_deref(), Some("alpha"));
+        assert_eq!(role.as_deref(), Some("agents"));
+    }
+
+    #[test]
+    fn parse_workspace_pane_line_maps_empty_options_to_none() {
+        let (pane, role) = parse_workspace_pane_line("%5\t0\t\t\t").or_panic();
+
+        assert!(!pane.pane.pane_dead);
+        assert_eq!(pane.pane.pane_dead_status, None);
         assert_eq!(pane.agent_id, None);
+        assert_eq!(role, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_uses_three_commands_independent_of_pane_count() {
+        for pane_count in [1, 12] {
+            let (temp, client, log_path) = scripted_tmux(pane_count);
+
+            let snapshot = client
+                .workspace_snapshot("session", "agents")
+                .or_panic()
+                .or_panic();
+
+            assert_eq!(
+                snapshot.window.or_panic().panes.len(),
+                pane_count,
+                "unexpected pane count for script under {}",
+                temp.path().display()
+            );
+            let calls = fs::read_to_string(&log_path).or_panic();
+            assert_eq!(
+                calls.lines().count(),
+                3,
+                "snapshot command count must not grow with {pane_count} panes: {calls}"
+            );
+        }
     }
 
     #[test]
@@ -672,5 +714,30 @@ mod tests {
         let error = failed_tmux_stdin_status(&failed_output("load-buffer failed"));
         assert!(error.downcast_ref::<TmuxError>().is_none());
         assert_eq!(error.to_string(), "load-buffer failed");
+    }
+
+    fn scripted_tmux(pane_count: usize) -> (tempfile::TempDir, TmuxClient, PathBuf) {
+        let temp = tempfile::tempdir().or_panic();
+        let script_path = temp.path().join("tmux");
+        let log_path = temp.path().join("calls.log");
+        let pane_lines = (0..pane_count)
+            .map(|index| {
+                format!("printf '%s\\t%s\\t\\t%s\\t%s\\n' '%{index}' '0' 'agent-{index}' 'agents'")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  has-session) exit 0 ;;\n  display-message) printf 'fp\\tproject\\tprofile\\n' ;;\n  list-panes)\n{pane_lines}\n    ;;\nesac\n",
+            log_path.display()
+        );
+        fs::write(&script_path, script).or_panic();
+        let mut permissions = fs::metadata(&script_path).or_panic().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).or_panic();
+        let client = TmuxClient {
+            tmux_bin: script_path.display().to_string(),
+            socket_name: None,
+        };
+        (temp, client, log_path)
     }
 }
