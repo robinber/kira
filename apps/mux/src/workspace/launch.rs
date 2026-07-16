@@ -102,7 +102,7 @@ fn agent_command_basename(agent: &ResolvedAgent) -> Option<String> {
         AgentMode::Direct => agent
             .command
             .as_ref()
-            .map(|cmd| cmd.rsplit('/').next().unwrap_or(cmd).to_string()),
+            .map(|cmd| crate::util::command_basename(cmd).to_string()),
         AgentMode::Shell => agent
             .shell_command
             .as_ref()
