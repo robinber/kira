@@ -21,6 +21,7 @@ pub(crate) mod prompt;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod tmux;
+pub(crate) mod util;
 pub(crate) mod workspace;
 
 pub use error::{KiraMuxError, WorkspaceDriftReason};
