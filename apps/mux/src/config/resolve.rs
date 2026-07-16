@@ -338,7 +338,10 @@ fn validate_agent(
     }
 }
 
-fn normalize_project_root(root: &str, resolution_mode: ResolutionMode) -> Result<PathBuf> {
+pub(super) fn normalize_project_root(
+    root: &str,
+    resolution_mode: ResolutionMode,
+) -> Result<PathBuf> {
     // Session names hash the project root. Resolving relative roots against
     // process CWD would make the same XDG config target different sessions
     // depending on where kira-mux is invoked — reject that footgun.

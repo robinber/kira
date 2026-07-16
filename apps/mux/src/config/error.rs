@@ -36,6 +36,30 @@ pub enum ConfigError {
     /// No project file matched the requested project ID.
     #[error("unknown project id: {0}")]
     UnknownProjectId(String),
+    /// No registered project root contains the current directory.
+    #[error(
+        "no registered project contains current directory {directory}; \
+         use an explicit project id or register a project under {projects_dir}"
+    )]
+    NoProjectForDirectory {
+        /// Canonical directory that was used for contextual selection.
+        directory: PathBuf,
+        /// XDG directory containing registered project files.
+        projects_dir: PathBuf,
+    },
+    /// Multiple registered projects share the deepest root containing the
+    /// current directory.
+    #[error(
+        "multiple registered projects match current directory {directory}: {project_ids}; \
+         use an explicit project id",
+        project_ids = project_ids.join(", ")
+    )]
+    AmbiguousProjectForDirectory {
+        /// Canonical directory that was used for contextual selection.
+        directory: PathBuf,
+        /// Matching project IDs in deterministic order.
+        project_ids: Vec<String>,
+    },
     /// A config identifier contains a character that corrupts tmux target
     /// syntax or option formats.
     #[error("{kind} contains forbidden character {ch:?}: {id:?}")]
