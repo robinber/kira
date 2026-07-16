@@ -215,16 +215,21 @@ impl TmuxAdapter for TmuxClient {
         let buffer_name = format!("kira_mux_send_{}", std::process::id());
         let buffer_ref = format!("{buffer_name}_{seq}");
         self.run_with_stdin(["load-buffer", "-b", &buffer_ref, "-"], text.as_bytes())?;
-        let result = self.run([
-            "paste-buffer",
-            "-p",
-            "-r",
-            "-t",
+        // Type missing-target failures so submit can map them to DeadPane
+        // instead of an untyped exit 1 (generic `run` only bails with stderr).
+        let result = self.run_on_target(
             target_pane,
-            "-b",
-            &buffer_ref,
-            "-d",
-        ]);
+            [
+                "paste-buffer",
+                "-p",
+                "-r",
+                "-t",
+                target_pane,
+                "-b",
+                &buffer_ref,
+                "-d",
+            ],
+        );
         if result.is_err() {
             let _ = self.run(["delete-buffer", "-b", &buffer_ref]);
         }
@@ -236,14 +241,17 @@ impl TmuxAdapter for TmuxClient {
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()> {
         let mut args = vec!["send-keys", "-t", target_pane];
         args.extend_from_slice(keys);
-        self.run(args)
+        self.run_on_target(target_pane, args)
     }
 
     /// Type literal text into a pane. `-l` disables key-name lookup and `--`
     /// stops flag parsing, so prompts like `Enter` or `-x` arrive as text.
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()> {
         let text = escape_trailing_semicolon(text);
-        self.run(["send-keys", "-l", "-t", target_pane, "--", text.as_ref()])
+        self.run_on_target(
+            target_pane,
+            ["send-keys", "-l", "-t", target_pane, "--", text.as_ref()],
+        )
     }
 
     /// Capture the visible and scrollback content of a pane, returning at
@@ -324,6 +332,22 @@ impl TmuxClient {
         }
 
         bail!(command_error(&output));
+    }
+
+    /// Like [`Self::run`], but classifies missing session/window/pane as
+    /// typed [`TmuxError`] so callers can map vanished targets without
+    /// parsing stderr strings.
+    fn run_on_target<I, S>(&self, target: &str, args: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let output = self.output(args)?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(failed_tmux_status(target, &output))
     }
 
     fn run_interactive<I, S>(&self, args: I) -> Result<()>
@@ -407,7 +431,7 @@ impl TmuxClient {
         if output.status.success() {
             return Ok(());
         }
-        bail!(command_error(&output));
+        Err(failed_tmux_stdin_status(&output))
     }
 
     pub(crate) fn snapshot_summary(
@@ -483,6 +507,16 @@ fn failed_tmux_status(target: &str, output: &Output) -> anyhow::Error {
     }
 }
 
+/// Classify a failed stdin command without changing generic error semantics.
+fn failed_tmux_stdin_status(output: &Output) -> anyhow::Error {
+    let message = command_error(output);
+    if is_no_server_message(&message) {
+        TmuxError::NoServer(message).into()
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
 /// Escape a trailing `;` so tmux does not treat the final argument as a
 /// command separator.
 fn escape_trailing_semicolon(text: &str) -> Cow<'_, str> {
@@ -528,8 +562,8 @@ mod tests {
     use std::process::{ExitStatus, Output};
 
     use super::{
-        escape_trailing_semicolon, failed_tmux_status, parse_display_message_line,
-        parse_pane_summary_line,
+        escape_trailing_semicolon, failed_tmux_status, failed_tmux_stdin_status,
+        parse_display_message_line, parse_pane_summary_line,
     };
     use crate::tmux::TmuxError;
 
@@ -620,5 +654,23 @@ mod tests {
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::NoServer(_))
         ));
+    }
+
+    #[test]
+    fn failed_tmux_stdin_status_maps_no_server() {
+        let error = failed_tmux_stdin_status(&failed_output(
+            "no server running on /tmp/tmux-1000/default",
+        ));
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::NoServer(_))
+        ));
+    }
+
+    #[test]
+    fn failed_tmux_stdin_status_leaves_generic_failure_untyped() {
+        let error = failed_tmux_stdin_status(&failed_output("load-buffer failed"));
+        assert!(error.downcast_ref::<TmuxError>().is_none());
+        assert_eq!(error.to_string(), "load-buffer failed");
     }
 }
