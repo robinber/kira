@@ -281,7 +281,7 @@ fn start_creates_live_session_and_status_reports_running() {
         "unexpected session name: {names:?}"
     );
 
-    // list goes through the snapshot_summary path (session options +
+    // list goes through the bulk workspace snapshot path (session options +
     // list-panes against the real server).
     let list = bed.kira(&["list", "--json"]);
     assert_success(&list, "list");

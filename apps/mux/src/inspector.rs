@@ -4,12 +4,9 @@ use anyhow::Result;
 
 use crate::error::WorkspaceDriftReason;
 use crate::model::{ResolvedAgent, ResolvedProject};
-use crate::tmux::metadata::{
-    PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
-    WINDOW_ROLE_AGENTS,
-};
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
-use crate::workspace::{session_name, window_target};
+use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
+use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError, WorkspaceSnapshot, WorkspaceWindowSnapshot};
+use crate::workspace::session_name;
 
 /// A managed pane paired with its resolved agent definition.
 #[derive(Debug, Clone)]
@@ -51,7 +48,12 @@ pub(crate) struct RawWorkspaceSnapshot<'a> {
     pub(crate) fingerprint: Option<&'a str>,
     pub(crate) project_id: Option<&'a str>,
     pub(crate) profile_id: Option<&'a str>,
-    pub(crate) window_role: Option<&'a str>,
+    pub(crate) window: Option<RawWorkspaceWindow<'a>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RawWorkspaceWindow<'a> {
+    pub(crate) role: Option<&'a str>,
     pub(crate) panes: Vec<RawWorkspacePane<'a>>,
 }
 
@@ -75,12 +77,43 @@ pub(crate) fn classify_snapshot(
         return SharedTopology::Drifted { reason };
     }
 
-    if let Some(reason) = classify_window_shape(project, snapshot.window_role, snapshot.panes.len())
-    {
+    let Some(window) = &snapshot.window else {
+        return SharedTopology::Drifted {
+            reason: WorkspaceDriftReason::ManagedWindowMissing,
+        };
+    };
+
+    if let Some(reason) = classify_window_shape(project, window.role, window.panes.len()) {
         return SharedTopology::Drifted { reason };
     }
 
-    classify_managed_panes(project, &snapshot.panes)
+    classify_managed_panes(project, &window.panes)
+}
+
+pub(crate) fn classify_workspace_snapshot(
+    project: &ResolvedProject,
+    snapshot: &WorkspaceSnapshot,
+) -> SharedTopology {
+    let raw_window = snapshot.window.as_ref().map(|window| RawWorkspaceWindow {
+        role: window.role.as_deref(),
+        panes: window
+            .panes
+            .iter()
+            .map(|pane| RawWorkspacePane {
+                agent_id: pane.agent_id.as_deref(),
+                pane_dead: pane.pane.pane_dead,
+            })
+            .collect(),
+    });
+    classify_snapshot(
+        project,
+        &RawWorkspaceSnapshot {
+            fingerprint: snapshot.fingerprint.as_deref(),
+            project_id: snapshot.project_id.as_deref(),
+            profile_id: snapshot.profile_id.as_deref(),
+            window: raw_window,
+        },
+    )
 }
 
 fn classify_managed_panes(
@@ -195,7 +228,7 @@ fn order_managed_pane_indexes(
 
 fn build_inspected_workspace(
     project: &ResolvedProject,
-    panes: &[PaneInfo],
+    window: &WorkspaceWindowSnapshot,
     ordered_pane_indexes: Vec<usize>,
 ) -> InspectedWorkspace {
     InspectedWorkspace {
@@ -203,7 +236,7 @@ fn build_inspected_workspace(
             .into_iter()
             .enumerate()
             .map(|(agent_index, pane_index)| ManagedPane {
-                pane: panes[pane_index].clone(),
+                pane: window.panes[pane_index].pane.clone(),
                 agent: project.agents[agent_index].clone(),
             })
             .collect(),
@@ -215,80 +248,32 @@ pub(crate) fn inspect(
     project: &ResolvedProject,
 ) -> Result<WorkspaceTopology> {
     let session = session_name(project);
-
-    if !session_exists(tmux, &session)? {
+    let Some(snapshot) = tmux.workspace_snapshot(&session, &project.window_name)? else {
         return Ok(WorkspaceTopology::Absent);
-    }
-
-    let fingerprint = tmux.get_session_option(&session, SESSION_CONFIG_FINGERPRINT)?;
-    let project_id = tmux.get_session_option(&session, SESSION_PROJECT_ID)?;
-    let profile_id = tmux.get_session_option(&session, SESSION_PROFILE_ID)?;
-    if let Some(reason) = classify_session_metadata(
-        project,
-        fingerprint.as_deref(),
-        project_id.as_deref(),
-        profile_id.as_deref(),
-    ) {
-        return Ok(WorkspaceTopology::Drifted { reason });
-    }
-
-    let window_target = window_target(&session, &project.window_name);
-    // Only a missing window/target is drift; other tmux failures (server
-    // crash, transport error) must propagate as errors, not masquerade as a
-    // drifted workspace.
-    let window_role = match tmux.get_window_option(&window_target, WINDOW_ROLE) {
-        Ok(role) => role,
-        Err(error) if TmuxError::is_missing_target(&error) => {
-            return Ok(WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::ManagedWindowMissing,
-            });
-        }
-        Err(error) => return Err(error),
     };
-    let panes = match tmux.list_panes(&window_target) {
-        Ok(panes) => panes,
-        Err(error) if TmuxError::is_missing_target(&error) => {
-            return Ok(WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::ManagedWindowMissing,
-            });
-        }
-        Err(error) => return Err(error),
-    };
-    if let Some(reason) = classify_window_shape(project, window_role.as_deref(), panes.len()) {
-        return Ok(WorkspaceTopology::Drifted { reason });
-    }
+    let shared = classify_workspace_snapshot(project, &snapshot);
 
-    let pane_agent_ids = panes
-        .iter()
-        .map(|pane| tmux.get_pane_option(&pane.pane_id, PANE_AGENT_ID))
-        .collect::<Result<Vec<_>>>()?;
-
-    let raw_panes = panes
-        .iter()
-        .zip(pane_agent_ids.iter())
-        .map(|(pane, agent_id)| RawWorkspacePane {
-            agent_id: agent_id.as_deref(),
-            pane_dead: pane.pane_dead,
-        })
-        .collect::<Vec<_>>();
-    let shared = classify_managed_panes(project, &raw_panes);
-
-    match shared {
+    let (ordered_pane_indexes, degraded) = match shared {
         SharedTopology::Healthy {
             ordered_pane_indexes,
-        } => Ok(WorkspaceTopology::Healthy(build_inspected_workspace(
-            project,
-            &panes,
-            ordered_pane_indexes,
-        ))),
+        } => (ordered_pane_indexes, false),
         SharedTopology::Degraded {
             ordered_pane_indexes,
-        } => Ok(WorkspaceTopology::Degraded(build_inspected_workspace(
-            project,
-            &panes,
-            ordered_pane_indexes,
-        ))),
-        SharedTopology::Drifted { reason } => Ok(WorkspaceTopology::Drifted { reason }),
+        } => (ordered_pane_indexes, true),
+        SharedTopology::Drifted { reason } => {
+            return Ok(WorkspaceTopology::Drifted { reason });
+        }
+    };
+    let Some(window) = snapshot.window.as_ref() else {
+        return Ok(WorkspaceTopology::Drifted {
+            reason: WorkspaceDriftReason::ManagedWindowMissing,
+        });
+    };
+    let workspace = build_inspected_workspace(project, window, ordered_pane_indexes);
+    if degraded {
+        Ok(WorkspaceTopology::Degraded(workspace))
+    } else {
+        Ok(WorkspaceTopology::Healthy(workspace))
     }
 }
 
@@ -308,10 +293,14 @@ pub(crate) fn session_exists(tmux: &dyn TmuxAdapter, session: &str) -> Result<bo
 }
 
 #[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::WorkspaceDriftReason;
     use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+    use crate::tmux::metadata::WINDOW_ROLE;
     use crate::workspace::session_name;
 
     fn raw_snapshot<'a>(
@@ -322,8 +311,10 @@ mod tests {
             fingerprint: Some(project.fingerprint.as_str()),
             project_id: Some(project.id.as_str()),
             profile_id: Some(project.profile_id.as_str()),
-            window_role: Some(WINDOW_ROLE_AGENTS),
-            panes,
+            window: Some(RawWorkspaceWindow {
+                role: Some(WINDOW_ROLE_AGENTS),
+                panes,
+            }),
         }
     }
 
@@ -654,14 +645,14 @@ mod tests {
         let result = classify_snapshot(
             &project,
             &RawWorkspaceSnapshot {
-                window_role: Some("other-role"),
-                ..raw_snapshot(
-                    &project,
-                    vec![
+                window: Some(RawWorkspaceWindow {
+                    role: Some("other-role"),
+                    panes: vec![
                         raw_pane(Some("alpha"), false),
                         raw_pane(Some("beta"), false),
                     ],
-                )
+                }),
+                ..raw_snapshot(&project, Vec::new())
             },
         );
 
