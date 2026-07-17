@@ -12,11 +12,15 @@ use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
     WINDOW_ROLE_AGENTS,
 };
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
+use crate::tmux::{
+    PaneInfo, TmuxAdapter, TmuxError, WorkspacePaneSnapshot, WorkspaceSnapshot,
+    WorkspaceWindowSnapshot,
+};
 
 pub(crate) struct FakeTmux {
     sessions: Mutex<BTreeMap<String, FakeSession>>,
     ops: Mutex<Vec<FakeOp>>,
+    workspace_snapshot_error: Mutex<Option<TmuxError>>,
     fail_paste: AtomicBool,
     fail_send_keys: AtomicBool,
     fail_respawn: AtomicBool,
@@ -28,6 +32,7 @@ pub(crate) struct FakeTmux {
     /// When set, a successful `respawn_pane` marks the pane dead immediately
     /// so post-launch health checks observe an instant exit.
     respawn_exits_immediately: AtomicBool,
+    no_server: AtomicBool,
 }
 
 #[track_caller]
@@ -99,6 +104,7 @@ struct FakePane {
     pane_id: String,
     options: BTreeMap<String, String>,
     dead: bool,
+    dead_status: Option<i32>,
     content: String,
     /// Scripted capture sequence: each `capture_pane` call pops the front
     /// into `content`, so tests can drive a changing pane deterministically.
@@ -118,6 +124,7 @@ impl FakePane {
             pane_id: pane_id.to_string(),
             options: BTreeMap::new(),
             dead,
+            dead_status: dead.then_some(1),
             content: String::new(),
             queued_contents: VecDeque::new(),
             dies_after_captures: None,
@@ -153,13 +160,26 @@ impl FakeTmux {
         Self {
             sessions: Mutex::new(BTreeMap::new()),
             ops: Mutex::new(Vec::new()),
+            workspace_snapshot_error: Mutex::new(None),
             fail_paste: AtomicBool::new(false),
             fail_send_keys: AtomicBool::new(false),
             fail_respawn: AtomicBool::new(false),
             fail_delivery_missing_target: AtomicBool::new(false),
             fail_delivery_no_server: AtomicBool::new(false),
             respawn_exits_immediately: AtomicBool::new(false),
+            no_server: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn set_workspace_snapshot_error(&self, error: TmuxError) {
+        *ok(
+            self.workspace_snapshot_error.lock(),
+            "fake tmux snapshot error mutex poisoned",
+        ) = Some(error);
+    }
+
+    pub(crate) fn set_no_server(&self, no_server: bool) {
+        self.no_server.store(no_server, Ordering::Relaxed);
     }
 
     pub(crate) fn set_fail_paste(&self, fail: bool) {
@@ -319,6 +339,13 @@ impl FakeTmux {
         self.with_pane_mut(pane_id, |pane| pane.content = content.to_string());
     }
 
+    pub(crate) fn set_pane_dead_status(&self, pane_id: &str, status: i32) {
+        self.with_pane_mut(pane_id, |pane| {
+            pane.dead = true;
+            pane.dead_status = Some(status);
+        });
+    }
+
     /// Script the next `capture_pane` results for `pane_id`: each call pops
     /// one entry into the pane content; once drained, the content freezes on
     /// the last entry.
@@ -364,8 +391,58 @@ impl FakeTmux {
 
 impl TmuxAdapter for FakeTmux {
     fn session_exists(&self, session_name: &str) -> Result<bool> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         Ok(sessions.contains_key(session_name))
+    }
+
+    fn workspace_snapshot(
+        &self,
+        session_name: &str,
+        window_name: &str,
+    ) -> Result<Option<WorkspaceSnapshot>> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if let Some(error) = ok(
+            self.workspace_snapshot_error.lock(),
+            "fake tmux snapshot error mutex poisoned",
+        )
+        .take()
+        {
+            return Err(error.into());
+        }
+        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        let Some(session) = sessions.get(session_name) else {
+            return Ok(None);
+        };
+        let window = session.windows.get(window_name).map(|window| {
+            let panes = window
+                .panes
+                .iter()
+                .map(|pane| WorkspacePaneSnapshot {
+                    pane: PaneInfo {
+                        pane_id: pane.pane_id.clone(),
+                        pane_dead: pane.dead,
+                        pane_dead_status: pane.dead_status,
+                    },
+                    agent_id: pane.options.get(PANE_AGENT_ID).cloned(),
+                })
+                .collect();
+            WorkspaceWindowSnapshot {
+                role: window.options.get(WINDOW_ROLE).cloned(),
+                panes,
+            }
+        });
+
+        Ok(Some(WorkspaceSnapshot {
+            fingerprint: session.options.get(SESSION_CONFIG_FINGERPRINT).cloned(),
+            project_id: session.options.get(SESSION_PROJECT_ID).cloned(),
+            profile_id: session.options.get(SESSION_PROFILE_ID).cloned(),
+            window,
+        }))
     }
 
     fn create_detached_session(
@@ -393,7 +470,7 @@ impl TmuxAdapter for FakeTmux {
                         return Ok(vec![PaneInfo {
                             pane_id: pane.pane_id.clone(),
                             pane_dead: pane.dead,
-                            pane_dead_status: if pane.dead { Some(1) } else { None },
+                            pane_dead_status: pane.dead_status,
                         }]);
                     }
                 }
@@ -423,7 +500,7 @@ impl TmuxAdapter for FakeTmux {
                 .map(|p| PaneInfo {
                     pane_id: p.pane_id.clone(),
                     pane_dead: p.dead,
-                    pane_dead_status: if p.dead { Some(1) } else { None },
+                    pane_dead_status: p.dead_status,
                 })
                 .collect())
         } else {
@@ -433,7 +510,7 @@ impl TmuxAdapter for FakeTmux {
                     all.push(PaneInfo {
                         pane_id: p.pane_id.clone(),
                         pane_dead: p.dead,
-                        pane_dead_status: if p.dead { Some(1) } else { None },
+                        pane_dead_status: p.dead_status,
                     });
                 }
             }
@@ -490,6 +567,7 @@ impl TmuxAdapter for FakeTmux {
             for window in session.windows.values_mut() {
                 if let Some(pane) = window.panes.iter_mut().find(|pane| pane.pane_id == target) {
                     pane.dead = leave_dead;
+                    pane.dead_status = leave_dead.then_some(1);
                     return Ok(());
                 }
             }
@@ -531,22 +609,6 @@ impl TmuxAdapter for FakeTmux {
             self.set_window_opt(&session_name, &wn, name, value);
         }
         Ok(())
-    }
-
-    fn get_window_option(&self, target: &str, name: &str) -> Result<Option<String>> {
-        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        let (session_name, window_name) = Self::parse_target(target);
-        // Mirror the real client: missing session/window is a typed error.
-        let Some(session) = sessions.get(&session_name) else {
-            return Err(TmuxError::MissingTarget(target.to_string()).into());
-        };
-        let Some(window_name) = window_name else {
-            return Err(TmuxError::MissingTarget(target.to_string()).into());
-        };
-        let Some(window) = session.windows.get(&window_name) else {
-            return Err(TmuxError::MissingTarget(target.to_string()).into());
-        };
-        Ok(window.options.get(name).cloned())
     }
 
     fn set_pane_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
@@ -641,6 +703,7 @@ impl TmuxAdapter for FakeTmux {
                         *remaining = remaining.saturating_sub(1);
                         if *remaining == 0 {
                             pane.dead = true;
+                            pane.dead_status = Some(1);
                         }
                     }
                     let remove_now = if let Some(remaining) = &mut pane.removed_after_captures {

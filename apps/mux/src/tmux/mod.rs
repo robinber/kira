@@ -8,7 +8,9 @@ pub(crate) mod metadata;
 mod parse;
 mod paste;
 
-pub(crate) use adapter::{PaneInfo, TmuxAdapter};
-pub(crate) use client::{PaneSummary, TmuxClient, WorkspaceSummarySnapshot};
+#[cfg(test)]
+pub(crate) use adapter::WorkspacePaneSnapshot;
+pub(crate) use adapter::{PaneInfo, TmuxAdapter, WorkspaceSnapshot, WorkspaceWindowSnapshot};
+pub(crate) use client::TmuxClient;
 pub(crate) use error::TmuxError;
 pub(crate) use paste::paste_then_submit_text;
