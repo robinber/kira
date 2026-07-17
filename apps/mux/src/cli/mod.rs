@@ -154,12 +154,15 @@ pub(crate) enum CommandKind {
         no_template: bool,
         /// Block until the pane output settles, then print it on stdout.
         ///
-        /// Waits for pane *stability*: the pane must first change after the
-        /// prompt is submitted (response activity), then stay unchanged for a
-        /// few seconds. This is a proxy for completion, not a formal agent
-        /// done signal — panes that keep redrawing (clocks, watchers) or go
-        /// quiet mid-stream can fool it. An internal hard timeout (~10 min)
-        /// aborts with a dedicated exit code and the last capture on stderr.
+        /// Waits for pane *convergence*: submission redraws are excluded, then
+        /// every distinct frame resets a quiet window sized to the evidence
+        /// (5 s after durable production, 10 s for weak production, 30 s when
+        /// nothing changed after the submission acknowledgement). This is a
+        /// proxy for completion, not a formal agent done signal — perfectly
+        /// aliased activity, a mid-reply pause longer than the active window,
+        /// silent work, or monotonic idle counters can fool it. An internal
+        /// hard timeout (~10 min) aborts with a dedicated exit code and the
+        /// last capture on stderr.
         #[arg(long)]
         wait: bool,
     },

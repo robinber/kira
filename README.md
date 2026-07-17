@@ -219,18 +219,27 @@ bug.
 ### Waiting for a reply: `send --wait`
 
 `send --wait` polls the pane after delivery and prints the captured output on
-stdout once it settles. The condition is **pane stability, not a formal done
-signal**, in two phases: the pane must first *change* after the submit (the
-reply started), then stay unchanged for a few seconds. A pane that dies or
-vanishes mid-wait (killed window / missing target) fails with exit **6**; an
-internal hard timeout (~10 min, no CLI flag) aborts with exit **7** and writes
-the last capture to stderr (stdout stays reserved for confirmed-stable output).
+stdout once it converges. The condition is **pane convergence, not a formal
+done signal**. Kira captures the screen before submit, waits for the pane to
+durably move off that image (submission acknowledgement — a transient redraw
+that reverts does not count), then waits for visible production to settle.
+Every distinct normalized frame resets settling (including spinner frames);
+the quiet window is sized to the evidence: 5 s after durable production, 10 s
+for weak production, and 30 s when nothing changed after the acknowledgement
+(a one-frame reply and a silently thinking model look identical). One final
+identical poll confirms the result. These are internal heuristics, not CLI
+tuning flags.
 
-Known limits: a reply streamed with pauses longer than the stability window
-can be cut short; a pane that keeps redrawing (clocks, watchers) never
-stabilizes and hits the hard timeout; a reply that fully renders *before* the
-post-submit baseline is rare but ends in the hard timeout as well (no activity
-observed).
+A pane that dies or vanishes mid-wait (killed window, lost session, or a
+stopped tmux server) fails with exit **6**; an internal hard timeout (~10 min)
+aborts with exit **7** and writes the last capture to stderr (stdout stays
+reserved for confirmed-stable output).
+
+Known limits: activity perfectly synchronized with the 500 ms poll can be
+invisible; a reply that pauses longer than the active quiet window is cut
+short; a model that stays visually silent past the 30 s submission-only
+window is reported done with only the echo captured; and an idle monotonic
+counter (clock, watcher) never converges and reaches the hard timeout.
 
 ## Layout
 

@@ -109,6 +109,18 @@ impl TestBed {
         extra_env: &[(&str, &str)],
         current_dir: Option<&std::path::Path>,
     ) -> Output {
+        let mut command = self.kira_command(args);
+        if let Some(current_dir) = current_dir {
+            command.current_dir(current_dir);
+        }
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        run(&mut command)
+    }
+
+    /// Base `kira-mux` command wired to this bed's isolated tmux server.
+    fn kira_command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_kira-mux"));
         command
             .args(args)
@@ -121,13 +133,40 @@ impl TestBed {
             // developer running the suite inside tmux) is never visible.
             .env("TMUX_TMPDIR", self.config_home.path())
             .env_remove("TMUX");
-        if let Some(current_dir) = current_dir {
-            command.current_dir(current_dir);
+        command
+    }
+
+    /// Run kira with a test-side deadline: a hung command is killed and its
+    /// partial output returned, so a blocking-command regression (e.g. a
+    /// `send --wait` that never converges) fails the suite fast instead of
+    /// stalling on kira's internal 10-minute hard timeout.
+    fn kira_within(&self, deadline: Duration, args: &[&str]) -> Output {
+        let mut command = self.kira_command(args);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => panic!("failed to spawn {command:?}: {error}"),
+        };
+        let started = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if started.elapsed() >= deadline => {
+                    let _ = child.kill();
+                    break;
+                }
+                // std has no blocking wait-with-timeout: poll with a short nap.
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(error) => panic!("failed to poll kira-mux: {error}"),
+            }
         }
-        for (key, value) in extra_env {
-            command.env(key, value);
+        match child.wait_with_output() {
+            Ok(output) => output,
+            Err(error) => panic!("failed to collect kira-mux output: {error}"),
         }
-        run(&mut command)
     }
 
     /// Run raw tmux against this bed's isolated server, for asserting on
@@ -907,6 +946,42 @@ fn send_and_capture_roundtrip_through_paste() {
         "send",
     );
     bed.wait_for_capture("alpha", "hello from kira integration");
+}
+
+#[test]
+fn send_wait_survives_prompt_echo_before_delayed_answer() {
+    let bed = TestBed::new();
+    let script = bed.project_root.path().join("wait-agent");
+    write_file(
+        &script,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 4\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: WAIT_OK\\n'\ndone\n",
+    );
+    make_executable(&script);
+    bed.write_project(&format!(
+        "[[agents]]\nid = \"alpha\"\ncommand = \"{}\"\n",
+        script.display()
+    ));
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    let started = Instant::now();
+    let waited = bed.kira_within(
+        Duration::from_mins(2),
+        &["send", "it", "alpha", "race probe", "--wait"],
+    );
+
+    assert_success(&waited, "send --wait");
+    let output = stdout_of(&waited);
+    assert!(
+        output.contains("answer chunk: race probe") && output.contains("answer final: WAIT_OK"),
+        "wait must capture the full delayed reply, got: {output:?}"
+    );
+    // The quiet timer must restart after the delayed answer: the final line
+    // prints at ~5 s and the shortest window after it is 5 s plus one poll.
+    assert!(
+        started.elapsed() >= Duration::from_secs(9),
+        "wait returned before the post-answer quiet window elapsed"
+    );
 }
 
 #[test]

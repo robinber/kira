@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
+use super::wait::{WAIT_CAPTURE_LINES, WaitSeed};
 use crate::error::KiraMuxError;
 use crate::inspector::WorkspaceTopology;
 use crate::model::{ResolvedAgent, ResolvedProject};
@@ -21,9 +22,14 @@ const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 pub(crate) struct DeliveredPrompt {
     /// Rendered text that was pasted/submitted into the pane.
     pub(crate) rendered: String,
-    /// Pane that received the prompt; reuse for `send --wait` without a
-    /// second full workspace inspect (keeps the post-submit baseline tight).
+    /// Pane that received the prompt.
     pub(crate) pane_id: String,
+}
+
+struct PreparedPrompt<'a> {
+    pane: PaneInfo,
+    agent: &'a ResolvedAgent,
+    rendered: String,
 }
 
 /// Render the final prompt for `agent_id` and deliver it to the agent's
@@ -45,18 +51,84 @@ pub(crate) fn send_prompt(
     prompt: &str,
     no_template: bool,
 ) -> Result<DeliveredPrompt> {
+    let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
+    deliver_prepared(tmux, agent_id, prepared)
+}
+
+/// Capture the pane immediately before delivery, then submit the prompt.
+///
+/// This observed path is reserved for `send --wait`: plain `send` keeps its
+/// single delivery path and does not pay for an extra pane capture.
+pub(crate) fn send_prompt_for_wait(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+    agent_id: &str,
+    prompt: &str,
+    no_template: bool,
+) -> Result<WaitSeed> {
+    let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
+    let pre_submit = capture_before_submit(tmux, &prepared.pane.pane_id, agent_id)?;
+    let delivered = deliver_prepared(tmux, agent_id, prepared)?;
+    Ok(WaitSeed {
+        delivered,
+        pre_submit,
+    })
+}
+
+fn prepare_prompt<'a>(
+    tmux: &dyn TmuxAdapter,
+    project: &'a ResolvedProject,
+    agent_id: &str,
+    prompt: &str,
+    no_template: bool,
+) -> Result<PreparedPrompt<'a>> {
     let (pane, agent, topology) = resolve_managed_pane(tmux, project, agent_id)?;
     // Gate: process liveness only — not application readiness.
     if pane.pane_dead {
         return Err(KiraMuxError::DeadPane(agent_id.to_string()).into());
     }
 
-    let final_prompt = render_final_prompt(project, agent, prompt, no_template, &topology);
-    paste_and_submit(tmux, &pane, agent, agent_id, &final_prompt)?;
-    Ok(DeliveredPrompt {
-        rendered: final_prompt,
-        pane_id: pane.pane_id,
+    let rendered = render_final_prompt(project, agent, prompt, no_template, &topology);
+    Ok(PreparedPrompt {
+        pane,
+        agent,
+        rendered,
     })
+}
+
+fn deliver_prepared(
+    tmux: &dyn TmuxAdapter,
+    agent_id: &str,
+    prepared: PreparedPrompt<'_>,
+) -> Result<DeliveredPrompt> {
+    paste_and_submit(
+        tmux,
+        &prepared.pane,
+        prepared.agent,
+        agent_id,
+        &prepared.rendered,
+    )?;
+    Ok(DeliveredPrompt {
+        rendered: prepared.rendered,
+        pane_id: prepared.pane.pane_id,
+    })
+}
+
+fn capture_before_submit(tmux: &dyn TmuxAdapter, pane_id: &str, agent_id: &str) -> Result<String> {
+    or_dead_pane(agent_id, tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES))
+}
+
+/// Send-side classification, shared by every delivery op: a target that
+/// vanished mid-operation (killed pane/window/session or stopped server) is
+/// the typed [`KiraMuxError::DeadPane`] (exit 6), not an untyped transport
+/// failure.
+fn or_dead_pane<T>(agent_id: &str, result: Result<T>) -> Result<T> {
+    match result {
+        Err(error) if TmuxError::is_target_unavailable(&error) => {
+            Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
+        }
+        other => other,
+    }
 }
 
 /// Compute the final prompt text for `agent` without mutating tmux.
@@ -104,12 +176,10 @@ fn paste_and_submit(
     agent_id: &str,
     final_prompt: &str,
 ) -> Result<()> {
-    match paste_and_submit_inner(tmux, pane, agent, final_prompt) {
-        Err(error) if TmuxError::is_target_unavailable(&error) => {
-            Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
-        }
-        other => other,
-    }
+    or_dead_pane(
+        agent_id,
+        paste_and_submit_inner(tmux, pane, agent, final_prompt),
+    )
 }
 
 fn paste_and_submit_inner(
@@ -530,5 +600,25 @@ mod tests {
         let sent = send_prompt(&fake, &project, "alpha", "args here", false).or_panic();
         assert_eq!(sent.rendered, "/cmd args here");
         assert_eq!(sent.pane_id, "%0");
+    }
+
+    #[test]
+    fn send_prompt_for_wait_captures_before_delivery() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.set_pane_content("%0", "idle before submit");
+
+        let seed = send_prompt_for_wait(&fake, &project, "alpha", "hello world", false).or_panic();
+
+        assert_eq!(seed.delivered.pane_id, "%0");
+        assert_eq!(seed.delivered.rendered, "hello world");
+        assert_eq!(seed.pre_submit, "idle before submit");
+        assert!(
+            fake.ops()
+                .iter()
+                .any(|op| matches!(op, FakeOp::PasteText { text, .. } if text == "hello world")),
+            "observed delivery must still submit the prompt"
+        );
     }
 }
