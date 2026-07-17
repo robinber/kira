@@ -807,15 +807,19 @@ mod tests {
     ) -> (tempfile::TempDir, TmuxClient, PathBuf) {
         let temp = tempfile::tempdir().or_panic();
         let script_path = temp.path().join("tmux");
+        let pending_script_path = temp.path().join("tmux.pending");
         let log_path = temp.path().join("calls.log");
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  has-session) exit 0 ;;\n  display-message)\n{display_action}\n    ;;\n  list-panes)\n{list_action}\n    ;;\nesac\n",
             log_path.display()
         );
-        fs::write(&script_path, script).or_panic();
-        let mut permissions = fs::metadata(&script_path).or_panic().permissions();
+        fs::write(&pending_script_path, script).or_panic();
+        let mut permissions = fs::metadata(&pending_script_path).or_panic().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).or_panic();
+        fs::set_permissions(&pending_script_path, permissions).or_panic();
+        // Publish the executable only after its writer is closed. This avoids
+        // transient ETXTBSY failures on Linux runners when tests start it.
+        fs::rename(&pending_script_path, &script_path).or_panic();
         let client = TmuxClient {
             tmux_bin: script_path.display().to_string(),
             socket_name: None,
