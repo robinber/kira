@@ -33,6 +33,9 @@ pub(crate) struct FakeTmux {
     /// so post-launch health checks observe an instant exit.
     respawn_exits_immediately: AtomicBool,
     no_server: AtomicBool,
+    /// Countdown of `capture_pane` calls before the fake server stops
+    /// (flipping `no_server`), simulating tmux server loss mid-wait.
+    server_stops_after_captures: Mutex<Option<usize>>,
 }
 
 #[track_caller]
@@ -168,6 +171,7 @@ impl FakeTmux {
             fail_delivery_no_server: AtomicBool::new(false),
             respawn_exits_immediately: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
+            server_stops_after_captures: Mutex::new(None),
         }
     }
 
@@ -203,6 +207,31 @@ impl FakeTmux {
     /// Simulate an isolated tmux server stopping with its last pane.
     pub(crate) fn set_fail_delivery_no_server(&self, fail: bool) {
         self.fail_delivery_no_server.store(fail, Ordering::Relaxed);
+    }
+
+    /// Stop the fake server after `captures` calls to `capture_pane`:
+    /// subsequent `list_panes`/`capture_pane` calls report `NoServer`,
+    /// simulating the tmux server dying mid-wait.
+    pub(crate) fn set_server_stops_after_captures(&self, captures: usize) {
+        *ok(
+            self.server_stops_after_captures.lock(),
+            "fake tmux server-stop mutex poisoned",
+        ) = Some(captures);
+    }
+
+    fn note_capture_served(&self) {
+        let mut remaining = ok(
+            self.server_stops_after_captures.lock(),
+            "fake tmux server-stop mutex poisoned",
+        );
+        if let Some(count) = remaining.take() {
+            let count = count.saturating_sub(1);
+            if count == 0 {
+                self.no_server.store(true, Ordering::Relaxed);
+            } else {
+                *remaining = Some(count);
+            }
+        }
     }
 
     fn delivery_failure(&self, target_pane: &str) -> Option<anyhow::Error> {
@@ -459,6 +488,9 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
 
         // Real tmux accepts pane ids (`%0`) as list-panes targets; post-launch
@@ -691,6 +723,9 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn capture_pane(&self, pane_id: &str, history_limit: usize) -> Result<String> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         for session in sessions.values_mut() {
             for window in session.windows.values_mut() {
@@ -721,6 +756,7 @@ impl TmuxAdapter for FakeTmux {
                     if remove_now {
                         window.panes.remove(idx);
                     }
+                    self.note_capture_served();
                     return Ok(content);
                 }
             }

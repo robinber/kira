@@ -18,15 +18,6 @@ pub(crate) enum TmuxError {
 }
 
 impl TmuxError {
-    /// True when `error` is a typed missing-session/window/pane failure, as
-    /// opposed to a transport or server error.
-    pub(crate) fn is_missing_target(error: &anyhow::Error) -> bool {
-        matches!(
-            error.downcast_ref::<Self>(),
-            Some(Self::MissingTarget(_) | Self::MissingSession(_))
-        )
-    }
-
     /// True when a previously resolved target can no longer be addressed,
     /// including when its last pane disappearing stopped the tmux server.
     pub(crate) fn is_target_unavailable(error: &anyhow::Error) -> bool {

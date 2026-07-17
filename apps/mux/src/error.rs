@@ -33,8 +33,8 @@ pub enum KiraMuxError {
     /// The agent pane died while `send --wait` was polling for output.
     #[error("pane for agent '{0}' died while waiting for output")]
     PaneDiedDuringWait(String),
-    /// `send --wait` hit the internal hard timeout before the pane went
-    /// through the activity-then-stability cycle.
+    /// `send --wait` hit the internal hard timeout before the pane
+    /// converged (submission acknowledged, then production settled).
     #[error("timed out waiting for output from agent '{agent_id}' to stabilize")]
     WaitTimeout {
         /// Agent whose pane never stabilized.

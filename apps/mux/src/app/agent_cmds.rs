@@ -74,26 +74,33 @@ pub(super) fn cmd_send(
     wait: bool,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
-    let delivered = crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
-    // Length only: prompt content may carry user secrets, keep it out of logs.
+    if !wait {
+        let delivered =
+            crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
+        log_prompt_delivered(agent_id, &delivered);
+        return Ok(());
+    }
+
+    let seed =
+        crate::agent_io::send_prompt_for_wait(&tmux, &project, agent_id, prompt, no_template)?;
+    log_prompt_delivered(agent_id, &seed.delivered);
+    let wait_result = crate::agent_io::wait_on_pane(
+        &tmux,
+        agent_id,
+        &seed,
+        &crate::agent_io::WaitOptions::default(),
+    );
+    finish_wait(wait_result)
+}
+
+/// Length only: prompt content may carry user secrets, keep it out of logs.
+fn log_prompt_delivered(agent_id: &str, delivered: &crate::agent_io::DeliveredPrompt) {
     tracing::debug!(
         agent = agent_id,
         pane = %delivered.pane_id,
         rendered_len = delivered.rendered.len(),
         "prompt delivered"
     );
-    if !wait {
-        return Ok(());
-    }
-    // Reuse the pane id from send so the post-submit baseline is captured
-    // without a second full inspect (narrows the fast-reply race).
-    let wait_result = crate::agent_io::wait_on_pane(
-        &tmux,
-        agent_id,
-        &delivered.pane_id,
-        &crate::agent_io::WaitOptions::default(),
-    );
-    finish_wait(wait_result)
 }
 
 /// Map a wait outcome to stdout/stderr and the propagated error.

@@ -1,24 +1,45 @@
-//! Post-send wait: poll pane captures until the agent's output settles.
+//! Post-send wait: poll pane captures until the agent's output converges.
 //!
-//! `send --wait` treats pane stillness as a proxy for "the agent finished",
-//! in two phases: first the pane must *change* from the post-submit baseline
-//! (the response started), then it must stop changing for a full stability
-//! window. Stability without observed activity never counts as success — a
-//! pane that sits quiet while the model thinks must not be reported as done
-//! with only the prompt echo captured.
+//! There is no portable "done" signal across interactive agent TUIs. Kira
+//! therefore observes the pane in three phases: submission acknowledgement
+//! (the screen must durably move off the pre-submit image — a transient
+//! redraw that reverts does not count), visible production, then settling.
+//! Every distinct normalized frame resets settling, including cyclic spinner
+//! frames. Frame history sizes the quiet window: durable production evidence
+//! settles fastest, weak production waits longer, and a pane that never
+//! changed again after the acknowledgement waits longest — a one-frame reply
+//! and a silently thinking model are indistinguishable from captures alone.
+//!
+//! Capture-based convergence has known limits: activity perfectly aliased by
+//! the poll interval is invisible, an idle monotonic counter never settles,
+//! a reply that pauses longer than the active quiet window is cut short, and
+//! a model that stays visually silent past the submission-only window is
+//! reported done with only the submission echo captured.
 
+use std::collections::VecDeque;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
+use super::send::DeliveredPrompt;
 use crate::error::KiraMuxError;
 use crate::tmux::{TmuxAdapter, TmuxError};
 
 /// Lines of pane history compared per poll and returned on success. Sized
 /// for a full agent reply; intentionally a constant, not CLI surface.
-const WAIT_CAPTURE_LINES: usize = 200;
+pub(super) const WAIT_CAPTURE_LINES: usize = 200;
+const RECENT_FRAME_LIMIT: usize = 8;
+
+/// Observation captured around prompt delivery for `send --wait`.
+pub(crate) struct WaitSeed {
+    /// Delivery result: target pane plus the exact rendered prompt (the
+    /// latter is used only as an opportunistic submission hint).
+    pub(crate) delivered: DeliveredPrompt,
+    /// Pane capture taken immediately before submission.
+    pub(crate) pre_submit: String,
+}
 
 /// Tuning for the stability poll. Production uses [`WaitOptions::default`];
 /// tests inject tiny durations (and optional virtual time) so timeout paths
@@ -26,8 +47,18 @@ const WAIT_CAPTURE_LINES: usize = 200;
 pub(crate) struct WaitOptions {
     /// Delay between pane captures.
     pub(crate) poll_interval: Duration,
-    /// How long the pane must stay unchanged (after activity) to be stable.
-    pub(crate) stability_window: Duration,
+    /// Micro-stability fallback when the rendered prompt cannot be found.
+    submission_stability: Duration,
+    /// Bound on the submission phase when the TUI keeps redrawing.
+    submission_timeout: Duration,
+    /// Quiet period after durable production evidence.
+    normal_quiet_window: Duration,
+    /// Conservative quiet period when production was seen but stayed weak.
+    low_confidence_quiet_window: Duration,
+    /// Most conservative quiet period when nothing changed after the
+    /// submission acknowledgement: a one-frame reply and a silently thinking
+    /// model look identical, so betting on "done" needs the longest odds.
+    submission_only_quiet_window: Duration,
     /// Hard cap on the whole wait. Kept below typical caller-side tool
     /// timeouts so kira-mux fails first with a useful error.
     pub(crate) hard_timeout: Duration,
@@ -46,7 +77,11 @@ impl Default for WaitOptions {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_millis(500),
-            stability_window: Duration::from_secs(3),
+            submission_stability: Duration::from_secs(1),
+            submission_timeout: Duration::from_secs(3),
+            normal_quiet_window: Duration::from_secs(5),
+            low_confidence_quiet_window: Duration::from_secs(10),
+            submission_only_quiet_window: Duration::from_secs(30),
             hard_timeout: Duration::from_mins(10),
             clock: WaitClock::Wall,
         }
@@ -54,22 +89,6 @@ impl Default for WaitOptions {
 }
 
 impl WaitOptions {
-    /// Test knobs: millisecond-scale timings with a virtual clock so timeout
-    /// and stability paths advance without real sleeps.
-    #[cfg(test)]
-    fn virtual_time(
-        poll_interval: Duration,
-        stability_window: Duration,
-        hard_timeout: Duration,
-    ) -> Self {
-        Self {
-            poll_interval,
-            stability_window,
-            hard_timeout,
-            clock: WaitClock::Virtual(Mutex::new(Duration::ZERO)),
-        }
-    }
-
     fn elapsed(&self, wall_start: Instant) -> Duration {
         match &self.clock {
             WaitClock::Wall => wall_start.elapsed(),
@@ -96,11 +115,171 @@ impl WaitOptions {
     }
 }
 
-/// Block until `pane_id` shows output activity and then stabilizes; return
-/// the final capture (same text shape as `capture`).
-///
-/// Call this with the pane id already resolved by `send` so the baseline is
-/// taken immediately after submit, without a second `inspect` round-trip.
+struct SubmissionState {
+    last_change: Duration,
+    activity_seen: bool,
+    /// First frame containing the rendered prompt. It must either survive the
+    /// next poll or be followed by another non-baseline frame before the
+    /// submission is acknowledged.
+    prompt_candidate: Option<String>,
+}
+
+impl SubmissionState {
+    fn new(last_change: Duration) -> Self {
+        Self {
+            last_change,
+            activity_seen: false,
+            prompt_candidate: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SubmissionObservation<'a> {
+    changed: bool,
+    frame: &'a str,
+    pre_submit: &'a str,
+    prompt_visible: bool,
+    observed_at: Duration,
+}
+
+enum SubmissionDecision {
+    Pending,
+    Acknowledged { production_seen: bool },
+}
+
+fn observe_submission(
+    state: &mut SubmissionState,
+    observation: SubmissionObservation<'_>,
+    options: &WaitOptions,
+) -> SubmissionDecision {
+    let mut acknowledged = false;
+    let mut production_seen = false;
+    if observation.changed {
+        state.last_change = observation.observed_at;
+        if observation.frame == observation.pre_submit {
+            state.activity_seen = false;
+            state.prompt_candidate = None;
+        } else if state.prompt_candidate.is_some() {
+            acknowledged = true;
+            production_seen = true;
+        } else {
+            state.activity_seen = true;
+            if observation.prompt_visible {
+                state.prompt_candidate = Some(observation.frame.to_string());
+            }
+        }
+    } else if state.prompt_candidate.as_deref() == Some(observation.frame) {
+        acknowledged = true;
+    }
+
+    let prompt_pending = state.prompt_candidate.is_some();
+    let generically_stable = !prompt_pending
+        && state.activity_seen
+        && observation.frame != observation.pre_submit
+        && observation.observed_at.saturating_sub(state.last_change)
+            >= options.submission_stability;
+    let redraw_timeout = !prompt_pending
+        && state.activity_seen
+        && observation.frame != observation.pre_submit
+        && observation.observed_at >= options.submission_timeout;
+
+    if acknowledged || generically_stable || redraw_timeout {
+        SubmissionDecision::Acknowledged { production_seen }
+    } else {
+        SubmissionDecision::Pending
+    }
+}
+
+enum WaitPhase {
+    Submitting(SubmissionState),
+    Settling { threshold_seen: bool },
+}
+
+/// A novel frame with its production context. Starts as the pending
+/// candidate of the latest change; becomes material once it survives a poll.
+struct MaterialEvent {
+    frame: String,
+    after_prior_activity: bool,
+}
+
+/// Tracks only enough history to distinguish durable novel frames from a
+/// short cycle. Visible changes are handled separately and always reset the
+/// quiet timer.
+struct FrameTracker {
+    recent: VecDeque<String>,
+    pending: Option<MaterialEvent>,
+    material: VecDeque<MaterialEvent>,
+    changed_before: bool,
+}
+
+impl FrameTracker {
+    fn new(baseline: String) -> Self {
+        let mut recent = VecDeque::with_capacity(RECENT_FRAME_LIMIT);
+        recent.push_back(baseline);
+        Self {
+            recent,
+            pending: None,
+            material: VecDeque::with_capacity(RECENT_FRAME_LIMIT),
+            changed_before: false,
+        }
+    }
+
+    fn reset(&mut self, baseline: String) {
+        self.recent.clear();
+        self.recent.push_back(baseline);
+        self.pending = None;
+        self.material.clear();
+        self.changed_before = false;
+    }
+
+    fn observe_change(&mut self, frame: &str) {
+        let cyclic = self.recent.iter().any(|recent| recent == frame);
+        if cyclic {
+            self.pending = None;
+            self.material.retain(|event| event.frame != frame);
+        } else {
+            self.pending = Some(MaterialEvent {
+                frame: frame.to_string(),
+                after_prior_activity: self.changed_before,
+            });
+        }
+        self.changed_before = true;
+        push_bounded(&mut self.recent, frame.to_string());
+    }
+
+    fn observe_stable(&mut self, frame: &str) {
+        if let Some(pending) = self.pending.take()
+            && pending.frame == frame
+        {
+            push_bounded(&mut self.material, pending);
+        }
+    }
+
+    fn has_strong_evidence(&self) -> bool {
+        self.material.len() >= 2 || self.material.iter().any(|event| event.after_prior_activity)
+    }
+
+    fn quiet_window(&self, options: &WaitOptions, production_seen: bool) -> Duration {
+        if self.has_strong_evidence() {
+            options.normal_quiet_window
+        } else if production_seen {
+            options.low_confidence_quiet_window
+        } else {
+            options.submission_only_quiet_window
+        }
+    }
+}
+
+fn push_bounded<T>(items: &mut VecDeque<T>, item: T) {
+    if items.len() == RECENT_FRAME_LIMIT {
+        items.pop_front();
+    }
+    items.push_back(item);
+}
+
+/// Block until the observed pane converges; return the final raw capture
+/// (same text shape as `capture`).
 ///
 /// # Errors
 ///
@@ -110,71 +289,188 @@ impl WaitOptions {
 pub(crate) fn wait_on_pane(
     tmux: &dyn TmuxAdapter,
     agent_id: &str,
-    pane_id: &str,
+    seed: &WaitSeed,
     options: &WaitOptions,
 ) -> Result<String> {
-    if pane_is_dead(tmux, pane_id)? {
+    if pane_is_dead(tmux, &seed.delivered.pane_id)? {
         return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
     }
 
     let wall_start = Instant::now();
-    // Baseline after the full submit sequence: prompt echo is already
-    // rendered, so any change from here on is response activity.
-    let mut last = capture_or_died(tmux, agent_id, pane_id)?;
-    let mut activity_seen = false;
-    let mut last_change = options.elapsed(wall_start);
+    let pre_submit = normalize_frame(&seed.pre_submit);
+    let prompt_fragments = prompt_fragments(&seed.delivered.rendered);
+    let pre_submit_search = normalize_search_text(&seed.pre_submit);
+    let mut last_capture = seed.pre_submit.clone();
+    let mut last_frame = pre_submit.clone();
+    let mut phase = WaitPhase::Submitting(SubmissionState::new(Duration::ZERO));
+    let mut tracker = FrameTracker::new(pre_submit.clone());
+    let mut candidate_seen = false;
+    let mut production_seen = false;
+    let mut last_visible_change = Duration::ZERO;
 
     loop {
         let now = options.elapsed(wall_start);
         if now >= options.hard_timeout {
             return Err(KiraMuxError::WaitTimeout {
                 agent_id: agent_id.to_string(),
-                last_capture: last,
+                last_capture,
             }
             .into());
         }
         let remaining = options.hard_timeout.saturating_sub(now);
         options.sleep(options.poll_interval.min(remaining));
 
-        if pane_is_dead(tmux, pane_id)? {
+        if pane_is_dead(tmux, &seed.delivered.pane_id)? {
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
-        let current = capture_or_died(tmux, agent_id, pane_id)?;
-        if current != last {
-            last = current;
-            activity_seen = true;
-            last_change = options.elapsed(wall_start);
-        } else if activity_seen
-            && options.elapsed(wall_start).saturating_sub(last_change) >= options.stability_window
-        {
-            return Ok(last);
+        let current = capture_or_died(tmux, agent_id, &seed.delivered.pane_id)?;
+        let observed_at = options.elapsed(wall_start);
+        // Byte-identical captures normalize identically: skip the allocation.
+        let mut changed = false;
+        if current != last_capture {
+            let current_frame = normalize_frame(&current);
+            if current_frame != last_frame {
+                last_frame = current_frame;
+                changed = true;
+            }
+        }
+        last_capture = current;
+
+        if let WaitPhase::Submitting(submission) = &mut phase {
+            let prompt_visible = changed
+                && prompt_appeared(
+                    &pre_submit_search,
+                    &normalize_search_text(&last_capture),
+                    &prompt_fragments,
+                );
+            let observation = SubmissionObservation {
+                changed,
+                frame: &last_frame,
+                pre_submit: &pre_submit,
+                prompt_visible,
+                observed_at,
+            };
+            if let SubmissionDecision::Acknowledged {
+                production_seen: seen,
+            } = observe_submission(submission, observation, options)
+            {
+                candidate_seen = true;
+                production_seen = seen;
+                tracker.reset(last_frame.clone());
+                last_visible_change = observed_at;
+                phase = WaitPhase::Settling {
+                    threshold_seen: false,
+                };
+            }
+            continue;
+        }
+
+        if changed {
+            if last_frame == pre_submit {
+                // Returning to the exact pre-submit image invalidates the
+                // acknowledgement. Stay conservative and wait for a durable
+                // submission transition instead of reporting the idle pane.
+                candidate_seen = false;
+                production_seen = false;
+                tracker.reset(pre_submit.clone());
+                phase = WaitPhase::Submitting(SubmissionState::new(observed_at));
+                continue;
+            }
+            candidate_seen = true;
+            production_seen = true;
+            tracker.observe_change(&last_frame);
+            last_visible_change = observed_at;
+            phase = WaitPhase::Settling {
+                threshold_seen: false,
+            };
+            continue;
+        }
+
+        tracker.observe_stable(&last_frame);
+        if !candidate_seen {
+            continue;
+        }
+
+        let quiet_window = tracker.quiet_window(options, production_seen);
+        if observed_at.saturating_sub(last_visible_change) < quiet_window {
+            continue;
+        }
+
+        if let WaitPhase::Settling { threshold_seen } = &mut phase {
+            if *threshold_seen {
+                return Ok(last_capture);
+            }
+            *threshold_seen = true;
         }
     }
 }
 
-/// Capture for the wait loop: a pane that vanishes between the liveness
-/// check and the capture surfaces as [`KiraMuxError::PaneDiedDuringWait`],
-/// matching [`pane_is_dead`], instead of a transport error.
+fn normalize_frame(capture: &str) -> String {
+    let mut lines: Vec<&str> = capture.lines().map(str::trim_end).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn prompt_fragments(rendered_prompt: &str) -> Vec<String> {
+    const FRAGMENT_CHARS: usize = 64;
+
+    let normalized = normalize_search_text(rendered_prompt);
+    let chars: Vec<char> = normalized.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    if chars.len() <= FRAGMENT_CHARS {
+        return vec![normalized];
+    }
+
+    vec![
+        chars.iter().take(FRAGMENT_CHARS).collect(),
+        chars
+            .iter()
+            .skip(chars.len().saturating_sub(FRAGMENT_CHARS))
+            .collect(),
+    ]
+}
+
+fn prompt_appeared(pre_submit: &str, current: &str, fragments: &[String]) -> bool {
+    fragments.iter().any(|fragment| {
+        !fragment.is_empty()
+            && !pre_submit.contains(fragment.as_str())
+            && current.contains(fragment.as_str())
+    })
+}
+
+/// Capture for the wait loop: a pane that vanishes (or a tmux server that
+/// stops) between the liveness check and the capture surfaces as
+/// [`KiraMuxError::PaneDiedDuringWait`], matching [`pane_is_dead`], instead
+/// of a transport error.
 fn capture_or_died(tmux: &dyn TmuxAdapter, agent_id: &str, pane_id: &str) -> Result<String> {
     match tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES) {
-        Err(error) if TmuxError::is_missing_target(&error) => {
+        Err(error) if TmuxError::is_target_unavailable(&error) => {
             Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into())
         }
         other => other,
     }
 }
 
-/// A vanished pane (killed window / missing target) counts as dead. Session
-/// loss is also treated as dead for the wait loop so callers get a typed
-/// exit 6 rather than an untyped transport failure.
+/// A vanished pane (killed window / missing target), a lost session, or a
+/// stopped tmux server all count as dead for the wait loop so callers get a
+/// typed exit 6 rather than an untyped transport failure — the same
+/// `is_target_unavailable` classification the send path uses.
 fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
     match tmux.list_panes(pane_id) {
         Ok(panes) => Ok(panes
             .iter()
             .find(|pane| pane.pane_id == pane_id)
             .is_none_or(|pane| pane.pane_dead)),
-        Err(error) if TmuxError::is_missing_target(&error) => Ok(true),
+        Err(error) if TmuxError::is_target_unavailable(&error) => Ok(true),
         Err(error) => Err(error),
     }
 }
@@ -194,18 +490,30 @@ mod tests {
     ) -> Result<String> {
         let (pane, _agent, _topology) =
             super::super::resolve::resolve_managed_pane(tmux, project, agent_id)?;
-        wait_on_pane(tmux, agent_id, &pane.pane_id, options)
+        let seed = WaitSeed {
+            delivered: DeliveredPrompt {
+                pane_id: pane.pane_id,
+                rendered: "prompt echo".to_string(),
+            },
+            pre_submit: "ready".to_string(),
+        };
+        wait_on_pane(tmux, agent_id, &seed, options)
     }
 
-    /// Millisecond-scale knobs so timeout paths stay fast; the stability
-    /// window spans several polls, mirroring the production ratio. Virtual
-    /// time means these tests do not burn wall-clock sleeps.
+    /// Millisecond-scale knobs so timeout paths stay fast; each quiet window
+    /// spans several polls, mirroring the production ratios. Virtual time
+    /// means these tests do not burn wall-clock sleeps.
     fn fast_options() -> WaitOptions {
-        WaitOptions::virtual_time(
-            Duration::from_millis(1),
-            Duration::from_millis(20),
-            Duration::from_millis(250),
-        )
+        WaitOptions {
+            poll_interval: Duration::from_millis(1),
+            submission_stability: Duration::from_millis(3),
+            submission_timeout: Duration::from_millis(8),
+            normal_quiet_window: Duration::from_millis(10),
+            low_confidence_quiet_window: Duration::from_millis(20),
+            submission_only_quiet_window: Duration::from_millis(40),
+            hard_timeout: Duration::from_millis(250),
+            clock: WaitClock::Virtual(Mutex::new(Duration::ZERO)),
+        }
     }
 
     #[test]
@@ -213,7 +521,8 @@ mod tests {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
-        // Baseline pops the first entry; the pane then streams and freezes.
+        // The pre-submit baseline is carried by WaitSeed; captures start with
+        // the submission echo, then the pane streams and freezes.
         fake.queue_pane_contents(
             "%0",
             &[
@@ -223,9 +532,14 @@ mod tests {
             ],
         );
 
-        let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+        let options = fast_options();
+        let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
 
         assert_eq!(output, "prompt echo\nthinking...\nanswer: 42");
+        assert!(
+            options.elapsed(Instant::now()) < Duration::from_millis(40),
+            "a frame after the prompt acknowledgement must count as production"
+        );
     }
 
     #[test]
@@ -233,9 +547,8 @@ mod tests {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
-        // Quiet from the start: only the prompt echo, no response activity.
-        // Stability without activity must not be reported as success.
-        fake.set_pane_content("%0", "prompt echo");
+        // Quiet from the start: no submission echo or response activity.
+        fake.set_pane_content("%0", "ready");
 
         let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
 
@@ -243,7 +556,7 @@ mod tests {
             matches!(
                 err.downcast_ref::<KiraMuxError>(),
                 Some(KiraMuxError::WaitTimeout { agent_id, last_capture })
-                    if agent_id == "alpha" && last_capture == "prompt echo"
+                    if agent_id == "alpha" && last_capture == "ready"
             ),
             "expected WaitTimeout carrying the last capture, got: {err}"
         );
@@ -293,12 +606,13 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
         fake.queue_pane_contents("%0", &["prompt echo", "streaming...", "str"]);
         fake.set_pane_dies_after_captures("%0", 3);
-        // Stability window is unreachable; death must win before hard timeout.
-        let options = WaitOptions::virtual_time(
-            Duration::from_millis(1),
-            Duration::from_secs(30),
-            Duration::from_millis(250),
-        );
+        // Quiet windows are unreachable; death must win before hard timeout.
+        let options = WaitOptions {
+            normal_quiet_window: Duration::from_secs(30),
+            low_confidence_quiet_window: Duration::from_secs(30),
+            submission_only_quiet_window: Duration::from_secs(30),
+            ..fast_options()
+        };
 
         let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
 
@@ -320,11 +634,12 @@ mod tests {
         // returns MissingTarget, which must map to PaneDiedDuringWait.
         fake.queue_pane_contents("%0", &["prompt echo"]);
         fake.set_pane_removed_after_captures("%0", 1);
-        let options = WaitOptions::virtual_time(
-            Duration::from_millis(1),
-            Duration::from_secs(30),
-            Duration::from_millis(250),
-        );
+        let options = WaitOptions {
+            normal_quiet_window: Duration::from_secs(30),
+            low_confidence_quiet_window: Duration::from_secs(30),
+            submission_only_quiet_window: Duration::from_secs(30),
+            ..fast_options()
+        };
 
         let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
 
@@ -348,8 +663,216 @@ mod tests {
         );
 
         // No project inspect path: direct pane wait after a successful send.
-        let output = wait_on_pane(&fake, "alpha", "%0", &fast_options()).or_panic();
+        let seed = WaitSeed {
+            delivered: DeliveredPrompt {
+                pane_id: "%0".to_string(),
+                rendered: "prompt echo".to_string(),
+            },
+            pre_submit: "ready".to_string(),
+        };
+        let output = wait_on_pane(&fake, "alpha", &seed, &fast_options()).or_panic();
         assert_eq!(output, "prompt echo\nreply");
+    }
+
+    #[test]
+    fn delayed_answer_after_prompt_echo_is_not_returned_early() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        // 25 echo-only polls put the silence past the low-confidence window
+        // (20 polls): only the submission-only window may cover an
+        // echo-acknowledged pane, so the late answer must still be captured.
+        let mut frames = vec!["prompt echo"; 25];
+        frames.push("prompt echo\nanswer after silent thinking");
+        fake.queue_pane_contents("%0", &frames);
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+
+        assert_eq!(output, "prompt echo\nanswer after silent thinking");
+    }
+
+    #[test]
+    fn one_frame_response_waits_for_the_submission_only_window() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.queue_pane_contents("%0", &["prompt echo\nanswer: 42"]);
+        let options = fast_options();
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+
+        assert_eq!(output, "prompt echo\nanswer: 42");
+        // A pane that never changes again after the submission
+        // acknowledgement is indistinguishable from a silently thinking
+        // model: convergence must wait out the submission-only window, not
+        // the shorter low-confidence one.
+        let elapsed = options.elapsed(Instant::now());
+        assert!(
+            elapsed >= Duration::from_millis(41),
+            "one-frame reply converged after only {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_rendered_after_submission_timeout_still_uses_submission_only_window() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        let mut frames = vec!["ready"; 10];
+        frames.push("prompt echo");
+        fake.queue_pane_contents("%0", &frames);
+        let options = fast_options();
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+
+        assert_eq!(output, "prompt echo");
+        assert!(
+            options.elapsed(Instant::now()) >= Duration::from_millis(52),
+            "a late prompt echo must not be demoted to weak production"
+        );
+    }
+
+    #[test]
+    fn placeholder_submission_uses_generic_stability_fallback() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.queue_pane_contents(
+            "%0",
+            &[
+                "[Pasted text #1]",
+                "[Pasted text #1]",
+                "[Pasted text #1]",
+                "[Pasted text #1]",
+                "[Pasted text #1]\nanswer",
+            ],
+        );
+        // No prompt fragment ever appears, so the placeholder echo must exit
+        // the submission phase through the micro-stability path. With the
+        // submission timeout pushed past the hard timeout, that fallback is
+        // the only route to success — this pins the generically_stable
+        // branch, which no other test reaches.
+        let options = WaitOptions {
+            submission_timeout: Duration::from_millis(300),
+            ..fast_options()
+        };
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+
+        assert_eq!(output, "[Pasted text #1]\nanswer");
+    }
+
+    #[test]
+    fn swallowed_prompt_reverting_to_pre_submit_times_out() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        // The pane renders the exact prompt, then the TUI discards it and
+        // redraws the pre-submit screen. Even the prompt accelerator must
+        // require durability instead of reporting the idle pane as success.
+        fake.queue_pane_contents("%0", &["prompt echo", "ready"]);
+
+        let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::WaitTimeout { agent_id, last_capture })
+                    if agent_id == "alpha" && last_capture == "ready"
+            ),
+            "a reverted submission must not converge, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cyclic_spinner_keeps_resetting_settling() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        let mut frames = vec!["prompt echo"];
+        for index in 0..30 {
+            frames.push(if index % 2 == 0 {
+                "prompt echo\nworking /"
+            } else {
+                "prompt echo\nworking -"
+            });
+        }
+        frames.push("prompt echo\nanswer complete");
+        fake.queue_pane_contents("%0", &frames);
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+
+        assert_eq!(output, "prompt echo\nanswer complete");
+    }
+
+    #[test]
+    fn unique_late_redraw_cancels_confirmation() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        let answer = "prompt echo\nchunk\nanswer";
+        let redraw = "prompt echo\nchunk\nanswer\nusage: 12 tokens";
+        let mut frames = vec!["prompt echo", "prompt echo\nchunk", answer];
+        frames.extend(std::iter::repeat_n(answer, 10));
+        frames.push(redraw);
+        fake.queue_pane_contents("%0", &frames);
+
+        let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+
+        assert_eq!(output, redraw);
+    }
+
+    #[test]
+    fn repeated_spinner_frames_are_not_material_evidence() {
+        let mut tracker = FrameTracker::new("prompt".to_string());
+        tracker.observe_change("working /");
+        tracker.observe_stable("working /");
+        tracker.observe_change("working -");
+        tracker.observe_stable("working -");
+        assert!(tracker.has_strong_evidence());
+
+        tracker.observe_change("working /");
+        tracker.observe_change("working -");
+
+        assert!(!tracker.has_strong_evidence());
+    }
+
+    #[test]
+    fn recurring_frame_is_conservatively_removed_from_material_evidence() {
+        let mut tracker = FrameTracker::new("prompt".to_string());
+        tracker.observe_change("chunk");
+        tracker.observe_change("answer");
+        tracker.observe_stable("answer");
+        assert!(tracker.has_strong_evidence());
+
+        // Captures cannot prove whether this is a cosmetic flicker or a slow
+        // cycle. Prefer the longer quiet window: extra latency is safer than a
+        // truncated response.
+        tracker.observe_change("notification flash");
+        tracker.observe_change("answer");
+
+        assert!(!tracker.has_strong_evidence());
+    }
+
+    #[test]
+    fn frame_normalization_ignores_trailing_redraw_whitespace() {
+        assert_eq!(
+            normalize_frame("answer   \nstatus\t\n\n"),
+            normalize_frame("answer\nstatus")
+        );
+    }
+
+    #[test]
+    fn prompt_detection_tolerates_wrapping() {
+        let prompt = "review the authentication module and report only concrete findings";
+        let fragments = prompt_fragments(prompt);
+        assert!(prompt_appeared(
+            "agent ready",
+            &normalize_search_text(
+                "agent ready review the authentication\nmodule and report only concrete findings",
+            ),
+            &fragments,
+        ));
     }
 
     #[test]
@@ -368,6 +891,28 @@ mod tests {
                 Some(KiraMuxError::PaneDiedDuringWait(id)) if id == "alpha"
             ),
             "capture of a vanished pane must map to PaneDiedDuringWait, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wait_fails_when_server_stops_mid_wait() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.queue_pane_contents("%0", &["prompt echo"]);
+        // Server gone after the second capture: the next liveness check sees
+        // NoServer, which must classify as death (typed exit 6), mirroring
+        // the send-side `is_target_unavailable` mapping.
+        fake.set_server_stops_after_captures(2);
+
+        let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::PaneDiedDuringWait(id)) if id == "alpha"
+            ),
+            "server loss mid-wait must be typed PaneDiedDuringWait, got: {err}"
         );
     }
 
