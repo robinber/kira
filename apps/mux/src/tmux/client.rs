@@ -113,10 +113,10 @@ impl TmuxAdapter for TmuxClient {
             Some(WorkspaceWindowSnapshot { role, panes })
         } else {
             let error = failed_tmux_status(&window_target, &pane_output);
-            if TmuxError::is_missing_target(&error) {
-                None
-            } else {
-                return Err(error);
+            match error.downcast_ref::<TmuxError>() {
+                Some(TmuxError::MissingTarget(_)) => None,
+                Some(TmuxError::MissingSession(_) | TmuxError::NoServer(_)) => return Ok(None),
+                Some(TmuxError::CommandFailure(_)) | None => return Err(error),
             }
         };
 
@@ -660,6 +660,76 @@ mod tests {
     }
 
     #[test]
+    fn workspace_snapshot_reports_a_missing_window() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("can't find window: agents");
+
+        let snapshot = client
+            .workspace_snapshot("session", "agents")
+            .or_panic()
+            .or_panic();
+
+        assert_eq!(snapshot.window, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_treats_a_vanished_session_as_absent() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("can't find session: session");
+
+        let snapshot = client.workspace_snapshot("session", "agents").or_panic();
+
+        assert_eq!(snapshot, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_treats_a_stopped_server_as_absent() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");
+
+        let snapshot = client.workspace_snapshot("session", "agents").or_panic();
+
+        assert_eq!(snapshot, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_propagates_a_generic_list_panes_failure() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("server unexpectedly closed");
+
+        let error = client
+            .workspace_snapshot("session", "agents")
+            .err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::CommandFailure(message)) if message == "server unexpectedly closed"
+        ));
+    }
+
+    #[test]
+    fn workspace_snapshot_propagates_a_display_message_failure() {
+        let (temp, client, log_path) =
+            scripted_tmux_with_actions("printf '%s\\n' 'display failed' >&2\nexit 1", "exit 0");
+
+        let error = client
+            .workspace_snapshot("session", "agents")
+            .err_or_panic();
+
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::CommandFailure(message)) if message == "display failed"
+        ));
+        let calls = fs::read_to_string(&log_path).or_panic();
+        assert_eq!(
+            calls.lines().count(),
+            2,
+            "list-panes should not run after display-message fails under {}: {calls}",
+            temp.path().display()
+        );
+    }
+
+    #[test]
     fn failed_tmux_status_maps_missing_window_to_missing_target() {
         let error = failed_tmux_status("s:agents", &failed_output("can't find window: agents"));
         assert!(matches!(
@@ -717,17 +787,29 @@ mod tests {
     }
 
     fn scripted_tmux(pane_count: usize) -> (tempfile::TempDir, TmuxClient, PathBuf) {
-        let temp = tempfile::tempdir().or_panic();
-        let script_path = temp.path().join("tmux");
-        let log_path = temp.path().join("calls.log");
         let pane_lines = (0..pane_count)
             .map(|index| {
                 format!("printf '%s\\t%s\\t\\t%s\\t%s\\n' '%{index}' '0' 'agent-{index}' 'agents'")
             })
             .collect::<Vec<_>>()
             .join("\n");
+        scripted_tmux_with_actions("printf 'fp\\tproject\\tprofile\\n'", &pane_lines)
+    }
+
+    fn scripted_tmux_with_list_failure(message: &str) -> (tempfile::TempDir, TmuxClient, PathBuf) {
+        let list_action = format!("printf '%s\\n' \"{message}\" >&2\nexit 1");
+        scripted_tmux_with_actions("printf 'fp\\tproject\\tprofile\\n'", &list_action)
+    }
+
+    fn scripted_tmux_with_actions(
+        display_action: &str,
+        list_action: &str,
+    ) -> (tempfile::TempDir, TmuxClient, PathBuf) {
+        let temp = tempfile::tempdir().or_panic();
+        let script_path = temp.path().join("tmux");
+        let log_path = temp.path().join("calls.log");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  has-session) exit 0 ;;\n  display-message) printf 'fp\\tproject\\tprofile\\n' ;;\n  list-panes)\n{pane_lines}\n    ;;\nesac\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  has-session) exit 0 ;;\n  display-message)\n{display_action}\n    ;;\n  list-panes)\n{list_action}\n    ;;\nesac\n",
             log_path.display()
         );
         fs::write(&script_path, script).or_panic();
