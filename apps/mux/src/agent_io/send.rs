@@ -4,7 +4,6 @@ use anyhow::Result;
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
 use super::resolve::resolve_managed_pane;
-use super::wait::{WAIT_CAPTURE_LINES, WaitSeed};
 use crate::error::KiraMuxError;
 use crate::inspector::WorkspaceTopology;
 use crate::model::{ResolvedAgent, ResolvedProject};
@@ -17,6 +16,8 @@ use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
 /// Delay before the second Enter for double-enter agents.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
+/// Lines of pane history observed by `send --wait`.
+pub(super) const WAIT_CAPTURE_LINES: usize = 200;
 
 /// Result of a successful prompt delivery.
 pub(crate) struct DeliveredPrompt {
@@ -24,6 +25,15 @@ pub(crate) struct DeliveredPrompt {
     pub(crate) rendered: String,
     /// Pane that received the prompt.
     pub(crate) pane_id: String,
+}
+
+/// Observation captured around prompt delivery for `send --wait`.
+pub(crate) struct WaitSeed {
+    /// Delivery result: target pane plus the exact rendered prompt (the
+    /// latter is used only as an opportunistic submission hint).
+    pub(crate) delivered: DeliveredPrompt,
+    /// Pane capture taken immediately before submission.
+    pub(crate) pre_submit: String,
 }
 
 struct PreparedPrompt<'a> {
