@@ -42,10 +42,11 @@ pub(crate) struct FakeTmux {
     respawn_exits_immediately: AtomicBool,
     /// Next `attach_session` / `switch_client` fails with a generic status
     /// while the session remains present (hard attach error, not
-    /// SessionAbsent).
+    /// `SessionAbsent`).
     fail_attach: AtomicBool,
     /// Next attach/switch removes the session then fails with a status-only
-    /// error, simulating an interactive race → lifecycle maps to SessionAbsent.
+    /// error, simulating an interactive race → lifecycle maps to
+    /// `SessionAbsent`.
     vanish_before_attach: AtomicBool,
     /// Next `kill_session` removes the session (if present) and returns
     /// `MissingSession`, simulating a vanish between existence check and kill.
