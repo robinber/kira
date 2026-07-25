@@ -261,47 +261,28 @@ mod snapshot_tests;
 mod tests {
     use super::*;
     use crate::error::WorkspaceDriftReason;
-    use crate::test_support::{
-        FakeTmux, TestOptionExt, TestResultExt, setup_healthy_session, test_project,
-    };
+    use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
     use crate::tmux::metadata::WINDOW_ROLE;
     use crate::workspace::session_name;
 
-    /// Build a typed snapshot for classifier unit tests (no `FakeTmux`).
-    fn snapshot(project: &ResolvedProject, panes: &[(&str, bool)]) -> WorkspaceSnapshot {
-        snapshot_with(
-            Some(project.fingerprint.as_str()),
-            Some(project.id.as_str()),
-            Some(project.profile_id.as_str()),
-            Some(WINDOW_ROLE_AGENTS),
-            panes
-                .iter()
-                .map(|(id, dead)| (Some(*id), *dead))
-                .collect::<Vec<_>>(),
-        )
-    }
-
-    fn snapshot_with(
-        fingerprint: Option<&str>,
-        project_id: Option<&str>,
-        profile_id: Option<&str>,
-        role: Option<&str>,
-        panes: Vec<(Option<&str>, bool)>,
-    ) -> WorkspaceSnapshot {
+    /// Typed snapshot for classifier unit tests (no `FakeTmux`).
+    /// Mutate one field after construction when a test needs a single
+    /// deviation.
+    fn snapshot(project: &ResolvedProject, panes: &[(Option<&str>, bool)]) -> WorkspaceSnapshot {
         WorkspaceSnapshot {
-            fingerprint: fingerprint.map(str::to_string),
-            project_id: project_id.map(str::to_string),
-            profile_id: profile_id.map(str::to_string),
+            fingerprint: Some(project.fingerprint.clone()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
             window: Some(WorkspaceWindowSnapshot {
-                role: role.map(str::to_string),
+                role: Some(WINDOW_ROLE_AGENTS.to_string()),
                 panes: panes
-                    .into_iter()
+                    .iter()
                     .enumerate()
                     .map(|(index, (agent_id, pane_dead))| WorkspacePaneSnapshot {
                         pane: PaneInfo {
                             pane_id: format!("%{index}"),
-                            pane_dead,
-                            pane_dead_status: None,
+                            pane_dead: *pane_dead,
+                            pane_dead_status: pane_dead.then_some(1),
                         },
                         agent_id: agent_id.map(str::to_string),
                     })
@@ -498,7 +479,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &snapshot(&project, &[("alpha", false), ("beta", false)]),
+            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]),
         );
 
         assert!(matches!(result, SharedTopology::Healthy { .. }));
@@ -509,28 +490,8 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &snapshot(&project, &[("alpha", false), ("beta", true)]),
+            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), true)]),
         );
-
-        assert!(matches!(result, SharedTopology::Degraded { .. }));
-    }
-
-    #[test]
-    fn managed_pane_classifier_reports_healthy_workspace() {
-        let project = test_project();
-        let snap = snapshot(&project, &[("alpha", false), ("beta", false)]);
-        let panes = &snap.window.as_ref().or_panic().panes;
-        let result = classify_managed_panes(&project, panes);
-
-        assert!(matches!(result, SharedTopology::Healthy { .. }));
-    }
-
-    #[test]
-    fn managed_pane_classifier_reports_degraded_workspace() {
-        let project = test_project();
-        let snap = snapshot(&project, &[("alpha", false), ("beta", true)]);
-        let panes = &snap.window.as_ref().or_panic().panes;
-        let result = classify_managed_panes(&project, panes);
 
         assert!(matches!(result, SharedTopology::Degraded { .. }));
     }
@@ -538,16 +499,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_fingerprint_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot_with(
-                Some("wrong-fingerprint"),
-                Some(project.id.as_str()),
-                Some(project.profile_id.as_str()),
-                Some(WINDOW_ROLE_AGENTS),
-                vec![(Some("alpha"), false), (Some("beta"), false)],
-            ),
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.fingerprint = Some("wrong-fingerprint".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -560,16 +514,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_project_metadata_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot_with(
-                Some(project.fingerprint.as_str()),
-                Some("other-project"),
-                Some(project.profile_id.as_str()),
-                Some(WINDOW_ROLE_AGENTS),
-                vec![(Some("alpha"), false), (Some("beta"), false)],
-            ),
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.project_id = Some("other-project".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -582,16 +529,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_profile_metadata_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot_with(
-                Some(project.fingerprint.as_str()),
-                Some(project.id.as_str()),
-                Some("other-profile"),
-                Some(WINDOW_ROLE_AGENTS),
-                vec![(Some("alpha"), false), (Some("beta"), false)],
-            ),
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.profile_id = Some("other-profile".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -604,16 +544,11 @@ mod tests {
     #[test]
     fn shared_classifier_reports_window_role_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot_with(
-                Some(project.fingerprint.as_str()),
-                Some(project.id.as_str()),
-                Some(project.profile_id.as_str()),
-                Some("other-role"),
-                vec![(Some("alpha"), false), (Some("beta"), false)],
-            ),
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        if let Some(window) = snap.window.as_mut() {
+            window.role = Some("other-role".to_string());
+        }
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -626,7 +561,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_pane_count_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(&project, &snapshot(&project, &[("alpha", false)]));
+        let result = classify_snapshot(&project, &snapshot(&project, &[(Some("alpha"), false)]));
 
         assert!(matches!(
             result,
@@ -641,13 +576,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &snapshot_with(
-                Some(project.fingerprint.as_str()),
-                Some(project.id.as_str()),
-                Some(project.profile_id.as_str()),
-                Some(WINDOW_ROLE_AGENTS),
-                vec![(Some("alpha"), false), (None, false)],
-            ),
+            &snapshot(&project, &[(Some("alpha"), false), (None, false)]),
         );
 
         assert!(matches!(
@@ -663,7 +592,10 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &snapshot(&project, &[("alpha", false), ("unknown", false)]),
+            &snapshot(
+                &project,
+                &[(Some("alpha"), false), (Some("unknown"), false)],
+            ),
         );
 
         assert!(matches!(
@@ -679,7 +611,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &snapshot(&project, &[("alpha", false), ("alpha", false)]),
+            &snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]),
         );
 
         assert!(matches!(
