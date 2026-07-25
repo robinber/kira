@@ -14,12 +14,22 @@ fn main() -> ExitCode {
 
     match kira_mux::run() {
         Ok(()) => ExitCode::SUCCESS,
+        // Unix pipeline convention: `kira-mux … | head` should not report a
+        // hard failure when the reader closes stdout early.
+        Err(error) if kira_mux::output::is_broken_pipe(&error) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::debug!("application error: {error:?}");
-            eprintln!("{error}");
+            // Best-effort: if stderr is also closed, still return the exit code.
+            let _ = writeln_stderr(&error.to_string());
             exit_code_for_error(&error)
         }
     }
+}
+
+fn writeln_stderr(message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    writeln!(err, "{message}")
 }
 
 fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {

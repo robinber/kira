@@ -1,6 +1,6 @@
 //! Agent listing, send, and capture handlers.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::load_project_context;
 use crate::cli::{AgentsCommand, ProjectTarget};
@@ -29,7 +29,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             if json {
                 output::print_json(&agents_output)?;
             } else {
-                output::print_agents_table(&agents_output);
+                output::print_agents_table(&agents_output)?;
             }
         }
         AgentsCommand::Capabilities { agent_id, json, .. } => {
@@ -41,7 +41,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             if json {
                 output::print_json(&output::AgentCapabilitiesOutput::from(agent))?;
             } else {
-                output::print_agent_capabilities(agent);
+                output::print_agent_capabilities(agent)?;
             }
         }
         AgentsCommand::Group {
@@ -58,7 +58,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
             if json {
                 output::print_json(&output::GroupOutput::new(&group_name, &group_members))?;
             } else {
-                output::print_group(&group_name, &group_members);
+                output::print_group(&group_name, &group_members)?;
             }
         }
     }
@@ -123,20 +123,25 @@ fn log_prompt_delivered(agent_id: &str, delivered: &crate::agent_io::DeliveredPr
 /// the typed error is still returned for exit-code mapping.
 fn finish_wait(result: Result<String>) -> Result<()> {
     match result {
-        Ok(captured) => {
-            print_pane_text(&captured);
-            Ok(())
-        }
+        Ok(captured) => output::print_pane_text(&captured),
         Err(error) => {
             if let Some(partial) = wait_timeout_stderr_payload(&error) {
-                eprint!("{partial}");
-                if !partial.ends_with('\n') {
-                    eprintln!();
-                }
+                // Best-effort: broken stderr pipes must not mask the timeout error.
+                let _ = write_stderr_timeout_capture(partial);
             }
             Err(error)
         }
     }
+}
+
+fn write_stderr_timeout_capture(partial: &str) -> Result<()> {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    write!(err, "{partial}").context("failed to write wait timeout capture to stderr")?;
+    if !partial.ends_with('\n') {
+        writeln!(err).context("failed to write wait timeout capture to stderr")?;
+    }
+    Ok(())
 }
 
 /// Extract the last capture from a wait-timeout error for stderr emission.
@@ -159,17 +164,9 @@ pub(super) fn cmd_capture(
     if json {
         output::print_json(&capture)?;
     } else {
-        print_pane_text(&capture.output);
+        output::print_pane_text(&capture.output)?;
     }
     Ok(())
-}
-
-/// Print captured pane text, guaranteeing a trailing newline.
-fn print_pane_text(output: &str) {
-    print!("{output}");
-    if !output.ends_with('\n') {
-        println!();
-    }
 }
 
 #[cfg(test)]

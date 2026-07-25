@@ -15,7 +15,7 @@ pub(crate) mod inspector;
 pub(crate) mod interaction;
 pub mod logging;
 pub(crate) mod model;
-pub(crate) mod output;
+pub mod output;
 pub(crate) mod paths;
 pub(crate) mod prompt;
 #[cfg(test)]
