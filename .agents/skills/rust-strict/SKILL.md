@@ -22,7 +22,7 @@ Load order: `AGENTS.md` → this skill → code next to the module you edit.
 | Layout | Cargo workspace, one member: `apps/mux` |
 | Edition / MSRV | `2024` / `1.97.0` (`rust-toolchain.toml`) |
 | Nightly | **only** `cargo +nightly fmt` |
-| Errors | `thiserror` domain types; `anyhow` at CLI / I/O edges |
+| Errors | typed domain errors; `anyhow` at I/O / glue / binary edges |
 | Visibility | almost everything `pub(crate)`; thin public surface from `lib.rs` |
 | Secrets | never in logs, fingerprints, or process argv (env files for pane env) |
 
@@ -93,8 +93,9 @@ Before non-trivial runtime edits:
 | 3rd copy of a helper | Extract shared code or justify divergence |
 | `#[allow]` / `#[expect]` | Smallest scope + `reason = "..."`; no silent broadening |
 
-Current large files (approx.): `inspector.rs`, `config/resolve.rs`, `tmux/client.rs`,
-`test_support`, `config/fingerprint.rs`, `workspace/lifecycle.rs` — treat as pressure zones.
+Current large files (approx., total LOC): `tests/cli.rs` (~1.1k), `config/resolve.rs`,
+`test_support`, `tmux/client.rs`, `inspector.rs`, `workspace/lifecycle.rs`,
+`config/load.rs`, `agent_io/send.rs` — treat as pressure zones (many are test-heavy).
 
 Details: `references/drift-control.md`.
 
@@ -157,9 +158,11 @@ Details: `references/lints.md`.
 
 Rules:
 
-- No `unwrap` / `expect` / `panic!` / `todo!` / `unimplemented!` in non-test code.
+- No `unwrap` / `expect` / `todo!` / `unimplemented!` / `dbg!` in non-test code
+  (clippy deny). Avoid `panic!` in non-test code as repository policy.
 - Prefer typed variants over string `bail!` when the CLI maps exit codes.
-- `main.rs` maps `ConfigError` and `KiraMuxError` to exit codes (2–6); untyped failures → 1.
+- `main.rs` maps `ConfigError` and `KiraMuxError` to exit codes **2–7**
+  (7 = wait timeout); untyped failures → **1**.
 - Preserve actionable messages; never log secrets.
 
 Details: `references/errors.md`, `references/cli-systems.md`.
@@ -186,6 +189,7 @@ Details: `references/api-design.md`, `references/docs.md`.
 ## Tests
 
 - Unit tests next to modules; FakeTmux + helpers in `test_support` (`#[cfg(test)]`).
+- Real-tmux integration: `apps/mux/tests/cli.rs` (CI “tmux integration” job).
 - Prefer deterministic setup (`setup_healthy_session`, etc.) over real tmux unless writing an explicit integration harness.
 - Prefer coordination over new `sleep`s in tests; production send/paste still uses short settles — do not add more without need.
 - State exact filters: e.g. `cargo test -p kira-mux --lib inspector:: --all-features`.

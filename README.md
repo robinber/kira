@@ -109,7 +109,55 @@ the tmux session identity.
 `.` is a contextual project selector, not an arbitrary path argument. Other
 paths and project ids keep their existing meaning.
 
-## Configuration sketch
+## Configuration
+
+Files live under XDG: `~/.config/kira-mux/` by default
+(`$XDG_CONFIG_HOME/kira-mux/` when set and absolute).
+
+### Global config (`config.toml`)
+
+Written by `kira-mux init`. Keys (all optional with defaults):
+
+| Key | Role | Default (approx.) |
+|---|---|---|
+| `session_prefix` | Prefix for derived tmux session names | `kira` |
+| `default_layout` | Layout when a project omits one | `auto` |
+| `main_pane_ratio` | Main-pane ratio for supported layouts (30–70) | `50` |
+| `window_name` | Managed window name | `agents` |
+| `default_shell` | Shell for `mode = "shell"` agents | `/bin/sh` |
+| `remain_on_exit` | Pane retention after exit (`off` / `failed` / `on`) | `failed` |
+| `tmux_bin` | tmux executable name or path | `tmux` |
+| `agent_templates` | Reusable agent blueprints (see below) | `[]` |
+
+### Agent templates
+
+Reusable defaults referenced by project agents via `template = "name"`.
+Project fields override the template when set.
+
+```toml
+# ~/.config/kira-mux/config.toml
+[[agent_templates]]
+name = "codex"
+label = "Codex"
+command = "codex"
+args = ["-a", "never", "-s", "danger-full-access"]
+capabilities = ["rust", "impl"]
+# Optional send-time overrides (also valid on project agents):
+# submit = "double"            # single | double
+# text_delivery = "paste"      # paste | send-keys
+# prompt_template = "…"
+# mode / shell_command / cwd / env as needed
+```
+
+```toml
+# ~/.config/kira-mux/projects/my-app.toml
+[[agents]]
+id = "coder"
+template = "codex"
+label = "Coder"   # overrides template label
+```
+
+### Project sketch
 
 `~/.config/kira-mux/projects/my-app.toml`:
 
@@ -136,11 +184,41 @@ shell_command = "npm test -- --watch"
   (`args` are not used in shell mode and are rejected at config load)
 - Optional per-agent (or template) send overrides when the basename heuristic
   is wrong: `submit = "single" | "double"`, `text_delivery = "paste" | "send-keys"`
+- **Default submit heuristics** (when `submit` / `text_delivery` are unset):
+  basenames `codex`, `claude`, `opencode`, `qwen`, `grok` get **double Enter**;
+  `opencode` uses literal `send-keys` for multi-line text (others use paste)
 - `root` must be absolute or `~/...` (not process-CWD-relative) so session
   identity stays stable no matter where you invoke `kira-mux`
 - Agent `cwd` may still be relative to `root`
 - Profiles (`[profiles.<name>]`) select alternate agent layouts for the same
   project when you need more than one workspace shape
+- Named `groups` map group name → agent ids (for listing / prompt context)
+
+### Exit codes
+
+Scripts should treat these as stable:
+
+| Code | Meaning |
+|---|---|
+| **0** | Success |
+| **1** | Untyped / unexpected error (`anyhow` edge) |
+| **2** | Config / validation / unknown agent or group / kill aborted / list has `config_error` rows |
+| **3** | Missing dependency (e.g. tmux binary not found) |
+| **4** | Workspace **drifted** (fingerprint or topology mismatch) |
+| **5** | Session **absent** |
+| **6** | Dead pane, pane died during wait, or degraded launch |
+| **7** | `send --wait` hard timeout (~10 min); last capture on stderr |
+
+### JSON state vocabularies
+
+`status --json` and `agents --json` both describe panes but use slightly
+different agent-state strings (historical). Do not assume one field set maps
+1:1 onto the other without reading the schemas:
+
+| Surface | Examples of agent/pane state |
+|---|---|
+| `status` | `exited_clean`, `exited_failed`, `missing_pane`, … |
+| `agents` | `dead`, `absent`, live capability fields, … |
 
 ### What causes workspace drift
 
@@ -231,7 +309,9 @@ for weak production, and 30 s when nothing changed after the acknowledgement
 (a one-frame reply and a silently thinking model look identical). One final
 identical poll confirms the result. These are internal heuristics, not CLI
 timing flags. Use `send --wait --lines <N>` to widen the capture window
-(default 200), mirroring `capture --lines`.
+(default **200**, minimum **1** — zero is rejected because every capture would
+be empty and wait could only fail at the hard timeout). Plain
+`capture --lines` defaults to **30**.
 
 A pane that dies or vanishes mid-wait (killed window, lost session, or a
 stopped tmux server) fails with exit **6**; an internal hard timeout (~10 min)

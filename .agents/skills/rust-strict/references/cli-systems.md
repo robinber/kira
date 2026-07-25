@@ -25,10 +25,11 @@ drops default level to `error` when `--json` appears before `--`).
 ## Exit codes
 
 Map domain errors in `main.rs` (see `references/errors.md`). Preserve stable
-codes when changing variants: scripts rely on 2/3/4/5/6.
+codes when changing variants: scripts rely on **2 / 3 / 4 / 5 / 6 / 7**
+(and **1** for untyped failures).
 
 ## Testing CLI behavior
 
 - Unit-test pure handlers and exit mapping without spawning the process.
-- Prefer library-level tests with FakeTmux over full process integration unless
-  adding an explicit real-tmux harness.
+- Prefer library-level tests with FakeTmux for logic; use
+  `apps/mux/tests/cli.rs` for real-tmux fidelity and exit-code e2e.

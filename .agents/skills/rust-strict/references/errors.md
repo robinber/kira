@@ -26,12 +26,13 @@ typed error early; convert at the boundary with `?` / `.into()`.
 | Code | Meaning |
 |---|---|
 | 0 | success |
+| 1 | other (`anyhow` / untyped) |
 | 2 | config / validation / unknown agent|group / kill aborted |
 | 3 | missing dependency (e.g. tmux binary) |
 | 4 | workspace drifted |
 | 5 | session absent |
-| 6 | dead pane or degraded launch |
-| 1 | other (`anyhow` / untyped) |
+| 6 | dead pane, pane died during wait, or degraded launch |
+| 7 | `send --wait` hard timeout (`WaitTimeout`; last capture on stderr) |
 
 New user-visible failure modes should get a `KiraMuxError` variant **and** an
 exit-code arm when scripts need to distinguish them.
