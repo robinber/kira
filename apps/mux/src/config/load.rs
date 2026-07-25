@@ -1,3 +1,5 @@
+//! Load global and per-project TOML configs from XDG paths.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::{env, fs};

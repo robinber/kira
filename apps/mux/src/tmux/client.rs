@@ -692,17 +692,19 @@ mod tests {
 
     #[test]
     fn workspace_snapshot_propagates_a_generic_list_panes_failure() {
-        let (_temp, client, _log_path) =
-            scripted_tmux_with_list_failure("server unexpectedly closed");
+        // Use a token that cannot match missing-session/target/no-server
+        // classifiers (and avoids shell metacharacters in the fake script).
+        const MSG: &str = "kira-test-generic-list-panes-failure";
+        let (_temp, client, _log_path) = scripted_tmux_with_list_failure(MSG);
 
         let error = client
             .workspace_snapshot("session", "agents")
             .err_or_panic();
 
-        assert!(matches!(
-            error.downcast_ref::<TmuxError>(),
-            Some(TmuxError::CommandFailure(message)) if message == "server unexpectedly closed"
-        ));
+        match error.downcast_ref::<TmuxError>() {
+            Some(TmuxError::CommandFailure(message)) if message == MSG => {}
+            other => panic!("expected CommandFailure({MSG:?}), got {other:?} ({error})"),
+        }
     }
 
     #[test]

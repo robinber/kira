@@ -1,3 +1,5 @@
+//! Typed configuration load / parse / validation errors.
+
 use std::path::PathBuf;
 
 use thiserror::Error;

@@ -1,3 +1,5 @@
+//! Resolve raw project/template config into runtime `ResolvedProject` values.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Path, PathBuf};

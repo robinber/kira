@@ -1,3 +1,5 @@
+//! Deterministic config fingerprint for workspace drift detection.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
