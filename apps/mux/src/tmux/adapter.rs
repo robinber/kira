@@ -49,16 +49,46 @@ pub(crate) struct WorkspaceSnapshot {
 }
 
 /// Subprocess-backed operations used by workspace lifecycle and agent I/O.
+///
+/// # Error semantics
+///
+/// Non-interactive methods that address a session, window, or pane should
+/// surface transport failures as [`crate::tmux::TmuxError`] when the stderr
+/// form is known:
+///
+/// | Condition | Typed error |
+/// |---|---|
+/// | No tmux server | [`NoServer`](crate::tmux::TmuxError::NoServer) |
+/// | Session missing | [`MissingSession`](crate::tmux::TmuxError::MissingSession) |
+/// | Window/pane missing | [`MissingTarget`](crate::tmux::TmuxError::MissingTarget) |
+/// | Other non-zero status | [`CommandFailure`](crate::tmux::TmuxError::CommandFailure) |
+///
+/// Callers map those variants **in context** (send → dead pane, attach →
+/// session absent, kill of an already-gone session → success, inspection →
+/// drift). Do not collapse every missing target into one domain error here.
+///
+/// Interactive attach/switch keep the process terminal I/O path; a vanished
+/// session race is re-checked at the lifecycle boundary after a failed
+/// interactive command, not by inventing stderr from a status-only exit.
 pub(crate) trait TmuxAdapter {
     /// Whether a session currently exists on the server.
+    ///
+    /// Missing sessions return `Ok(false)`. No server and other hard failures
+    /// return typed [`crate::tmux::TmuxError`] values.
     fn session_exists(&self, session_name: &str) -> Result<bool>;
     /// Bulk read of session ownership plus managed window/pane metadata.
+    ///
+    /// Returns `Ok(None)` when the session (or server) is absent. A present
+    /// session without the managed window yields `window: None` (not an error).
     fn workspace_snapshot(
         &self,
         session_name: &str,
         window_name: &str,
     ) -> Result<Option<WorkspaceSnapshot>>;
     /// Create a detached session whose first window is sized for `pane_count`.
+    ///
+    /// Not a target-bearing mutation of an existing object: failures stay
+    /// generic command errors unless the implementation can type them.
     fn create_detached_session(
         &self,
         session_name: &str,

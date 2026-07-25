@@ -177,12 +177,15 @@ impl TmuxAdapter for TmuxClient {
 
     /// Split the target window, creating another pane in `start_directory`.
     fn split_window(&self, target: &str, start_directory: &str) -> Result<()> {
-        self.run(["split-window", "-d", "-t", target, "-c", start_directory])
+        self.run_on_target(
+            target,
+            ["split-window", "-d", "-t", target, "-c", start_directory],
+        )
     }
 
     /// Apply a tmux layout preset to the target window.
     fn select_layout(&self, target: &str, layout: &str) -> Result<()> {
-        self.run(["select-layout", "-t", target, layout])
+        self.run_on_target(target, ["select-layout", "-t", target, layout])
     }
 
     /// Restart a pane with the provided working directory, env, and command.
@@ -200,7 +203,7 @@ impl TmuxAdapter for TmuxClient {
         let env_file_path = env_file.as_ref().map(ShellEnvFile::path_arg).transpose()?;
         let args = respawn_pane_args(target, start_directory, env_file_path.as_deref(), command);
 
-        self.run(args)?;
+        self.run_on_target(target, args)?;
         // The pane wrapper owns deletion from this point.
         if let Some(file) = &mut env_file {
             file.defuse();
@@ -209,23 +212,29 @@ impl TmuxAdapter for TmuxClient {
     }
 
     /// Attach the current terminal to the target session.
+    ///
+    /// Interactive: terminal I/O stays attached to the child. A session that
+    /// vanishes mid-flight is classified at the lifecycle boundary after this
+    /// returns a non-success status.
     fn attach_session(&self, session_name: &str) -> Result<()> {
         self.run_interactive(["attach-session", "-t", session_name])
     }
 
     /// Switch the attached tmux client to another session.
+    ///
+    /// Interactive: same race handling as [`Self::attach_session`].
     fn switch_client(&self, session_name: &str) -> Result<()> {
         self.run_interactive(["switch-client", "-t", session_name])
     }
 
     /// Kill the target session.
     fn kill_session(&self, session_name: &str) -> Result<()> {
-        self.run(["kill-session", "-t", session_name])
+        self.run_on_target(session_name, ["kill-session", "-t", session_name])
     }
 
     /// Set a session-scoped tmux option.
     fn set_session_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
-        self.run(["set-option", "-q", "-t", target, name, value])
+        self.run_on_target(target, ["set-option", "-q", "-t", target, name, value])
     }
 
     /// Read a session-scoped tmux option.
@@ -235,12 +244,18 @@ impl TmuxAdapter for TmuxClient {
 
     /// Set a window-scoped tmux option.
     fn set_window_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
-        self.run(["set-option", "-w", "-q", "-t", target, name, value])
+        self.run_on_target(
+            target,
+            ["set-option", "-w", "-q", "-t", target, name, value],
+        )
     }
 
     /// Set a pane-scoped tmux option.
     fn set_pane_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
-        self.run(["set-option", "-p", "-q", "-t", target, name, value])
+        self.run_on_target(
+            target,
+            ["set-option", "-p", "-q", "-t", target, name, value],
+        )
     }
 
     /// Read a pane-scoped tmux option.
@@ -363,6 +378,10 @@ impl TmuxClient {
         }
     }
 
+    /// Run a tmux command that does not address an existing session/window/pane
+    /// target (buffer cleanup, `new-session`, and similar). Failures stay as
+    /// plain stderr messages — use [`Self::run_on_target`] for target-bearing
+    /// ops so missing objects stay typed.
     fn run<I, S>(&self, args: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
@@ -376,9 +395,9 @@ impl TmuxClient {
         bail!(command_error(&output));
     }
 
-    /// Like [`Self::run`], but classifies missing session/window/pane as
-    /// typed [`TmuxError`] so callers can map vanished targets without
-    /// parsing stderr strings.
+    /// Run a command that addresses `target`, classifying no-server / missing
+    /// session / missing window-or-pane / other failure via
+    /// [`failed_tmux_status`].
     fn run_on_target<I, S>(&self, target: &str, args: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
@@ -392,6 +411,9 @@ impl TmuxClient {
         Err(failed_tmux_status(target, &output))
     }
 
+    /// Interactive attach/switch: inherits the process terminal. Status-only
+    /// failures cannot recover typed stderr; callers re-check session existence
+    /// when they need `SessionAbsent` vs a hard attach error.
     fn run_interactive<I, S>(&self, args: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
