@@ -631,6 +631,28 @@ mod tests {
     }
 
     #[test]
+    fn send_prompt_clear_bypasses_template_like_cli_flag() {
+        // Mirrors `send --clear`: literal "/clear" with no_template=true.
+        let fake = crate::test_support::FakeTmux::new();
+        let mut project = crate::test_support::test_project();
+        project.agents[0].prompt_template =
+            Some("Agent {{agent_name}}: {{user_prompt}}".to_string());
+        crate::test_support::setup_healthy_session(&fake, &project);
+
+        let sent = send_prompt(&fake, &project, "alpha", "/clear", true)
+            .or_panic("send_prompt_clear_bypasses_template_like_cli_flag");
+        assert_eq!(sent.rendered, "/clear");
+        let ops = fake.ops();
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                FakeOp::PasteText { text, .. } if text == "/clear"
+            )),
+            "expected literal /clear paste, got: {ops:?}"
+        );
+    }
+
+    #[test]
     fn send_prompt_returns_rendered_slash_command() {
         let fake = crate::test_support::FakeTmux::new();
         let mut project = crate::test_support::test_project();

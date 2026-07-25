@@ -65,6 +65,9 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
     Ok(())
 }
 
+/// Literal slash command delivered by `kira-mux send --clear`.
+pub(super) const CLEAR_PROMPT: &str = "/clear";
+
 pub(super) fn cmd_send(
     project_target: &ProjectTarget,
     profile: Option<&str>,

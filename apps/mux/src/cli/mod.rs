@@ -150,19 +150,29 @@ pub(crate) enum CommandKind {
     /// Does not wait for TUI readiness: `send` only refuses dead panes. On a
     /// cold interactive first launch, finish setup with `open` (or attach)
     /// before the first unattended send.
+    ///
+    /// `send --clear` delivers the literal `/clear` slash command (no
+    /// template).
     Send {
         /// Project id, or `.` for the registered project containing the CWD.
         project: ProjectTarget,
         /// Target agent id within the project.
         agent_id: String,
         /// Prompt text delivered to the pane (after optional template render).
-        prompt: String,
+        ///
+        /// Required unless `--clear` is set.
+        #[arg(required_unless_present = "clear")]
+        prompt: Option<String>,
         /// Alternate agent layout from `[profiles.<name>]` in the project file.
         #[arg(long)]
         profile: Option<String>,
         /// Send the prompt literally; skip the agent's `prompt_template`.
         #[arg(long)]
         no_template: bool,
+        /// Deliver `/clear` literally (implies no template). Do not pass
+        /// PROMPT.
+        #[arg(long, conflicts_with = "prompt")]
+        clear: bool,
         /// Block until the pane output settles, then print it on stdout.
         ///
         /// Waits for pane *convergence*: submission redraws are excluded, then
@@ -303,5 +313,54 @@ mod tests {
             } => {}
             other => panic!("expected send --wait with lines=None, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn send_clear_omits_prompt() {
+        let cli = match Cli::try_parse_from(["kira-mux", "send", "--clear", "demo", "alpha"]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("parse failed: {error}"),
+        };
+        match cli.command {
+            CommandKind::Send {
+                clear: true,
+                prompt: None,
+                no_template: false,
+                ..
+            } => {}
+            other => panic!("expected send --clear without prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_clear_rejects_prompt_argument() {
+        let err =
+            match Cli::try_parse_from(["kira-mux", "send", "--clear", "demo", "alpha", "extra"]) {
+                Ok(cli) => panic!("expected --clear with PROMPT to fail, got {cli:?}"),
+                Err(error) => error,
+            };
+        let message = err.to_string();
+        assert!(
+            message.contains("cannot be used with")
+                || message.contains("conflict")
+                || message.contains("--clear")
+                || message.contains("prompt"),
+            "error should report clear/prompt conflict, got: {message}"
+        );
+    }
+
+    #[test]
+    fn send_without_clear_requires_prompt() {
+        let err = match Cli::try_parse_from(["kira-mux", "send", "demo", "alpha"]) {
+            Ok(cli) => panic!("expected missing PROMPT to fail, got {cli:?}"),
+            Err(error) => error,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("required")
+                || message.contains("PROMPT")
+                || message.contains("prompt"),
+            "error should require PROMPT, got: {message}"
+        );
     }
 }
