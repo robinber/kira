@@ -1004,6 +1004,25 @@ fn send_lines_without_wait_is_rejected() {
 }
 
 #[test]
+fn send_wait_zero_lines_is_rejected() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    // Zero would empty every capture and stall wait until the hard timeout.
+    let rejected = bed.kira(&["send", "it", "alpha", "hello", "--wait", "--lines", "0"]);
+    assert_eq!(
+        exit_code(&rejected),
+        2,
+        "send --wait --lines 0 must exit 2 before project/tmux work, stderr: {:?}",
+        stderr_of(&rejected)
+    );
+    let stderr = stderr_of(&rejected);
+    assert!(
+        stderr.contains("at least 1") || stderr.contains("zero"),
+        "error should reject zero lines, got: {stderr:?}"
+    );
+}
+
+#[test]
 fn send_wait_with_lines_still_captures_full_reply() {
     let bed = TestBed::new();
     let script = bed.project_root.path().join("wait-agent-lines");

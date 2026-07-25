@@ -46,6 +46,17 @@ impl FromStr for ProjectTarget {
     }
 }
 
+/// Parse `--wait --lines`: at least one history line (zero empties captures).
+fn parse_wait_capture_lines(raw: &str) -> Result<usize, String> {
+    let lines: usize = raw
+        .parse()
+        .map_err(|error| format!("invalid digit found in string: {error}"))?;
+    if lines == 0 {
+        return Err("must be at least 1 (zero empties every pane capture)".to_string());
+    }
+    Ok(lines)
+}
+
 /// CLI command surface.
 #[derive(Debug, Subcommand)]
 pub(crate) enum CommandKind {
@@ -168,7 +179,9 @@ pub(crate) enum CommandKind {
         /// History lines captured while waiting (only with `--wait`).
         ///
         /// Mirrors `capture --lines`. Default is 200 when omitted.
-        #[arg(long, requires = "wait")]
+        /// Must be at least 1: zero empties every capture and stalls wait until
+        /// the hard timeout.
+        #[arg(long, requires = "wait", value_parser = parse_wait_capture_lines)]
         lines: Option<usize>,
     },
     /// Capture recent pane output from a live agent.
@@ -242,6 +255,38 @@ mod tests {
             } => {}
             other => panic!("expected send --wait --lines 500, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn send_wait_rejects_zero_lines() {
+        let err = match Cli::try_parse_from([
+            "kira-mux", "send", "demo", "alpha", "hi", "--wait", "--lines", "0",
+        ]) {
+            Ok(cli) => panic!("expected --lines 0 to fail, got {cli:?}"),
+            Err(error) => error,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("at least 1") || message.contains("zero"),
+            "error should reject zero lines, got: {message}"
+        );
+    }
+
+    #[test]
+    fn parse_wait_capture_lines_rejects_zero() {
+        match super::parse_wait_capture_lines("0") {
+            Ok(value) => panic!("expected Err, got {value}"),
+            Err(message) => assert!(
+                message.contains("at least 1"),
+                "unexpected message: {message}"
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_wait_capture_lines_accepts_positive() {
+        assert_eq!(super::parse_wait_capture_lines("1"), Ok(1));
+        assert_eq!(super::parse_wait_capture_lines("200"), Ok(200));
     }
 
     #[test]
