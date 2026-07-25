@@ -223,6 +223,12 @@ fn resolve_single_agent(
         .prompt_template
         .clone()
         .or_else(|| template.and_then(|item| item.prompt_template.clone()));
+    let submit = agent
+        .submit
+        .or_else(|| template.and_then(|item| item.submit));
+    let text_delivery = agent
+        .text_delivery
+        .or_else(|| template.and_then(|item| item.text_delivery));
 
     if let Some(ref tmpl) = prompt_template {
         let unknowns = crate::prompt::lint_template(tmpl);
@@ -246,6 +252,8 @@ fn resolve_single_agent(
         env,
         capabilities,
         prompt_template,
+        submit,
+        text_delivery,
     };
 
     Ok((resolved, fingerprint_material))
@@ -758,6 +766,8 @@ mod tests {
             env: BTreeMap::new(),
             capabilities: None,
             prompt_template: None,
+            submit: None,
+            text_delivery: None,
         };
 
         let (resolved, _material) = resolve_single_agent(
@@ -772,6 +782,52 @@ mod tests {
             resolved.label, "alpha",
             "empty label must fall back to the id, not render as `alpha ()`"
         );
+    }
+
+    #[test]
+    fn agent_submit_and_text_delivery_override_template() {
+        use crate::config::{SubmitPolicy, TextDelivery};
+
+        let template = AgentTemplate {
+            name: "coder".to_string(),
+            label: None,
+            mode: None,
+            command: Some("my-agent".to_string()),
+            shell_command: None,
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: vec![],
+            prompt_template: None,
+            submit: Some(SubmitPolicy::Double),
+            text_delivery: Some(TextDelivery::SendKeys),
+        };
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: Some("coder".to_string()),
+            label: None,
+            mode: None,
+            command: None,
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: Some(SubmitPolicy::Single),
+            text_delivery: None,
+        };
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            Some(&template),
+            Path::new("/tmp/kira-test-root"),
+            ResolutionMode::Deferred,
+        )
+        .or_panic();
+
+        assert_eq!(resolved.submit, Some(SubmitPolicy::Single));
+        assert_eq!(resolved.text_delivery, Some(TextDelivery::SendKeys));
     }
 
     #[cfg(unix)]

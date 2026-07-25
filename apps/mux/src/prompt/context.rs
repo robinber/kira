@@ -92,6 +92,8 @@ mod tests {
             env: BTreeMap::new(),
             capabilities,
             prompt_template: None,
+            submit: None,
+            text_delivery: None,
         }
     }
 

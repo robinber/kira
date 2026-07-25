@@ -7,11 +7,11 @@ use super::model::{AgentMode, Layout, RemainOnExit};
 
 /// Sanitized fingerprint material for one agent.
 ///
-/// Intentionally excludes `label`, `capabilities`, `prompt_template`, and
-/// `groups`. These fields do not affect tmux pane topology
-/// (session/window/pane structure), so including them would cause
-/// false-positive drift detection when users change cosmetic agent metadata
-/// that does not require a workspace restart.
+/// Intentionally excludes `label`, `capabilities`, `prompt_template`,
+/// `submit`, `text_delivery`, and `groups`. These fields do not affect tmux
+/// pane topology (session/window/pane structure), so including them would
+/// cause false-positive drift detection when users change cosmetic or
+/// send-time agent metadata that does not require a workspace restart.
 ///
 /// Env entries:
 /// - **Literal** values are hashed so secrets never appear in fingerprint

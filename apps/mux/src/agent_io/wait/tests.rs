@@ -18,6 +18,7 @@ fn wait_for_stable_output(
             rendered: "prompt echo".to_string(),
         },
         pre_submit: "ready".to_string(),
+        capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
     };
     wait_on_pane(tmux, agent_id, &seed, options)
 }
@@ -191,6 +192,7 @@ fn wait_on_pane_skips_resolve_and_uses_given_pane_id() {
             rendered: "prompt echo".to_string(),
         },
         pre_submit: "ready".to_string(),
+        capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
     };
     let output = wait_on_pane(&fake, "alpha", &seed, &fast_options()).or_panic();
     assert_eq!(output, "prompt echo\nreply");
@@ -405,7 +407,13 @@ fn capture_between_liveness_checks_maps_vanished_pane_to_died() {
 
     // Pane gone at capture time (vanished after the liveness check):
     // the typed MissingTarget must surface as PaneDiedDuringWait.
-    let err = capture_or_died(&fake, "alpha", "%99").err_or_panic();
+    let err = capture_or_died(
+        &fake,
+        "alpha",
+        "%99",
+        super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .err_or_panic();
 
     assert!(
         matches!(
