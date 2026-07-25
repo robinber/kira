@@ -177,6 +177,44 @@ fn workspace_snapshot_propagates_a_display_message_failure() {
 }
 
 #[test]
+fn failed_tmux_status_classifier_table() {
+    #[derive(Debug)]
+    enum Kind {
+        MissingTarget,
+        MissingSession,
+        NoServer,
+        CommandFailure,
+    }
+
+    let cases = [
+        ("can't find window: agents", Kind::MissingTarget),
+        ("can't find pane: %9", Kind::MissingTarget),
+        ("window not found: agents", Kind::MissingTarget),
+        ("can't find session: s", Kind::MissingSession),
+        (
+            "no server running on /tmp/tmux-1000/default",
+            Kind::NoServer,
+        ),
+        ("server unexpectedly closed", Kind::CommandFailure),
+    ];
+
+    for (stderr, kind) in cases {
+        let error = failed_tmux_status("s:agents", &failed_output(stderr));
+        let got = error.downcast_ref::<TmuxError>();
+        let ok = match kind {
+            Kind::MissingTarget => matches!(got, Some(TmuxError::MissingTarget(_))),
+            Kind::MissingSession => matches!(got, Some(TmuxError::MissingSession(_))),
+            Kind::NoServer => matches!(got, Some(TmuxError::NoServer(_))),
+            Kind::CommandFailure => matches!(got, Some(TmuxError::CommandFailure(_))),
+        };
+        assert!(
+            ok,
+            "stderr {stderr:?} should classify as {kind:?}, got {error}"
+        );
+    }
+}
+
+#[test]
 fn failed_tmux_status_maps_missing_window_to_missing_target() {
     let error = failed_tmux_status("s:agents", &failed_output("can't find window: agents"));
     assert!(matches!(
@@ -259,6 +297,112 @@ fn failed_tmux_stdin_status_leaves_generic_failure_untyped() {
     let error = failed_tmux_stdin_status(&failed_output("load-buffer failed"));
     assert!(error.downcast_ref::<TmuxError>().is_none());
     assert_eq!(error.to_string(), "load-buffer failed");
+}
+
+#[test]
+fn kill_session_maps_missing_session_through_shared_classifier() {
+    let (_temp, client, _log) =
+        scripted_tmux_command_failure("kill-session", "can't find session: gone");
+
+    let error = client
+        .kill_session("gone")
+        .err_or_panic("kill_session_maps_missing_session: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingSession(_))
+    ));
+}
+
+#[test]
+fn split_window_maps_missing_window_through_shared_classifier() {
+    let (_temp, client, _log) =
+        scripted_tmux_command_failure("split-window", "can't find window: agents");
+
+    let error = client
+        .split_window("s:agents", "/tmp")
+        .err_or_panic("split_window_maps_missing_window: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+}
+
+#[test]
+fn set_pane_option_maps_missing_pane_through_shared_classifier() {
+    let (_temp, client, _log) = scripted_tmux_command_failure("set-option", "can't find pane: %99");
+
+    let error = client
+        .set_pane_option("%99", "@kira-mux-agent-id", "x")
+        .err_or_panic("set_pane_option_maps_missing_pane: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+}
+
+#[test]
+fn respawn_pane_maps_missing_pane_through_shared_classifier() {
+    let (_temp, client, _log) =
+        scripted_tmux_command_failure("respawn-pane", "can't find pane: %99");
+
+    let error = client
+        .respawn_pane("%99", "/tmp", &[], &["true".into()])
+        .err_or_panic("respawn_pane_maps_missing_pane: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+}
+
+#[test]
+fn select_layout_maps_generic_failure_to_command_failure() {
+    let (_temp, client, _log) =
+        scripted_tmux_command_failure("select-layout", "kira-test-generic-layout-failure");
+
+    let error = client
+        .select_layout("s:agents", "even-vertical")
+        .err_or_panic("select_layout_maps_generic_failure: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::CommandFailure(message)) if message == "kira-test-generic-layout-failure"
+    ));
+}
+
+/// Fake tmux that fails a single top-level command with the given stderr.
+fn scripted_tmux_command_failure(
+    fail_command: &str,
+    message: &str,
+) -> (tempfile::TempDir, TmuxClient, PathBuf) {
+    let temp = tempfile::tempdir().or_panic("scripted_tmux_command_failure");
+    let script_path = temp.path().join("tmux");
+    let pending_script_path = temp.path().join("tmux.pending");
+    let log_path = temp.path().join("calls.log");
+    // Double-quote the message so apostrophes in tmux stderr (can't find …)
+    // do not break the shell script.
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = '{}' ]; then\n  printf '%s\\n' \"{}\" >&2\n  exit 1\nfi\nexit 0\n",
+        log_path.display(),
+        fail_command,
+        message
+    );
+    fs::write(&pending_script_path, script).or_panic("scripted_tmux_command_failure");
+    let mut permissions = fs::metadata(&pending_script_path)
+        .or_panic("scripted_tmux_command_failure")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&pending_script_path, permissions)
+        .or_panic("scripted_tmux_command_failure");
+    fs::rename(&pending_script_path, &script_path).or_panic("scripted_tmux_command_failure");
+    let published = fs::File::open(&script_path).or_panic("scripted_tmux_command_failure");
+    published
+        .sync_all()
+        .or_panic("scripted_tmux_command_failure");
+    drop(published);
+    let client = TmuxClient {
+        tmux_bin: script_path.display().to_string(),
+        socket_name: None,
+    };
+    (temp, client, log_path)
 }
 
 fn scripted_tmux(pane_count: usize) -> (tempfile::TempDir, TmuxClient, PathBuf) {

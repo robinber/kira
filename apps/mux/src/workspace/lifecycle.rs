@@ -118,12 +118,23 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
 }
 
 fn attach_to_session(tmux: &dyn TmuxAdapter, session: &str) -> Result<()> {
-    if std::env::var_os("TMUX").is_some() {
-        tmux.switch_client(session)?;
+    let result = if std::env::var_os("TMUX").is_some() {
+        tmux.switch_client(session)
     } else {
-        tmux.attach_session(session)?;
+        tmux.attach_session(session)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Interactive attach/switch only report a status code. If the
+            // session vanished between ownership check and attach, surface the
+            // stable SessionAbsent outcome instead of a generic exit 1.
+            if !inspector::session_exists(tmux, session)? {
+                return Err(KiraMuxError::SessionAbsent.into());
+            }
+            Err(error)
+        }
     }
-    Ok(())
 }
 
 fn create(
