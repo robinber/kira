@@ -164,11 +164,9 @@ impl TmuxAdapter for TmuxClient {
             target,
         ])?;
         if !output.status.success() {
-            let message = command_error(&output);
-            if is_missing_target_message(&message) {
-                return Err(TmuxError::MissingTarget(target.to_string()).into());
-            }
-            bail!(message);
+            // Same classifier as run_on_target / read_option: no-server and
+            // missing session must stay typed so wait can map them to exit 6.
+            return Err(failed_tmux_status(target, &output));
         }
 
         stdout_lines(&output)
@@ -765,6 +763,33 @@ mod tests {
         assert!(matches!(
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::NoServer(_))
+        ));
+    }
+
+    #[test]
+    fn list_panes_maps_no_server_through_shared_classifier() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");
+
+        let error = client.list_panes("%0").err_or_panic();
+        assert!(
+            matches!(
+                error.downcast_ref::<TmuxError>(),
+                Some(TmuxError::NoServer(_))
+            ),
+            "list_panes must type no-server like other tmux paths, got: {error}"
+        );
+    }
+
+    #[test]
+    fn list_panes_maps_missing_target_through_shared_classifier() {
+        let (_temp, client, _log_path) =
+            scripted_tmux_with_list_failure("can't find window: agents");
+
+        let error = client.list_panes("s:agents").err_or_panic();
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingTarget(_))
         ));
     }
 
