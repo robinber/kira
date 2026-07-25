@@ -1,3 +1,5 @@
+//! Topology classification and live inspection for managed workspaces.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
@@ -5,7 +7,10 @@ use anyhow::Result;
 use crate::error::WorkspaceDriftReason;
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError, WorkspaceSnapshot, WorkspaceWindowSnapshot};
+use crate::tmux::{
+    PaneInfo, TmuxAdapter, TmuxError, WorkspacePaneSnapshot, WorkspaceSnapshot,
+    WorkspaceWindowSnapshot,
+};
 use crate::workspace::session_name;
 
 /// A managed pane paired with its resolved agent definition.
@@ -37,26 +42,7 @@ pub(crate) enum WorkspaceTopology {
     Drifted { reason: WorkspaceDriftReason },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RawWorkspacePane<'a> {
-    pub(crate) agent_id: Option<&'a str>,
-    pub(crate) pane_dead: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct RawWorkspaceSnapshot<'a> {
-    pub(crate) fingerprint: Option<&'a str>,
-    pub(crate) project_id: Option<&'a str>,
-    pub(crate) profile_id: Option<&'a str>,
-    pub(crate) window: Option<RawWorkspaceWindow<'a>>,
-}
-
-#[derive(Debug)]
-pub(crate) struct RawWorkspaceWindow<'a> {
-    pub(crate) role: Option<&'a str>,
-    pub(crate) panes: Vec<RawWorkspacePane<'a>>,
-}
-
+/// Shared classification used by inspect, status, and agent listing.
 #[derive(Debug)]
 pub(crate) enum SharedTopology {
     Healthy { ordered_pane_indexes: Vec<usize> },
@@ -64,15 +50,16 @@ pub(crate) enum SharedTopology {
     Drifted { reason: WorkspaceDriftReason },
 }
 
+/// Classify a bulk [`WorkspaceSnapshot`] against the resolved project contract.
 pub(crate) fn classify_snapshot(
     project: &ResolvedProject,
-    snapshot: &RawWorkspaceSnapshot<'_>,
+    snapshot: &WorkspaceSnapshot,
 ) -> SharedTopology {
     if let Some(reason) = classify_session_metadata(
         project,
-        snapshot.fingerprint,
-        snapshot.project_id,
-        snapshot.profile_id,
+        snapshot.fingerprint.as_deref(),
+        snapshot.project_id.as_deref(),
+        snapshot.profile_id.as_deref(),
     ) {
         return SharedTopology::Drifted { reason };
     }
@@ -83,42 +70,17 @@ pub(crate) fn classify_snapshot(
         };
     };
 
-    if let Some(reason) = classify_window_shape(project, window.role, window.panes.len()) {
+    if let Some(reason) = classify_window_shape(project, window.role.as_deref(), window.panes.len())
+    {
         return SharedTopology::Drifted { reason };
     }
 
     classify_managed_panes(project, &window.panes)
 }
 
-pub(crate) fn classify_workspace_snapshot(
-    project: &ResolvedProject,
-    snapshot: &WorkspaceSnapshot,
-) -> SharedTopology {
-    let raw_window = snapshot.window.as_ref().map(|window| RawWorkspaceWindow {
-        role: window.role.as_deref(),
-        panes: window
-            .panes
-            .iter()
-            .map(|pane| RawWorkspacePane {
-                agent_id: pane.agent_id.as_deref(),
-                pane_dead: pane.pane.pane_dead,
-            })
-            .collect(),
-    });
-    classify_snapshot(
-        project,
-        &RawWorkspaceSnapshot {
-            fingerprint: snapshot.fingerprint.as_deref(),
-            project_id: snapshot.project_id.as_deref(),
-            profile_id: snapshot.profile_id.as_deref(),
-            window: raw_window,
-        },
-    )
-}
-
 fn classify_managed_panes(
     project: &ResolvedProject,
-    panes: &[RawWorkspacePane<'_>],
+    panes: &[WorkspacePaneSnapshot],
 ) -> SharedTopology {
     let configured_agent_ids = project
         .agents
@@ -128,7 +90,7 @@ fn classify_managed_panes(
     let mut pane_indexes_by_agent = BTreeMap::<&str, usize>::new();
 
     for (index, pane) in panes.iter().enumerate() {
-        let Some(agent_id) = pane.agent_id else {
+        let Some(agent_id) = pane.agent_id.as_deref() else {
             return SharedTopology::Drifted {
                 reason: WorkspaceDriftReason::PaneMetadataMissing,
             };
@@ -154,7 +116,7 @@ fn classify_managed_panes(
 
     if ordered_pane_indexes
         .iter()
-        .any(|index| panes[*index].pane_dead)
+        .any(|index| panes[*index].pane.pane_dead)
     {
         SharedTopology::Degraded {
             ordered_pane_indexes,
@@ -251,7 +213,7 @@ pub(crate) fn inspect(
     let Some(snapshot) = tmux.workspace_snapshot(&session, &project.window_name)? else {
         return Ok(WorkspaceTopology::Absent);
     };
-    let shared = classify_workspace_snapshot(project, &snapshot);
+    let shared = classify_snapshot(project, &snapshot);
 
     let (ordered_pane_indexes, degraded) = match shared {
         SharedTopology::Healthy {
@@ -303,25 +265,29 @@ mod tests {
     use crate::tmux::metadata::WINDOW_ROLE;
     use crate::workspace::session_name;
 
-    fn raw_snapshot<'a>(
-        project: &'a ResolvedProject,
-        panes: Vec<RawWorkspacePane<'a>>,
-    ) -> RawWorkspaceSnapshot<'a> {
-        RawWorkspaceSnapshot {
-            fingerprint: Some(project.fingerprint.as_str()),
-            project_id: Some(project.id.as_str()),
-            profile_id: Some(project.profile_id.as_str()),
-            window: Some(RawWorkspaceWindow {
-                role: Some(WINDOW_ROLE_AGENTS),
-                panes,
+    /// Typed snapshot for classifier unit tests (no `FakeTmux`).
+    /// Mutate one field after construction when a test needs a single
+    /// deviation.
+    fn snapshot(project: &ResolvedProject, panes: &[(Option<&str>, bool)]) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            fingerprint: Some(project.fingerprint.clone()),
+            project_id: Some(project.id.clone()),
+            profile_id: Some(project.profile_id.clone()),
+            window: Some(WorkspaceWindowSnapshot {
+                role: Some(WINDOW_ROLE_AGENTS.to_string()),
+                panes: panes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (agent_id, pane_dead))| WorkspacePaneSnapshot {
+                        pane: PaneInfo {
+                            pane_id: format!("%{index}"),
+                            pane_dead: *pane_dead,
+                            pane_dead_status: pane_dead.then_some(1),
+                        },
+                        agent_id: agent_id.map(str::to_string),
+                    })
+                    .collect(),
             }),
-        }
-    }
-
-    fn raw_pane(agent_id: Option<&str>, pane_dead: bool) -> RawWorkspacePane<'_> {
-        RawWorkspacePane {
-            agent_id,
-            pane_dead,
         }
     }
 
@@ -513,13 +479,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &raw_snapshot(
-                &project,
-                vec![
-                    raw_pane(Some("alpha"), false),
-                    raw_pane(Some("beta"), false),
-                ],
-            ),
+            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]),
         );
 
         assert!(matches!(result, SharedTopology::Healthy { .. }));
@@ -530,35 +490,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &raw_snapshot(
-                &project,
-                vec![raw_pane(Some("alpha"), false), raw_pane(Some("beta"), true)],
-            ),
-        );
-
-        assert!(matches!(result, SharedTopology::Degraded { .. }));
-    }
-
-    #[test]
-    fn managed_pane_classifier_reports_healthy_workspace() {
-        let project = test_project();
-        let result = classify_managed_panes(
-            &project,
-            &[
-                raw_pane(Some("alpha"), false),
-                raw_pane(Some("beta"), false),
-            ],
-        );
-
-        assert!(matches!(result, SharedTopology::Healthy { .. }));
-    }
-
-    #[test]
-    fn managed_pane_classifier_reports_degraded_workspace() {
-        let project = test_project();
-        let result = classify_managed_panes(
-            &project,
-            &[raw_pane(Some("alpha"), false), raw_pane(Some("beta"), true)],
+            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), true)]),
         );
 
         assert!(matches!(result, SharedTopology::Degraded { .. }));
@@ -567,19 +499,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_fingerprint_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &RawWorkspaceSnapshot {
-                fingerprint: Some("wrong-fingerprint"),
-                ..raw_snapshot(
-                    &project,
-                    vec![
-                        raw_pane(Some("alpha"), false),
-                        raw_pane(Some("beta"), false),
-                    ],
-                )
-            },
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.fingerprint = Some("wrong-fingerprint".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -592,19 +514,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_project_metadata_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &RawWorkspaceSnapshot {
-                project_id: Some("other-project"),
-                ..raw_snapshot(
-                    &project,
-                    vec![
-                        raw_pane(Some("alpha"), false),
-                        raw_pane(Some("beta"), false),
-                    ],
-                )
-            },
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.project_id = Some("other-project".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -617,19 +529,9 @@ mod tests {
     #[test]
     fn shared_classifier_reports_profile_metadata_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &RawWorkspaceSnapshot {
-                profile_id: Some("other-profile"),
-                ..raw_snapshot(
-                    &project,
-                    vec![
-                        raw_pane(Some("alpha"), false),
-                        raw_pane(Some("beta"), false),
-                    ],
-                )
-            },
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        snap.profile_id = Some("other-profile".to_string());
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -642,19 +544,11 @@ mod tests {
     #[test]
     fn shared_classifier_reports_window_role_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &RawWorkspaceSnapshot {
-                window: Some(RawWorkspaceWindow {
-                    role: Some("other-role"),
-                    panes: vec![
-                        raw_pane(Some("alpha"), false),
-                        raw_pane(Some("beta"), false),
-                    ],
-                }),
-                ..raw_snapshot(&project, Vec::new())
-            },
-        );
+        let mut snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        if let Some(window) = snap.window.as_mut() {
+            window.role = Some("other-role".to_string());
+        }
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -667,10 +561,7 @@ mod tests {
     #[test]
     fn shared_classifier_reports_pane_count_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &raw_snapshot(&project, vec![raw_pane(Some("alpha"), false)]),
-        );
+        let result = classify_snapshot(&project, &snapshot(&project, &[(Some("alpha"), false)]));
 
         assert!(matches!(
             result,
@@ -685,10 +576,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &raw_snapshot(
-                &project,
-                vec![raw_pane(Some("alpha"), false), raw_pane(None, false)],
-            ),
+            &snapshot(&project, &[(Some("alpha"), false), (None, false)]),
         );
 
         assert!(matches!(
@@ -704,12 +592,9 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &raw_snapshot(
+            &snapshot(
                 &project,
-                vec![
-                    raw_pane(Some("alpha"), false),
-                    raw_pane(Some("unknown"), false),
-                ],
+                &[(Some("alpha"), false), (Some("unknown"), false)],
             ),
         );
 
@@ -726,13 +611,7 @@ mod tests {
         let project = test_project();
         let result = classify_snapshot(
             &project,
-            &raw_snapshot(
-                &project,
-                vec![
-                    raw_pane(Some("alpha"), false),
-                    raw_pane(Some("alpha"), false),
-                ],
-            ),
+            &snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]),
         );
 
         assert!(matches!(
