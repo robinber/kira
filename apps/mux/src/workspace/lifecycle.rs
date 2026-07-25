@@ -733,6 +733,64 @@ mod tests {
     }
 
     #[test]
+    fn attach_maps_vanished_session_to_session_absent() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+        // Ownership check passes; interactive attach then races the session away.
+        fake.set_vanish_before_attach(true);
+
+        let error = attach(&fake, &project)
+            .err_or_panic("attach_maps_vanished_session_to_session_absent: expected Err");
+        assert!(
+            matches!(
+                error.downcast_ref::<KiraMuxError>(),
+                Some(KiraMuxError::SessionAbsent)
+            ),
+            "vanished session after ownership check must be SessionAbsent, got: {error}"
+        );
+        assert!(
+            !fake
+                .session_exists(&session_name(&project))
+                .or_panic("attach_maps_vanished_session_to_session_absent")
+        );
+    }
+
+    #[test]
+    fn attach_propagates_error_when_session_still_present() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+        fake.set_fail_attach(true);
+
+        let error = attach(&fake, &project)
+            .err_or_panic("attach_propagates_error_when_session_still_present: expected Err");
+        assert!(
+            error.downcast_ref::<KiraMuxError>().is_none(),
+            "hard attach failure with live session must not become SessionAbsent, got: {error}"
+        );
+        assert!(
+            fake.session_exists(&session_name(&project))
+                .or_panic("attach_propagates_error_when_session_still_present")
+        );
+    }
+
+    #[test]
+    fn kill_succeeds_when_session_vanishes_during_kill() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+        fake.set_vanish_before_kill(true);
+
+        kill(&fake, &project).or_panic("kill_succeeds_when_session_vanishes_during_kill");
+        assert!(
+            !fake
+                .session_exists(&session_name(&project))
+                .or_panic("kill_succeeds_when_session_vanishes_during_kill")
+        );
+    }
+
+    #[test]
     fn launch_sets_command_metadata() {
         let fake = FakeTmux::new();
         let mut project = test_project();
