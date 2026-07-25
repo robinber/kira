@@ -14,7 +14,8 @@ fn inspect_treats_no_tmux_server_as_absent() {
     let fake = FakeTmux::new();
     fake.set_no_server(true);
 
-    let topology = inspect(&fake, &test_project()).or_panic();
+    let topology =
+        inspect(&fake, &test_project()).or_panic("inspect_treats_no_tmux_server_as_absent");
 
     assert!(matches!(topology, WorkspaceTopology::Absent));
 }
@@ -24,7 +25,8 @@ fn inspect_propagates_generic_snapshot_failure() {
     let fake = FakeTmux::new();
     fake.set_workspace_snapshot_error(TmuxError::CommandFailure("snapshot failed".into()));
 
-    let error = inspect(&fake, &test_project()).err_or_panic();
+    let error = inspect(&fake, &test_project())
+        .err_or_panic("inspect_propagates_generic_snapshot_failure: expected Err");
 
     assert!(matches!(
         error.downcast_ref::<TmuxError>(),
@@ -146,7 +148,8 @@ fn inspect_orders_panes_by_config_and_preserves_exit_metadata() {
     fake.add_pane(&session, &project.window_name, "%3", false);
     fake.set_pane_opt(&session, &project.window_name, 1, PANE_AGENT_ID, "alpha");
 
-    let topology = inspect(&fake, &project).or_panic();
+    let topology = inspect(&fake, &project)
+        .or_panic("inspect_orders_panes_by_config_and_preserves_exit_metadata");
     let WorkspaceTopology::Degraded(workspace) = topology else {
         panic!("expected degraded workspace");
     };
@@ -170,7 +173,7 @@ fn add_session_metadata(fake: &FakeTmux, project: &ResolvedProject) {
 }
 
 fn assert_drift(fake: &FakeTmux, project: &ResolvedProject, expected: &WorkspaceDriftReason) {
-    let topology = inspect(fake, project).or_panic();
+    let topology = inspect(fake, project).or_panic("assert_drift");
     let WorkspaceTopology::Drifted { reason } = topology else {
         panic!("expected drift reason {expected:?}");
     };

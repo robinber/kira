@@ -590,7 +590,8 @@ mod tests {
         );
         let env_map = BTreeMap::from([("TOKEN".to_string(), format!("${variable}"))]);
 
-        let error = resolve_env_map("alpha", env_map).err_or_panic();
+        let error = resolve_env_map("alpha", env_map)
+            .err_or_panic("resolve_env_map_reports_missing_environment_variable: expected Err");
         let display = error.to_string();
         let ConfigError::UnresolvedEnvVar { agent_id, var_name } = error else {
             panic!("expected unresolved environment variable error");
@@ -619,7 +620,8 @@ mod tests {
             ("a ", ' '),
             ("a\u{00a0}", '\u{00a0}'),
         ] {
-            let error = validate_identifier("agent id", id).err_or_panic();
+            let error = validate_identifier("agent id", id)
+                .err_or_panic("forbidden_identifier_chars_are_rejected: expected Err");
             let ConfigError::InvalidIdentifierChar { kind, id: got, ch } = error else {
                 panic!("expected InvalidIdentifierChar for {id:?}");
             };
@@ -628,7 +630,8 @@ mod tests {
             assert_eq!(ch, expected_ch);
         }
 
-        validate_identifier("agent id", "plain-id_09").or_panic();
+        validate_identifier("agent id", "plain-id_09")
+            .or_panic("forbidden_identifier_chars_are_rejected");
     }
 
     #[test]
@@ -640,7 +643,7 @@ mod tests {
             Some("npm test"),
             &["--watch".to_string()],
         )
-        .err_or_panic();
+        .err_or_panic("shell_mode_rejects_nonempty_args: expected Err");
         assert!(matches!(
             error,
             ConfigError::ShellArgsNotSupported { agent_id } if agent_id == "worker"
@@ -649,7 +652,8 @@ mod tests {
 
     #[test]
     fn shell_mode_allows_empty_args() {
-        validate_agent("worker", AgentMode::Shell, None, Some("npm test"), &[]).or_panic();
+        validate_agent("worker", AgentMode::Shell, None, Some("npm test"), &[])
+            .or_panic("shell_mode_allows_empty_args");
     }
 
     #[test]
@@ -661,7 +665,7 @@ mod tests {
             None,
             &["--full-auto".to_string()],
         )
-        .or_panic();
+        .or_panic("direct_mode_allows_args");
     }
 
     #[test]
@@ -676,11 +680,13 @@ mod tests {
         }
         let configured = root.display().to_string();
 
-        let before = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+        let before = normalize_project_root(&configured, ResolutionMode::Deferred)
+            .or_panic("project_root_identity_survives_directory_deletion");
         if let Err(error) = std::fs::remove_dir(&root) {
             panic!("failed to remove workdir: {error}");
         }
-        let after = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+        let after = normalize_project_root(&configured, ResolutionMode::Deferred)
+            .or_panic("project_root_identity_survives_directory_deletion");
 
         assert_eq!(
             before, after,
@@ -692,7 +698,8 @@ mod tests {
     #[test]
     fn project_root_rejects_relative_paths() {
         for root in [".", "relative", "../sibling", "tmp/project"] {
-            let error = normalize_project_root(root, ResolutionMode::Deferred).err_or_panic();
+            let error = normalize_project_root(root, ResolutionMode::Deferred)
+                .err_or_panic("project_root_rejects_relative_paths: expected Err");
             assert!(
                 matches!(
                     &error,
@@ -715,41 +722,44 @@ mod tests {
             "temp paths must be absolute for this test"
         );
 
-        require_stable_project_root(&configured).or_panic();
+        require_stable_project_root(&configured)
+            .or_panic("absolute_project_root_is_accepted_by_stability_gate");
     }
 
     #[test]
     fn home_relative_project_root_is_accepted() {
         // HOME may be unset in some environments; expand_path would fail then.
         // We only assert the stability gate accepts the form.
-        require_stable_project_root("~/projects/demo").or_panic();
-        require_stable_project_root("~").or_panic();
+        require_stable_project_root("~/projects/demo")
+            .or_panic("home_relative_project_root_is_accepted");
+        require_stable_project_root("~").or_panic("home_relative_project_root_is_accepted");
     }
 
     #[test]
     fn deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd() {
-        let base = tempfile::tempdir().or_panic();
+        let base = tempfile::tempdir()
+            .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
         let missing_root = base.path().join("missing-root");
         let root = normalize_project_root(
             &missing_root.display().to_string(),
             ResolutionMode::Deferred,
         )
-        .or_panic();
+        .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
 
-        let cwd =
-            resolve_agent_cwd("alpha", Some("subdir"), &root, ResolutionMode::Deferred).or_panic();
+        let cwd = resolve_agent_cwd("alpha", Some("subdir"), &root, ResolutionMode::Deferred)
+            .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
 
         assert_eq!(cwd, missing_root.join("subdir"));
     }
 
     #[test]
     fn runtime_resolution_rejects_missing_project_root() {
-        let base = tempfile::tempdir().or_panic();
+        let base = tempfile::tempdir().or_panic("runtime_resolution_rejects_missing_project_root");
         let missing_root = base.path().join("missing-root");
 
         let error =
             normalize_project_root(&missing_root.display().to_string(), ResolutionMode::Runtime)
-                .err_or_panic();
+                .err_or_panic("runtime_resolution_rejects_missing_project_root: expected Err");
 
         assert!(matches!(error, ConfigError::ProjectRootNotFound(path) if path == missing_root));
     }
@@ -778,7 +788,7 @@ mod tests {
             Path::new("/tmp/kira-test-root"),
             ResolutionMode::Deferred,
         )
-        .or_panic();
+        .or_panic("empty_label_falls_back_to_agent_id");
 
         assert_eq!(
             resolved.label, "alpha",
@@ -826,7 +836,7 @@ mod tests {
             Path::new("/tmp/kira-test-root"),
             ResolutionMode::Deferred,
         )
-        .or_panic();
+        .or_panic("agent_submit_and_text_delivery_override_template");
 
         assert_eq!(resolved.submit, Some(SubmitPolicy::Single));
         assert_eq!(resolved.text_delivery, Some(TextDelivery::SendKeys));
@@ -865,9 +875,11 @@ mod tests {
         with_overrides.prompt_template = Some("review: {{user_prompt}}".to_string());
 
         let (resolved_defaults, material_defaults) =
-            resolve_single_agent(with_defaults, None, root, ResolutionMode::Deferred).or_panic();
+            resolve_single_agent(with_defaults, None, root, ResolutionMode::Deferred)
+                .or_panic("submit_and_text_delivery_do_not_affect_fingerprint");
         let (resolved_overrides, material_overrides) =
-            resolve_single_agent(with_overrides, None, root, ResolutionMode::Deferred).or_panic();
+            resolve_single_agent(with_overrides, None, root, ResolutionMode::Deferred)
+                .or_panic("submit_and_text_delivery_do_not_affect_fingerprint");
 
         assert_ne!(resolved_defaults.submit, resolved_overrides.submit);
         assert_ne!(
@@ -903,8 +915,9 @@ mod tests {
         use super::*;
 
         fn setup_project_root_with_subdir() -> tempfile::TempDir {
-            let temp = tempfile::tempdir().or_panic();
-            std::fs::create_dir(temp.path().join("subdir")).or_panic();
+            let temp = tempfile::tempdir().or_panic("setup_project_root_with_subdir");
+            std::fs::create_dir(temp.path().join("subdir"))
+                .or_panic("setup_project_root_with_subdir");
             temp
         }
 
@@ -912,13 +925,14 @@ mod tests {
         fn check_symlink_escape_fallback_on_broken_symlink() {
             let temp = setup_project_root_with_subdir();
             let link = temp.path().join("broken_link");
-            symlink("/nonexistent/escape/target", &link).or_panic();
+            symlink("/nonexistent/escape/target", &link)
+                .or_panic("check_symlink_escape_fallback_on_broken_symlink");
             let result = check_symlink_escape(&link, temp.path());
             assert!(
                 result.is_some(),
                 "expected escape detection via read_link fallback"
             );
-            let escaped = result.or_panic();
+            let escaped = result.or_panic("check_symlink_escape_fallback_on_broken_symlink");
             assert!(escaped.starts_with("/nonexistent"));
         }
 
@@ -926,7 +940,7 @@ mod tests {
         fn check_symlink_escape_detects_relative_escape() {
             let temp = setup_project_root_with_subdir();
             let link = temp.path().join("subdir/escape_link");
-            symlink("../../..", &link).or_panic();
+            symlink("../../..", &link).or_panic("check_symlink_escape_detects_relative_escape");
             let result = check_symlink_escape(&link, temp.path());
             assert!(result.is_some(), "expected relative escape detection");
         }
@@ -935,9 +949,10 @@ mod tests {
         fn check_symlink_escape_nested_relative_escape() {
             let temp = setup_project_root_with_subdir();
             let subdir = temp.path().join("subdir");
-            std::fs::create_dir(subdir.join("nested")).or_panic();
+            std::fs::create_dir(subdir.join("nested"))
+                .or_panic("check_symlink_escape_nested_relative_escape");
             let link = subdir.join("nested/deep_escape");
-            symlink("../../../..", &link).or_panic();
+            symlink("../../../..", &link).or_panic("check_symlink_escape_nested_relative_escape");
             let result = check_symlink_escape(&link, temp.path());
             assert!(
                 result.is_some(),
@@ -948,12 +963,14 @@ mod tests {
         #[test]
         fn check_symlink_escape_detects_absolute_escape() {
             let temp = setup_project_root_with_subdir();
-            let escape_target = tempfile::tempdir().or_panic();
+            let escape_target =
+                tempfile::tempdir().or_panic("check_symlink_escape_detects_absolute_escape");
             let link = temp.path().join("link");
-            symlink(escape_target.path(), &link).or_panic();
+            symlink(escape_target.path(), &link)
+                .or_panic("check_symlink_escape_detects_absolute_escape");
             let result = check_symlink_escape(&link, temp.path());
             assert!(result.is_some(), "expected escape detection");
-            let escaped = result.or_panic();
+            let escaped = result.or_panic("check_symlink_escape_detects_absolute_escape");
             assert!(
                 !escaped.starts_with(temp.path()),
                 "escaped path should be outside project root"
@@ -962,26 +979,38 @@ mod tests {
 
         #[test]
         fn check_symlink_escape_returns_none_when_canonical_inside_root() {
-            let temp = tempfile::tempdir().or_panic();
-            std::fs::create_dir_all(temp.path().join("a/b")).or_panic();
+            let temp = tempfile::tempdir()
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            std::fs::create_dir_all(temp.path().join("a/b"))
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
             let link = temp.path().join("a/b/link");
-            symlink("..", &link).or_panic();
-            let project_root = temp.path().canonicalize().or_panic();
+            symlink("..", &link)
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            let project_root = temp
+                .path()
+                .canonicalize()
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
             assert!(check_symlink_escape(&link, &project_root).is_none());
         }
 
         #[test]
         fn project_root_identity_survives_broken_configured_symlink() {
-            let temp = tempfile::tempdir().or_panic();
+            let temp = tempfile::tempdir()
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
             let target = temp.path().join("target");
             let link = temp.path().join("project-link");
-            std::fs::create_dir(&target).or_panic();
-            symlink(&target, &link).or_panic();
+            std::fs::create_dir(&target)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            symlink(&target, &link)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
             let configured = link.display().to_string();
 
-            let before = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
-            std::fs::remove_dir(&target).or_panic();
-            let after = normalize_project_root(&configured, ResolutionMode::Deferred).or_panic();
+            let before = normalize_project_root(&configured, ResolutionMode::Deferred)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            std::fs::remove_dir(&target)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            let after = normalize_project_root(&configured, ResolutionMode::Deferred)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
 
             assert_eq!(before, after);
             assert_eq!(after, link);

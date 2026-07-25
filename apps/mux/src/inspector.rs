@@ -295,7 +295,7 @@ mod tests {
     fn inspect_absent_session() {
         let fake = FakeTmux::new();
         let project = test_project();
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_absent_session");
         assert!(matches!(result, WorkspaceTopology::Absent));
     }
 
@@ -304,7 +304,7 @@ mod tests {
         let fake = FakeTmux::new();
         let project = test_project();
         setup_healthy_session(&fake, &project);
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_healthy_session");
         assert!(matches!(result, WorkspaceTopology::Healthy(_)));
     }
 
@@ -314,7 +314,7 @@ mod tests {
         let project = test_project();
         crate::test_support::setup_session_with_dead_panes(&fake, &project, &[1]);
 
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_degraded_with_dead_pane");
         assert!(matches!(result, WorkspaceTopology::Degraded(_)));
     }
 
@@ -332,7 +332,7 @@ mod tests {
         );
         fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
 
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_drifted_fingerprint_mismatch");
         assert!(matches!(
             result,
             WorkspaceTopology::Drifted {
@@ -371,7 +371,7 @@ mod tests {
             "alpha",
         );
 
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_drifted_pane_count_mismatch");
         assert!(matches!(
             result,
             WorkspaceTopology::Drifted {
@@ -418,7 +418,7 @@ mod tests {
             "unknown-agent",
         );
 
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_drifted_unknown_agent_id");
         assert!(matches!(
             result,
             WorkspaceTopology::Drifted {
@@ -465,7 +465,7 @@ mod tests {
             "alpha",
         );
 
-        let result = inspect(&fake, &project).or_panic();
+        let result = inspect(&fake, &project).or_panic("inspect_drifted_duplicate_agent_id");
         assert!(matches!(
             result,
             WorkspaceTopology::Drifted {

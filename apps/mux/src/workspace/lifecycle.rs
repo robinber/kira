@@ -383,9 +383,13 @@ mod tests {
         let mut project = test_project();
         make_launchable(&mut project);
 
-        let outcome = start(&fake, &project, false).or_panic();
+        let outcome =
+            start(&fake, &project, false).or_panic("start_creates_new_workspace_from_absent");
         assert_eq!(outcome, StartOutcome::Healthy);
-        assert!(fake.session_exists(&session_name(&project)).or_panic());
+        assert!(
+            fake.session_exists(&session_name(&project))
+                .or_panic("start_creates_new_workspace_from_absent")
+        );
     }
 
     #[test]
@@ -394,7 +398,7 @@ mod tests {
         let project = test_project();
         setup_healthy_session(&fake, &project);
 
-        let outcome = start(&fake, &project, false).or_panic();
+        let outcome = start(&fake, &project, false).or_panic("start_reuses_healthy_session");
         assert_eq!(outcome, StartOutcome::Healthy);
     }
 
@@ -413,7 +417,7 @@ mod tests {
             .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
             .count();
 
-        start(&fake, &project, false).or_panic();
+        start(&fake, &project, false).or_panic("start_on_healthy_does_not_respawn_panes");
 
         let after = fake
             .ops()
@@ -438,7 +442,7 @@ mod tests {
             .filter(|op| matches!(op, crate::test_support::FakeOp::RespawnPane { .. }))
             .count();
 
-        restart(&fake, &project, None).or_panic();
+        restart(&fake, &project, None).or_panic("restart_respawns_panes_to_refresh_runtime_env");
 
         let after = fake
             .ops()
@@ -458,7 +462,7 @@ mod tests {
         make_launchable(&mut project);
         crate::test_support::setup_session_with_dead_panes(&fake, &project, &[1]);
 
-        let outcome = start(&fake, &project, false).or_panic();
+        let outcome = start(&fake, &project, false).or_panic("start_repairs_degraded_session");
         assert_eq!(outcome, StartOutcome::Healthy);
     }
 
@@ -469,7 +473,8 @@ mod tests {
         make_launchable(&mut project);
         fake.set_respawn_exits_immediately(true);
 
-        let outcome = start(&fake, &project, false).or_panic();
+        let outcome = start(&fake, &project, false)
+            .or_panic("start_reports_degraded_when_agent_exits_immediately");
         assert_eq!(outcome, StartOutcome::Degraded);
     }
 
@@ -481,7 +486,8 @@ mod tests {
         setup_healthy_session(&fake, &project);
         fake.set_respawn_exits_immediately(true);
 
-        let err = restart(&fake, &project, Some("alpha")).err_or_panic();
+        let err = restart(&fake, &project, Some("alpha"))
+            .err_or_panic("restart_single_agent_reports_degraded_on_immediate_exit: expected Err");
         assert!(
             matches!(
                 err.downcast_ref::<KiraMuxError>(),
@@ -494,13 +500,15 @@ mod tests {
     #[test]
     fn start_repair_rejects_missing_project_root_before_respawn() {
         let fake = FakeTmux::new();
-        let base = tempfile::tempdir().or_panic();
+        let base = tempfile::tempdir()
+            .or_panic("start_repair_rejects_missing_project_root_before_respawn");
         let mut project = test_project();
         project.root = base.path().join("missing-root");
         project.agents[0].cwd = project.root.clone();
         crate::test_support::setup_session_with_dead_panes(&fake, &project, &[0]);
 
-        let error = start(&fake, &project, false).err_or_panic();
+        let error = start(&fake, &project, false)
+            .err_or_panic("start_repair_rejects_missing_project_root_before_respawn: expected Err");
 
         assert!(matches!(
             error.downcast_ref::<KiraMuxError>(),
@@ -520,7 +528,8 @@ mod tests {
         fake.set_session_opt(&session, "@kira_mux_config_fingerprint", "wrong");
         fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
 
-        let err = start(&fake, &project, false).err_or_panic();
+        let err = start(&fake, &project, false)
+            .err_or_panic("start_refuses_drifted_session: expected Err");
         assert!(err.downcast_ref::<KiraMuxError>().is_some());
     }
 
@@ -531,7 +540,7 @@ mod tests {
         make_launchable(&mut project);
         setup_healthy_session(&fake, &project);
 
-        restart(&fake, &project, None).or_panic();
+        restart(&fake, &project, None).or_panic("restart_all_agents_on_healthy_session");
     }
 
     #[test]
@@ -542,7 +551,8 @@ mod tests {
         setup_healthy_session(&fake, &project);
         fake.set_fail_respawn(true);
 
-        let err = restart(&fake, &project, None).err_or_panic();
+        let err = restart(&fake, &project, None)
+            .err_or_panic("restart_all_reports_degraded_after_attempting_every_pane: expected Err");
         assert!(
             matches!(
                 err.downcast_ref::<KiraMuxError>(),
@@ -559,19 +569,20 @@ mod tests {
         make_launchable(&mut project);
         setup_healthy_session(&fake, &project);
 
-        restart(&fake, &project, Some("alpha")).or_panic();
+        restart(&fake, &project, Some("alpha")).or_panic("restart_single_agent");
     }
 
     #[test]
     fn restart_rejects_missing_agent_cwd_before_respawn() {
         let fake = FakeTmux::new();
-        let base = tempfile::tempdir().or_panic();
+        let base = tempfile::tempdir().or_panic("restart_rejects_missing_agent_cwd_before_respawn");
         let mut project = test_project();
         project.root = base.path().to_path_buf();
         project.agents[0].cwd = base.path().join("missing-cwd");
         setup_healthy_session(&fake, &project);
 
-        let error = restart(&fake, &project, Some("alpha")).err_or_panic();
+        let error = restart(&fake, &project, Some("alpha"))
+            .err_or_panic("restart_rejects_missing_agent_cwd_before_respawn: expected Err");
 
         assert!(matches!(
             error.downcast_ref::<KiraMuxError>(),
@@ -587,7 +598,8 @@ mod tests {
         let project = test_project();
         setup_healthy_session(&fake, &project);
 
-        let err = restart(&fake, &project, Some("nonexistent")).err_or_panic();
+        let err = restart(&fake, &project, Some("nonexistent"))
+            .err_or_panic("restart_unknown_agent_fails: expected Err");
         assert!(matches!(
             err.downcast_ref::<KiraMuxError>(),
             Some(KiraMuxError::UnknownAgentId(_))
@@ -599,7 +611,8 @@ mod tests {
         let fake = FakeTmux::new();
         let project = test_project();
 
-        let err = restart(&fake, &project, None).err_or_panic();
+        let err = restart(&fake, &project, None)
+            .err_or_panic("restart_absent_session_fails: expected Err");
         assert!(matches!(
             err.downcast_ref::<KiraMuxError>(),
             Some(KiraMuxError::SessionAbsent)
@@ -616,7 +629,8 @@ mod tests {
         fake.set_session_opt(&session, "@kira_mux_config_fingerprint", "wrong");
         fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
 
-        let err = restart(&fake, &project, None).err_or_panic();
+        let err = restart(&fake, &project, None)
+            .err_or_panic("restart_drifted_session_fails: expected Err");
         assert!(matches!(
             err.downcast_ref::<KiraMuxError>(),
             Some(KiraMuxError::Drifted {
@@ -632,8 +646,12 @@ mod tests {
         let project = test_project();
         setup_healthy_session(&fake, &project);
 
-        kill(&fake, &project).or_panic();
-        assert!(!fake.session_exists(&session_name(&project)).or_panic());
+        kill(&fake, &project).or_panic("kill_removes_session");
+        assert!(
+            !fake
+                .session_exists(&session_name(&project))
+                .or_panic("kill_removes_session")
+        );
     }
 
     #[test]
@@ -641,7 +659,7 @@ mod tests {
         let fake = FakeTmux::new();
         let project = test_project();
 
-        kill(&fake, &project).or_panic();
+        kill(&fake, &project).or_panic("kill_absent_session_succeeds");
     }
 
     #[test]
@@ -651,7 +669,8 @@ mod tests {
         let session = session_name(&project);
         fake.add_session(&session);
 
-        let error = kill(&fake, &project).err_or_panic();
+        let error = kill(&fake, &project)
+            .err_or_panic("kill_refuses_untagged_session_name_collision: expected Err");
 
         assert!(matches!(
             error.downcast_ref::<KiraMuxError>(),
@@ -660,7 +679,10 @@ mod tests {
                 ..
             })
         ));
-        assert!(fake.session_exists(&session).or_panic());
+        assert!(
+            fake.session_exists(&session)
+                .or_panic("kill_refuses_untagged_session_name_collision")
+        );
     }
 
     #[test]
@@ -670,7 +692,8 @@ mod tests {
         let session = session_name(&project);
         fake.add_session(&session);
 
-        let error = attach(&fake, &project).err_or_panic();
+        let error = attach(&fake, &project)
+            .err_or_panic("attach_refuses_untagged_session_name_collision: expected Err");
 
         assert!(matches!(
             error.downcast_ref::<KiraMuxError>(),
@@ -689,9 +712,13 @@ mod tests {
         setup_healthy_session(&fake, &project);
         fake.set_session_opt(&session, SESSION_CONFIG_FINGERPRINT, "stale");
 
-        kill(&fake, &project).or_panic();
+        kill(&fake, &project).or_panic("kill_allows_owned_session_with_fingerprint_drift");
 
-        assert!(!fake.session_exists(&session).or_panic());
+        assert!(
+            !fake
+                .session_exists(&session)
+                .or_panic("kill_allows_owned_session_with_fingerprint_drift")
+        );
     }
 
     #[test]
@@ -700,12 +727,12 @@ mod tests {
         let mut project = test_project();
         make_launchable(&mut project);
 
-        let outcome = start(&fake, &project, false).or_panic();
+        let outcome = start(&fake, &project, false).or_panic("launch_sets_command_metadata");
         assert_eq!(outcome, StartOutcome::Healthy);
 
         let val = fake
             .get_pane_option("%0", "@kira_mux_agent_command")
-            .or_panic();
+            .or_panic("launch_sets_command_metadata");
         assert_eq!(val.as_deref(), Some("echo"));
     }
 
@@ -716,11 +743,11 @@ mod tests {
         make_launchable(&mut project);
         project.agents[0].command = Some("/usr/bin/codex".to_string());
 
-        start(&fake, &project, false).or_panic();
+        start(&fake, &project, false).or_panic("launch_sets_path_basename");
 
         let val = fake
             .get_pane_option("%0", "@kira_mux_agent_command")
-            .or_panic();
+            .or_panic("launch_sets_path_basename");
         assert_eq!(val.as_deref(), Some("codex"));
     }
 
@@ -733,11 +760,11 @@ mod tests {
         project.agents[0].command = None;
         project.agents[0].shell_command = Some("codex --full-auto".to_string());
 
-        start(&fake, &project, false).or_panic();
+        start(&fake, &project, false).or_panic("launch_sets_shell_sentinel");
 
         let val = fake
             .get_pane_option("%0", "@kira_mux_agent_command")
-            .or_panic();
+            .or_panic("launch_sets_shell_sentinel");
         assert_eq!(val.as_deref(), Some("__shell__"));
     }
 }

@@ -1,11 +1,10 @@
 //! Shared unit-test fixtures: `FakeTmux`, `test_project`, and panic helpers.
 //!
-//! Prefer context-carrying helpers for failures that should name the operation:
-//! - [`ok`] / [`err`] for `Result` values with `Display` errors
-//! - [`some`] for `Option`
-//!
-//! [`TestResultExt::or_panic`] / [`err_or_panic`] remain for `Debug` errors
-//! (typical `anyhow::Error` paths).
+//! All unwrap-style helpers take a context string so failures name the
+//! operation under test (and still use `#[track_caller]` for the call site):
+//! - free functions [`ok`] / [`err`] / [`some`]
+//! - extension methods [`TestResultExt::or_panic`] / [`err_or_panic`]
+//! - [`TestOptionExt::or_panic`] for `Option`
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
@@ -68,37 +67,39 @@ pub(crate) fn some<T>(value: Option<T>, context: impl Display) -> T {
     value.unwrap_or_else(|| panic!("{context}"))
 }
 
+/// Extension helpers for `Result` in tests (same semantics as [`ok`] /
+/// [`err`]).
 pub(crate) trait TestResultExt<T, E> {
-    fn or_panic(self) -> T;
-    fn err_or_panic(self) -> E;
+    fn or_panic(self, context: impl Display) -> T
+    where
+        E: Display;
+    fn err_or_panic(self, context: impl Display) -> E;
 }
 
-impl<T, E: std::fmt::Debug> TestResultExt<T, E> for std::result::Result<T, E> {
+impl<T, E> TestResultExt<T, E> for std::result::Result<T, E> {
     #[track_caller]
-    fn or_panic(self) -> T {
-        match self {
-            Ok(value) => value,
-            Err(error) => panic!("expected Ok(..), got Err({error:?})"),
-        }
+    fn or_panic(self, context: impl Display) -> T
+    where
+        E: Display,
+    {
+        ok(self, context)
     }
 
     #[track_caller]
-    fn err_or_panic(self) -> E {
-        match self {
-            Ok(_) => panic!("expected Err(..), got Ok(..)"),
-            Err(err) => err,
-        }
+    fn err_or_panic(self, context: impl Display) -> E {
+        err(self, context)
     }
 }
 
+/// Extension helper for `Option` in tests (same semantics as [`some`]).
 pub(crate) trait TestOptionExt<T> {
-    fn or_panic(self) -> T;
+    fn or_panic(self, context: impl Display) -> T;
 }
 
 impl<T> TestOptionExt<T> for Option<T> {
     #[track_caller]
-    fn or_panic(self) -> T {
-        self.unwrap_or_else(|| panic!("expected Some(..), got None"))
+    fn or_panic(self, context: impl Display) -> T {
+        some(self, context)
     }
 }
 
@@ -875,7 +876,8 @@ mod tests {
             "--profile".to_string(),
             "fast".to_string(),
         ];
-        fake.respawn_pane("%0", "/tmp", &env, &command).or_panic();
+        fake.respawn_pane("%0", "/tmp", &env, &command)
+            .or_panic("respawn_pane_records_operation");
 
         let ops = fake.ops();
         assert_eq!(
