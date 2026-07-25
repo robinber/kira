@@ -210,9 +210,9 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::TopologyGuard;
-    use crate::config::{AgentMode, Layout, RemainOnExit};
+    use crate::config::AgentMode;
     use crate::model::{ResolvedAgent, ResolvedProject};
-    use crate::test_support::{FakeOp, FakeTmux, TestResultExt};
+    use crate::test_support::{FakeOp, FakeTmux, TestResultExt, test_project};
     use crate::tmux::TmuxAdapter;
 
     #[derive(Clone, Default)]
@@ -245,8 +245,9 @@ mod tests {
         }
     }
 
-    fn direct_agent() -> ResolvedAgent {
-        ResolvedAgent {
+    fn minimal_project() -> ResolvedProject {
+        let mut project = test_project();
+        project.agents = vec![ResolvedAgent {
             id: "coder".to_string(),
             label: "Coder".to_string(),
             mode: AgentMode::Direct,
@@ -259,26 +260,8 @@ mod tests {
             prompt_template: None,
             submit: None,
             text_delivery: None,
-        }
-    }
-
-    fn minimal_project() -> ResolvedProject {
-        ResolvedProject {
-            id: "test".to_string(),
-            profile_id: "default".to_string(),
-            name: "Test".to_string(),
-            root: PathBuf::from("/tmp/test-project"),
-            layout: Layout::Auto,
-            main_pane_ratio: 50,
-            window_name: "agents".to_string(),
-            session_prefix: "kira".to_string(),
-            default_shell: "/bin/sh".to_string(),
-            remain_on_exit: RemainOnExit::Failed,
-            tmux_bin: "tmux".to_string(),
-            agents: vec![direct_agent()],
-            fingerprint: "abc123".to_string(),
-            groups: BTreeMap::new(),
-        }
+        }];
+        project
     }
 
     #[test]
