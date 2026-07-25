@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::config::{AgentMode, Layout, RemainOnExit};
+use crate::config::{AgentMode, Layout, RemainOnExit, SubmitPolicy, TextDelivery};
 
 /// Fully resolved project configuration ready for tmux workspace management.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,10 @@ pub(crate) struct ResolvedAgent {
     pub capabilities: Vec<String>,
     /// Optional prompt template applied before send.
     pub prompt_template: Option<String>,
+    /// Optional submit policy override; when set, bypasses basename heuristics.
+    pub submit: Option<SubmitPolicy>,
+    /// Optional text delivery override; when set, bypasses basename heuristics.
+    pub text_delivery: Option<TextDelivery>,
 }
 
 #[cfg(test)]

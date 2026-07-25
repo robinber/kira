@@ -1,4 +1,4 @@
-use crate::config::AgentMode;
+use crate::config::{AgentMode, SubmitPolicy, TextDelivery};
 use crate::model::ResolvedAgent;
 use crate::tmux::metadata::PANE_COMMAND_SHELL;
 use crate::util::command_basename;
@@ -16,6 +16,12 @@ pub(crate) fn infer_submit_behavior(
     agent: &ResolvedAgent,
     pane_command: Option<&str>,
 ) -> SubmitBehavior {
+    if let Some(policy) = agent.submit {
+        return match policy {
+            SubmitPolicy::Single => SubmitBehavior::SingleEnter,
+            SubmitPolicy::Double => SubmitBehavior::DoubleEnter,
+        };
+    }
     match effective_basename(agent, pane_command) {
         Some(name) if DOUBLE_ENTER_TOOLS.contains(&name) => SubmitBehavior::DoubleEnter,
         _ if pane_command == Some(PANE_COMMAND_SHELL)
@@ -62,6 +68,9 @@ fn contains_tool(command: &str, tools: &[&str]) -> bool {
 }
 
 pub(super) fn needs_send_keys_for_text(agent: &ResolvedAgent, pane_command: Option<&str>) -> bool {
+    if let Some(delivery) = agent.text_delivery {
+        return delivery == TextDelivery::SendKeys;
+    }
     match effective_basename(agent, pane_command) {
         Some(name) => SEND_KEYS_TEXT_TOOLS.contains(&name),
         None if pane_command == Some(PANE_COMMAND_SHELL) => agent
@@ -95,6 +104,8 @@ mod tests {
             env: BTreeMap::new(),
             capabilities: vec![],
             prompt_template: None,
+            submit: None,
+            text_delivery: None,
         }
     }
 
@@ -243,5 +254,45 @@ mod tests {
             infer_submit_behavior(&agent, Some("__shell__")),
             SubmitBehavior::SingleEnter
         );
+    }
+
+    #[test]
+    fn submit_override_forces_single_enter_for_codex() {
+        let mut agent = test_agent(AgentMode::Direct, Some("codex"));
+        agent.submit = Some(SubmitPolicy::Single);
+        assert_eq!(
+            infer_submit_behavior(&agent, None),
+            SubmitBehavior::SingleEnter
+        );
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("codex")),
+            SubmitBehavior::SingleEnter,
+            "config override must win over pane metadata heuristics"
+        );
+    }
+
+    #[test]
+    fn submit_override_forces_double_enter_for_generic() {
+        let mut agent = test_agent(AgentMode::Direct, Some("my-tool"));
+        agent.submit = Some(SubmitPolicy::Double);
+        assert_eq!(
+            infer_submit_behavior(&agent, None),
+            SubmitBehavior::DoubleEnter
+        );
+    }
+
+    #[test]
+    fn text_delivery_override_forces_paste_for_opencode() {
+        let mut agent = test_agent(AgentMode::Direct, Some("opencode"));
+        agent.text_delivery = Some(TextDelivery::Paste);
+        assert!(!needs_send_keys_for_text(&agent, None));
+        assert!(!needs_send_keys_for_text(&agent, Some("opencode")));
+    }
+
+    #[test]
+    fn text_delivery_override_forces_send_keys_for_generic() {
+        let mut agent = test_agent(AgentMode::Direct, Some("my-tool"));
+        agent.text_delivery = Some(TextDelivery::SendKeys);
+        assert!(needs_send_keys_for_text(&agent, None));
     }
 }

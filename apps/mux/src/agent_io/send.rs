@@ -16,8 +16,8 @@ use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
 /// Delay before the second Enter for double-enter agents.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
-/// Lines of pane history observed by `send --wait`.
-pub(super) const WAIT_CAPTURE_LINES: usize = 200;
+/// Default lines of pane history observed by `send --wait`.
+pub(crate) const DEFAULT_WAIT_CAPTURE_LINES: usize = 200;
 
 /// Result of a successful prompt delivery.
 pub(crate) struct DeliveredPrompt {
@@ -34,6 +34,8 @@ pub(crate) struct WaitSeed {
     pub(crate) delivered: DeliveredPrompt,
     /// Pane capture taken immediately before submission.
     pub(crate) pre_submit: String,
+    /// History lines used for the pre-submit capture and subsequent wait polls.
+    pub(crate) capture_lines: usize,
 }
 
 struct PreparedPrompt<'a> {
@@ -69,19 +71,24 @@ pub(crate) fn send_prompt(
 ///
 /// This observed path is reserved for `send --wait`: plain `send` keeps its
 /// single delivery path and does not pay for an extra pane capture.
+///
+/// `capture_lines` is the history window used for the pre-submit snapshot and
+/// every poll during wait (CLI default: [`DEFAULT_WAIT_CAPTURE_LINES`]).
 pub(crate) fn send_prompt_for_wait(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     agent_id: &str,
     prompt: &str,
     no_template: bool,
+    capture_lines: usize,
 ) -> Result<WaitSeed> {
     let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
-    let pre_submit = capture_before_submit(tmux, &prepared.pane.pane_id, agent_id)?;
+    let pre_submit = capture_before_submit(tmux, &prepared.pane.pane_id, agent_id, capture_lines)?;
     let delivered = deliver_prepared(tmux, agent_id, prepared)?;
     Ok(WaitSeed {
         delivered,
         pre_submit,
+        capture_lines,
     })
 }
 
@@ -124,8 +131,13 @@ fn deliver_prepared(
     })
 }
 
-fn capture_before_submit(tmux: &dyn TmuxAdapter, pane_id: &str, agent_id: &str) -> Result<String> {
-    or_dead_pane(agent_id, tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES))
+fn capture_before_submit(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    agent_id: &str,
+    capture_lines: usize,
+) -> Result<String> {
+    or_dead_pane(agent_id, tmux.capture_pane(pane_id, capture_lines))
 }
 
 /// Send-side classification, shared by every delivery op: a target that
@@ -619,16 +631,73 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
         fake.set_pane_content("%0", "idle before submit");
 
-        let seed = send_prompt_for_wait(&fake, &project, "alpha", "hello world", false).or_panic();
+        let seed = send_prompt_for_wait(
+            &fake,
+            &project,
+            "alpha",
+            "hello world",
+            false,
+            DEFAULT_WAIT_CAPTURE_LINES,
+        )
+        .or_panic();
 
         assert_eq!(seed.delivered.pane_id, "%0");
         assert_eq!(seed.delivered.rendered, "hello world");
         assert_eq!(seed.pre_submit, "idle before submit");
+        assert_eq!(seed.capture_lines, DEFAULT_WAIT_CAPTURE_LINES);
         assert!(
             fake.ops()
                 .iter()
                 .any(|op| matches!(op, FakeOp::PasteText { text, .. } if text == "hello world")),
             "observed delivery must still submit the prompt"
+        );
+    }
+
+    #[test]
+    fn send_prompt_for_wait_honors_capture_line_limit() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.set_pane_content("%0", "line1\nline2\nline3\nline4\n");
+
+        let seed = send_prompt_for_wait(&fake, &project, "alpha", "hi", false, 2).or_panic();
+
+        assert_eq!(seed.pre_submit, "line3\nline4\n");
+        assert_eq!(seed.capture_lines, 2);
+    }
+
+    #[test]
+    fn send_prompt_submit_override_forces_single_enter_for_codex() {
+        let fake = crate::test_support::FakeTmux::new();
+        let mut project = crate::test_support::test_project();
+        project.agents[0].command = Some("codex".to_string());
+        project.agents[0].submit = Some(crate::config::SubmitPolicy::Single);
+        crate::test_support::setup_healthy_session(&fake, &project);
+
+        send_prompt(&fake, &project, "alpha", "review this", false).or_panic();
+
+        let ops = fake.ops();
+        assert_eq!(ops.len(), 2, "expected paste + 1 Enter, got: {ops:?}");
+    }
+
+    #[test]
+    fn send_prompt_text_delivery_override_forces_send_keys() {
+        let fake = crate::test_support::FakeTmux::new();
+        let mut project = crate::test_support::test_project();
+        project.agents[0].text_delivery = Some(crate::config::TextDelivery::SendKeys);
+        crate::test_support::setup_healthy_session(&fake, &project);
+
+        send_prompt(&fake, &project, "alpha", "hello world", false).or_panic();
+
+        let ops = fake.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, FakeOp::SendText { text, .. } if text == "hello world")),
+            "text_delivery=send-keys must type literally, got: {ops:?}"
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(op, FakeOp::PasteText { .. })),
+            "text_delivery=send-keys must not paste, got: {ops:?}"
         );
     }
 }

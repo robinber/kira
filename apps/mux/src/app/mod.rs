@@ -66,6 +66,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             profile,
             no_template,
             wait,
+            lines,
         } => agent_cmds::cmd_send(
             &project,
             profile.as_deref(),
@@ -73,6 +74,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             &prompt,
             no_template,
             wait,
+            lines,
         ),
         CommandKind::Capture {
             project,
