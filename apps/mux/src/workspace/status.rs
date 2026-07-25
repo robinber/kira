@@ -120,7 +120,7 @@ fn project_state_from_snapshot(
         return ProjectState::Stopped;
     };
 
-    let shared = inspector::classify_workspace_snapshot(project, snap);
+    let shared = inspector::classify_snapshot(project, snap);
 
     match shared {
         SharedTopology::Healthy { .. } => ProjectState::Running,
