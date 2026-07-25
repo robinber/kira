@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::send::{WAIT_CAPTURE_LINES, WaitSeed};
+use super::send::WaitSeed;
 use crate::error::KiraMuxError;
 use crate::tmux::{TmuxAdapter, TmuxError};
 
@@ -312,7 +312,7 @@ pub(crate) fn wait_on_pane(
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
-        let current = capture_or_died(tmux, agent_id, &seed.delivered.pane_id)?;
+        let current = capture_or_died(tmux, agent_id, &seed.delivered.pane_id, seed.capture_lines)?;
         let observed_at = options.elapsed(wall_start);
         // Byte-identical captures normalize identically: skip the allocation.
         let mut changed = false;
@@ -439,8 +439,13 @@ fn prompt_appeared(pre_submit: &str, current: &str, fragments: &[String]) -> boo
 /// stops) between the liveness check and the capture surfaces as
 /// [`KiraMuxError::PaneDiedDuringWait`], matching [`pane_is_dead`], instead
 /// of a transport error.
-fn capture_or_died(tmux: &dyn TmuxAdapter, agent_id: &str, pane_id: &str) -> Result<String> {
-    match tmux.capture_pane(pane_id, WAIT_CAPTURE_LINES) {
+fn capture_or_died(
+    tmux: &dyn TmuxAdapter,
+    agent_id: &str,
+    pane_id: &str,
+    capture_lines: usize,
+) -> Result<String> {
+    match tmux.capture_pane(pane_id, capture_lines) {
         Err(error) if TmuxError::is_target_unavailable(&error) => {
             Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into())
         }

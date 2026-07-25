@@ -134,6 +134,8 @@ shell_command = "npm test -- --watch"
 - `mode = "direct"` (default) runs `command` (+ optional `args`)
 - `mode = "shell"` runs `shell_command` through the configured shell
   (`args` are not used in shell mode and are rejected at config load)
+- Optional per-agent (or template) send overrides when the basename heuristic
+  is wrong: `submit = "single" | "double"`, `text_delivery = "paste" | "send-keys"`
 - `root` must be absolute or `~/...` (not process-CWD-relative) so session
   identity stays stable no matter where you invoke `kira-mux`
 - Agent `cwd` may still be relative to `root`
@@ -159,7 +161,7 @@ workspace.
 **Excluded on purpose** (cosmetic / non-topology — no drift):
 
 - project `name`, agent `label`
-- `capabilities`, `groups`, `prompt_template`
+- `capabilities`, `groups`, `prompt_template`, `submit`, `text_delivery`
 - `session_prefix`, `tmux_bin` — changing the prefix renames the session, so
   the old workspace shows as **stopped** (not drifted); `tmux_bin` only
   changes how tmux is invoked
@@ -228,7 +230,8 @@ the quiet window is sized to the evidence: 5 s after durable production, 10 s
 for weak production, and 30 s when nothing changed after the acknowledgement
 (a one-frame reply and a silently thinking model look identical). One final
 identical poll confirms the result. These are internal heuristics, not CLI
-tuning flags.
+timing flags. Use `send --wait --lines <N>` to widen the capture window
+(default 200), mirroring `capture --lines`.
 
 A pane that dies or vanishes mid-wait (killed window, lost session, or a
 stopped tmux server) fails with exit **6**; an internal hard timeout (~10 min)

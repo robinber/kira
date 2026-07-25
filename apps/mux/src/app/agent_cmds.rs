@@ -72,6 +72,7 @@ pub(super) fn cmd_send(
     prompt: &str,
     no_template: bool,
     wait: bool,
+    lines: Option<usize>,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
     if !wait {
@@ -81,8 +82,15 @@ pub(super) fn cmd_send(
         return Ok(());
     }
 
-    let seed =
-        crate::agent_io::send_prompt_for_wait(&tmux, &project, agent_id, prompt, no_template)?;
+    let capture_lines = lines.unwrap_or(crate::agent_io::DEFAULT_WAIT_CAPTURE_LINES);
+    let seed = crate::agent_io::send_prompt_for_wait(
+        &tmux,
+        &project,
+        agent_id,
+        prompt,
+        no_template,
+        capture_lines,
+    )?;
     log_prompt_delivered(agent_id, &seed.delivered);
     let wait_result = crate::agent_io::wait_on_pane(
         &tmux,
