@@ -830,6 +830,70 @@ mod tests {
         assert_eq!(resolved.text_delivery, Some(TextDelivery::SendKeys));
     }
 
+    #[test]
+    fn submit_and_text_delivery_do_not_affect_fingerprint() {
+        use crate::config::{SubmitPolicy, TextDelivery};
+
+        let root = Path::new("/tmp/kira-test-root");
+        let base = || ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: Some("Alpha".to_string()),
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: Some(vec!["review".to_string()]),
+            prompt_template: Some("{{user_prompt}}".to_string()),
+            submit: None,
+            text_delivery: None,
+        };
+
+        let mut with_defaults = base();
+        with_defaults.submit = None;
+        with_defaults.text_delivery = None;
+
+        let mut with_overrides = base();
+        with_overrides.submit = Some(SubmitPolicy::Double);
+        with_overrides.text_delivery = Some(TextDelivery::SendKeys);
+        with_overrides.label = Some("Other Label".to_string());
+        with_overrides.capabilities = Some(vec!["impl".to_string()]);
+        with_overrides.prompt_template = Some("review: {{user_prompt}}".to_string());
+
+        let (resolved_defaults, material_defaults) =
+            resolve_single_agent(with_defaults, None, root, ResolutionMode::Deferred).or_panic();
+        let (resolved_overrides, material_overrides) =
+            resolve_single_agent(with_overrides, None, root, ResolutionMode::Deferred).or_panic();
+
+        assert_ne!(resolved_defaults.submit, resolved_overrides.submit);
+        assert_ne!(
+            resolved_defaults.text_delivery,
+            resolved_overrides.text_delivery
+        );
+
+        let fingerprint = |material: &FingerprintAgentMaterial| {
+            compute_fingerprint(FingerprintInput {
+                project_id: "demo",
+                profile_id: "default",
+                root,
+                layout: Layout::Auto,
+                main_pane_ratio: 50,
+                window_name: "agents",
+                default_shell: "/bin/sh",
+                remain_on_exit: crate::config::RemainOnExit::Failed,
+                agents: std::slice::from_ref(material),
+            })
+        };
+
+        assert_eq!(
+            fingerprint(&material_defaults),
+            fingerprint(&material_overrides),
+            "send-time and cosmetic fields must not drift the fingerprint"
+        );
+    }
+
     #[cfg(unix)]
     mod symlink_escape_tests {
         use std::os::unix::fs::symlink;
