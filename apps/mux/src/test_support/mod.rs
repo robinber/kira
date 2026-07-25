@@ -40,9 +40,9 @@ pub(crate) struct FakeTmux {
     /// When set, a successful `respawn_pane` marks the pane dead immediately
     /// so post-launch health checks observe an instant exit.
     respawn_exits_immediately: AtomicBool,
-    /// Next `attach_session` / `switch_client` fails with a generic status
-    /// while the session remains present (hard attach error, not
-    /// `SessionAbsent`).
+    /// One-shot: next `attach_session` / `switch_client` fails with a generic
+    /// status while the session remains present (hard attach error, not
+    /// `SessionAbsent`). Consumed on use.
     fail_attach: AtomicBool,
     /// Next attach/switch removes the session then fails with a status-only
     /// error, simulating an interactive race → lifecycle maps to
@@ -268,24 +268,24 @@ impl FakeTmux {
         }
     }
 
-    /// Shared attach/switch path: optional vanish race, missing session, or
-    /// generic status failure while the session still exists.
+    /// Shared attach/switch path. Matches real interactive clients: failures
+    /// are status-only (no typed `TmuxError`). Lifecycle re-checks existence
+    /// afterward to mint `SessionAbsent` when the session is gone.
     fn attach_or_switch(&self, session_name: &str) -> Result<()> {
         if self.no_server.load(Ordering::Relaxed) {
-            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+            bail!("tmux command failed with status 1");
         }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         if self.vanish_before_attach.swap(false, Ordering::Relaxed) {
             sessions.remove(session_name);
-            // Status-only interactive failure (no typed stderr), matching real
-            // attach/switch — lifecycle re-checks existence afterward.
             bail!("tmux command failed with status 1");
         }
-        if !sessions.contains_key(session_name) {
-            return Err(TmuxError::MissingSession(session_name.to_string()).into());
-        }
+        let present = sessions.contains_key(session_name);
         drop(sessions);
-        if self.fail_attach.load(Ordering::Relaxed) {
+        if !present {
+            bail!("tmux command failed with status 1");
+        }
+        if self.fail_attach.swap(false, Ordering::Relaxed) {
             bail!("tmux command failed with status 1");
         }
         Ok(())
@@ -296,7 +296,7 @@ impl FakeTmux {
             .store(exits, Ordering::Relaxed);
     }
 
-    /// Next attach/switch fails while the session still exists.
+    /// One-shot: next attach/switch fails while the session still exists.
     pub(crate) fn set_fail_attach(&self, fail: bool) {
         self.fail_attach.store(fail, Ordering::Relaxed);
     }
@@ -780,6 +780,9 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn set_pane_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         let Some(pane) = Self::find_pane_mut(&mut sessions, target) else {
             return Err(TmuxError::MissingTarget(target.to_string()).into());
@@ -789,6 +792,9 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn get_pane_option(&self, target: &str, name: &str) -> Result<Option<String>> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         let Some(pane) = Self::find_pane(&sessions, target) else {
             return Err(TmuxError::MissingTarget(target.to_string()).into());
@@ -1060,15 +1066,35 @@ mod tests {
     }
 
     #[test]
-    fn attach_session_missing_returns_missing_session() {
+    fn attach_session_missing_is_status_only_not_typed() {
         let fake = FakeTmux::new();
         let error = fake
             .attach_session("gone")
-            .err_or_panic("attach_session_missing_returns_missing_session: expected Err");
-        assert!(matches!(
-            error.downcast_ref::<TmuxError>(),
-            Some(TmuxError::MissingSession(_))
-        ));
+            .err_or_panic("attach_session_missing_is_status_only_not_typed: expected Err");
+        // Real interactive attach inherits stderr and only reports a status;
+        // typed MissingSession/NoServer would overstate the transport contract.
+        assert!(
+            error.downcast_ref::<TmuxError>().is_none(),
+            "interactive attach must stay status-only, got typed: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("tmux command failed with status"),
+            "expected status-only message, got: {error}"
+        );
+    }
+
+    #[test]
+    fn switch_client_missing_is_status_only_not_typed() {
+        let fake = FakeTmux::new();
+        let error = fake
+            .switch_client("gone")
+            .err_or_panic("switch_client_missing_is_status_only_not_typed: expected Err");
+        assert!(
+            error.downcast_ref::<TmuxError>().is_none(),
+            "interactive switch must stay status-only, got typed: {error}"
+        );
     }
 
     #[test]
@@ -1093,6 +1119,52 @@ mod tests {
         assert!(matches!(
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::MissingSession(_))
+        ));
+    }
+
+    #[test]
+    fn set_pane_option_no_server_returns_no_server() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.set_no_server(true);
+
+        let error = fake
+            .set_pane_option("%0", "@k", "v")
+            .err_or_panic("set_pane_option_no_server_returns_no_server: expected Err");
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::NoServer(_))
+        ));
+    }
+
+    #[test]
+    fn get_pane_option_no_server_returns_no_server() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.set_no_server(true);
+
+        let error = fake
+            .get_pane_option("%0", "@k")
+            .err_or_panic("get_pane_option_no_server_returns_no_server: expected Err");
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::NoServer(_))
+        ));
+    }
+
+    #[test]
+    fn set_pane_option_missing_returns_missing_target() {
+        let fake = FakeTmux::new();
+        let error = fake
+            .set_pane_option("%99", "@k", "v")
+            .err_or_panic("set_pane_option_missing_returns_missing_target: expected Err");
+        assert!(matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingTarget(_))
         ));
     }
 }
