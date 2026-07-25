@@ -65,17 +65,31 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             prompt,
             profile,
             no_template,
+            clear,
             wait,
             lines,
-        } => agent_cmds::cmd_send(
-            &project,
-            profile.as_deref(),
-            &agent_id,
-            &prompt,
-            no_template,
-            wait,
-            lines,
-        ),
+        } => {
+            // `--clear` is sugar for a literal `/clear` with no template wrap.
+            let (prompt, no_template) = if clear {
+                (agent_cmds::CLEAR_PROMPT.to_string(), true)
+            } else {
+                (
+                    prompt.ok_or_else(|| {
+                        anyhow::anyhow!("internal error: send requires PROMPT unless --clear")
+                    })?,
+                    no_template,
+                )
+            };
+            agent_cmds::cmd_send(
+                &project,
+                profile.as_deref(),
+                &agent_id,
+                &prompt,
+                no_template,
+                wait,
+                lines,
+            )
+        }
         CommandKind::Capture {
             project,
             agent_id,

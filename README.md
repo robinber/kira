@@ -57,6 +57,9 @@ kira-mux open example
 kira-mux send example assistant "review the auth module"
 kira-mux capture example assistant --lines 80
 
+# Deliver /clear to an agent UI that supports it (no prompt template):
+kira-mux send --clear example assistant
+
 # Agent-to-agent dispatch: block until the reply settles, print it on stdout.
 kira-mux send example assistant "review the auth module" --wait
 kira-mux status example
@@ -289,6 +292,8 @@ refuses **dead** panes; it will happily paste into a setup UI.
 2. In the attached pane, accept prompts until the normal chat/input is ready.
 3. Detach (`Ctrl-b d`).
 4. `kira-mux send <project> <agent> "…"` — task text goes to the agent, not setup.
+   Use `send --clear <project> <agent>` to deliver a literal `/clear` (no
+   prompt template) when you want a fresh agent context from the CLI.
 5. Read the reply with `kira-mux capture …`, or use `send … --wait` to block
    until the pane settles and print the capture on stdout (agent-to-agent).
 
