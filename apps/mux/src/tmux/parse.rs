@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_alive_pane() {
-        let pane = parse_pane_line("%5|0|").or_panic();
+        let pane = parse_pane_line("%5|0|").or_panic("parse_pane_line_parses_alive_pane");
 
         assert_eq!(pane.pane_id, "%5");
         assert!(!pane.pane_dead);
@@ -130,7 +130,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_exit_code() {
-        let pane = parse_pane_line("%5|1|137").or_panic();
+        let pane =
+            parse_pane_line("%5|1|137").or_panic("parse_pane_line_parses_dead_pane_with_exit_code");
 
         assert_eq!(pane.pane_id, "%5");
         assert!(pane.pane_dead);
@@ -139,7 +140,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_empty_status() {
-        let pane = parse_pane_line("%5|1|").or_panic();
+        let pane =
+            parse_pane_line("%5|1|").or_panic("parse_pane_line_parses_dead_pane_with_empty_status");
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -147,7 +149,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_ignores_non_numeric_dead_status() {
-        let pane = parse_pane_line("%5|1|not-a-number").or_panic();
+        let pane = parse_pane_line("%5|1|not-a-number")
+            .or_panic("parse_pane_line_ignores_non_numeric_dead_status");
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -155,7 +158,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_preserves_empty_pane_id_field() {
-        let pane = parse_pane_line("|0|").or_panic();
+        let pane = parse_pane_line("|0|").or_panic("parse_pane_line_preserves_empty_pane_id_field");
 
         assert_eq!(pane.pane_id, "");
         assert!(!pane.pane_dead);
@@ -163,14 +166,16 @@ mod tests {
 
     #[test]
     fn parse_pane_line_rejects_missing_pane_dead_field() {
-        let error = parse_pane_line("%5").err_or_panic();
+        let error = parse_pane_line("%5")
+            .err_or_panic("parse_pane_line_rejects_missing_pane_dead_field: expected Err");
 
         assert_eq!(error.to_string(), "missing pane_dead");
     }
 
     #[test]
     fn parse_pane_line_treats_status_remainder_as_opaque() {
-        let pane = parse_pane_line("%5|1|137|extra").or_panic();
+        let pane = parse_pane_line("%5|1|137|extra")
+            .or_panic("parse_pane_line_treats_status_remainder_as_opaque");
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -262,7 +267,9 @@ mod tests {
     #[test]
     fn map_spawn_error_maps_not_found_to_missing_dependency() {
         let error = map_spawn_error(io::Error::from(io::ErrorKind::NotFound), "tmux_bin");
-        let error = error.downcast_ref::<KiraMuxError>().or_panic();
+        let error = error
+            .downcast_ref::<KiraMuxError>()
+            .or_panic("map_spawn_error_maps_not_found_to_missing_dependency");
 
         assert!(matches!(
             error,
@@ -277,7 +284,10 @@ mod tests {
 
         assert_eq!(error.to_string(), "failed to run tmux command via tmux_bin");
         assert_eq!(
-            error.downcast_ref::<io::Error>().or_panic().kind(),
+            error
+                .downcast_ref::<io::Error>()
+                .or_panic("map_spawn_error_wraps_other_io_errors_with_context")
+                .kind(),
             io::ErrorKind::PermissionDenied
         );
     }

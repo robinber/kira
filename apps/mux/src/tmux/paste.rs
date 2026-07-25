@@ -64,17 +64,18 @@ mod tests {
         fake.add_window("s", "w");
         fake.add_pane("s", "w", "%0", false);
 
-        paste_then_submit_text(&fake, "%0", "hello").or_panic();
+        paste_then_submit_text(&fake, "%0", "hello")
+            .or_panic("paste_then_submit_records_paste_then_enter");
 
         let ops = fake.ops();
         let paste_idx = ops
             .iter()
             .position(|op| matches!(op, FakeOp::PasteText { text, .. } if text == "hello"))
-            .or_panic();
+            .or_panic("paste_then_submit_records_paste_then_enter");
         let enter_idx = ops
             .iter()
             .position(|op| matches!(op, FakeOp::SendKeys { keys, .. } if keys == &vec!["Enter".to_string()]))
-            .or_panic();
+            .or_panic("paste_then_submit_records_paste_then_enter");
         assert!(
             paste_idx < enter_idx,
             "paste must precede enter (paste={paste_idx}, enter={enter_idx})"
@@ -85,7 +86,8 @@ mod tests {
     fn paste_then_submit_proceeds_when_capture_pane_fails() {
         let fake = FakeTmux::new();
 
-        paste_then_submit_text(&fake, "%0", "hello").or_panic();
+        paste_then_submit_text(&fake, "%0", "hello")
+            .or_panic("paste_then_submit_proceeds_when_capture_pane_fails");
 
         let ops = fake.ops();
         assert!(
@@ -103,7 +105,8 @@ mod tests {
     fn paste_then_submit_with_empty_text_skips_paste_but_sends_enter() {
         let fake = FakeTmux::new();
 
-        paste_then_submit_text(&fake, "%0", "").or_panic();
+        paste_then_submit_text(&fake, "%0", "")
+            .or_panic("paste_then_submit_with_empty_text_skips_paste_but_sends_enter");
 
         let ops = fake.ops();
         assert!(

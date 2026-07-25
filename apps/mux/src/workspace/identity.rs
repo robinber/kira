@@ -53,8 +53,14 @@ mod tests {
 
         // Only the trailing 8-char hash segment can differ: prefix, id and
         // profile are identical across the two projects.
-        let suffix_a = name_a.rsplit('-').next().or_panic();
-        let suffix_b = name_b.rsplit('-').next().or_panic();
+        let suffix_a = name_a
+            .rsplit('-')
+            .next()
+            .or_panic("session_name_hash_suffix_differs_for_different_roots");
+        let suffix_b = name_b
+            .rsplit('-')
+            .next()
+            .or_panic("session_name_hash_suffix_differs_for_different_roots");
         assert_eq!(suffix_a.len(), 8);
         assert_eq!(suffix_b.len(), 8);
         assert_ne!(suffix_a, suffix_b);

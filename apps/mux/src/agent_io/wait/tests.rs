@@ -56,7 +56,8 @@ fn wait_returns_final_capture_once_pane_stabilizes_after_activity() {
     );
 
     let options = fast_options();
-    let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("wait_returns_final_capture_once_pane_stabilizes_after_activity");
 
     assert_eq!(output, "prompt echo\nthinking...\nanswer: 42");
     assert!(
@@ -73,7 +74,8 @@ fn wait_times_out_when_pane_never_changes() {
     // Quiet from the start: no submission echo or response activity.
     fake.set_pane_content("%0", "ready");
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("wait_times_out_when_pane_never_changes: expected Err");
 
     assert!(
         matches!(
@@ -94,7 +96,8 @@ fn wait_times_out_while_pane_keeps_changing() {
     let frame_refs: Vec<&str> = frames.iter().map(String::as_str).collect();
     fake.queue_pane_contents("%0", &frame_refs);
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("wait_times_out_while_pane_keeps_changing: expected Err");
 
     assert!(
         matches!(
@@ -111,7 +114,8 @@ fn wait_fails_fast_on_pane_dead_at_start() {
     let project = crate::test_support::test_project();
     crate::test_support::setup_session_with_dead_panes(&fake, &project, &[0]);
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("wait_fails_fast_on_pane_dead_at_start: expected Err");
 
     assert!(
         matches!(
@@ -137,7 +141,8 @@ fn wait_fails_when_pane_dies_mid_wait() {
         ..fast_options()
     };
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .err_or_panic("wait_fails_when_pane_dies_mid_wait: expected Err");
 
     assert!(
         matches!(
@@ -164,7 +169,8 @@ fn wait_fails_when_pane_vanishes_mid_wait() {
         ..fast_options()
     };
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &options).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .err_or_panic("wait_fails_when_pane_vanishes_mid_wait: expected Err");
 
     assert!(
         matches!(
@@ -194,7 +200,8 @@ fn wait_on_pane_skips_resolve_and_uses_given_pane_id() {
         pre_submit: "ready".to_string(),
         capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
     };
-    let output = wait_on_pane(&fake, "alpha", &seed, &fast_options()).or_panic();
+    let output = wait_on_pane(&fake, "alpha", &seed, &fast_options())
+        .or_panic("wait_on_pane_skips_resolve_and_uses_given_pane_id");
     assert_eq!(output, "prompt echo\nreply");
 }
 
@@ -210,7 +217,8 @@ fn delayed_answer_after_prompt_echo_is_not_returned_early() {
     frames.push("prompt echo\nanswer after silent thinking");
     fake.queue_pane_contents("%0", &frames);
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .or_panic("delayed_answer_after_prompt_echo_is_not_returned_early");
 
     assert_eq!(output, "prompt echo\nanswer after silent thinking");
 }
@@ -223,7 +231,8 @@ fn one_frame_response_waits_for_the_submission_only_window() {
     fake.queue_pane_contents("%0", &["prompt echo\nanswer: 42"]);
     let options = fast_options();
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("one_frame_response_waits_for_the_submission_only_window");
 
     assert_eq!(output, "prompt echo\nanswer: 42");
     // A pane that never changes again after the submission
@@ -247,7 +256,8 @@ fn prompt_rendered_after_submission_timeout_still_uses_submission_only_window() 
     fake.queue_pane_contents("%0", &frames);
     let options = fast_options();
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("prompt_rendered_after_submission_timeout_still_uses_submission_only_window");
 
     assert_eq!(output, "prompt echo");
     assert!(
@@ -281,7 +291,8 @@ fn placeholder_submission_uses_generic_stability_fallback() {
         ..fast_options()
     };
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &options).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("placeholder_submission_uses_generic_stability_fallback");
 
     assert_eq!(output, "[Pasted text #1]\nanswer");
 }
@@ -296,7 +307,8 @@ fn swallowed_prompt_reverting_to_pre_submit_times_out() {
     // require durability instead of reporting the idle pane as success.
     fake.queue_pane_contents("%0", &["prompt echo", "ready"]);
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("swallowed_prompt_reverting_to_pre_submit_times_out: expected Err");
 
     assert!(
         matches!(
@@ -324,7 +336,8 @@ fn cyclic_spinner_keeps_resetting_settling() {
     frames.push("prompt echo\nanswer complete");
     fake.queue_pane_contents("%0", &frames);
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .or_panic("cyclic_spinner_keeps_resetting_settling");
 
     assert_eq!(output, "prompt echo\nanswer complete");
 }
@@ -341,7 +354,8 @@ fn unique_late_redraw_cancels_confirmation() {
     frames.push(redraw);
     fake.queue_pane_contents("%0", &frames);
 
-    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).or_panic();
+    let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .or_panic("unique_late_redraw_cancels_confirmation");
 
     assert_eq!(output, redraw);
 }
@@ -413,7 +427,7 @@ fn capture_between_liveness_checks_maps_vanished_pane_to_died() {
         "%99",
         super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
     )
-    .err_or_panic();
+    .err_or_panic("capture_between_liveness_checks_maps_vanished_pane_to_died: expected Err");
 
     assert!(
         matches!(
@@ -435,7 +449,8 @@ fn wait_fails_when_server_stops_mid_wait() {
     // the send-side `is_target_unavailable` mapping.
     fake.set_server_stops_after_captures(2);
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("wait_fails_when_server_stops_mid_wait: expected Err");
 
     assert!(
         matches!(
@@ -451,7 +466,8 @@ fn wait_absent_session_fails() {
     let fake = crate::test_support::FakeTmux::new();
     let project = crate::test_support::test_project();
 
-    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options()).err_or_panic();
+    let err = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("wait_absent_session_fails: expected Err");
 
     assert!(matches!(
         err.downcast_ref::<KiraMuxError>(),

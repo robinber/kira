@@ -220,7 +220,7 @@ mod tests {
 
     impl SharedLogBuffer {
         fn contents(&self) -> String {
-            String::from_utf8(self.0.lock().or_panic().clone()).or_panic()
+            String::from_utf8(self.0.lock().or_panic("contents").clone()).or_panic("contents")
         }
     }
 
@@ -236,7 +236,7 @@ mod tests {
 
     impl io::Write for SharedLogWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().or_panic().extend_from_slice(buf);
+            self.0.lock().or_panic("write").extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -273,7 +273,8 @@ mod tests {
         let project = minimal_project();
         let agent = &project.agents[0];
 
-        super::launch_agent(&fake, "%0", &project, agent).or_panic();
+        super::launch_agent(&fake, "%0", &project, agent)
+            .or_panic("launch_agent_respawns_with_command_and_args");
 
         let ops = fake.ops();
         let Some(FakeOp::RespawnPane { command, .. }) = ops
@@ -302,7 +303,8 @@ mod tests {
         let project = minimal_project();
         let agent = &project.agents[0];
 
-        let error = super::launch_agent(&fake, "%0", &project, agent).err_or_panic();
+        let error = super::launch_agent(&fake, "%0", &project, agent)
+            .err_or_panic("launch_agent_fails_when_process_exits_immediately: expected Err");
         assert!(
             error
                 .to_string()
@@ -328,7 +330,11 @@ mod tests {
             guard.mark_failed("simulated topology failure");
         });
 
-        assert!(!fake.session_exists("kira-test").or_panic());
+        assert!(
+            !fake
+                .session_exists("kira-test")
+                .or_panic("topology_guard_logs_failure_reason_on_rollback")
+        );
 
         let output = logs.contents();
         assert!(output.contains("ERROR"));

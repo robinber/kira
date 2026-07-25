@@ -613,7 +613,8 @@ mod tests {
 
     #[test]
     fn parse_workspace_pane_line_reads_full_metadata() {
-        let (pane, role) = parse_workspace_pane_line("%5\t1\t137\talpha\tagents").or_panic();
+        let (pane, role) = parse_workspace_pane_line("%5\t1\t137\talpha\tagents")
+            .or_panic("parse_workspace_pane_line_reads_full_metadata");
 
         assert_eq!(pane.pane.pane_id, "%5");
         assert!(pane.pane.pane_dead);
@@ -624,7 +625,8 @@ mod tests {
 
     #[test]
     fn parse_workspace_pane_line_maps_empty_options_to_none() {
-        let (pane, role) = parse_workspace_pane_line("%5\t0\t\t\t").or_panic();
+        let (pane, role) = parse_workspace_pane_line("%5\t0\t\t\t")
+            .or_panic("parse_workspace_pane_line_maps_empty_options_to_none");
 
         assert!(!pane.pane.pane_dead);
         assert_eq!(pane.pane.pane_dead_status, None);
@@ -639,16 +641,21 @@ mod tests {
 
             let snapshot = client
                 .workspace_snapshot("session", "agents")
-                .or_panic()
-                .or_panic();
+                .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count")
+                .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count");
 
             assert_eq!(
-                snapshot.window.or_panic().panes.len(),
+                snapshot
+                    .window
+                    .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count")
+                    .panes
+                    .len(),
                 pane_count,
                 "unexpected pane count for script under {}",
                 temp.path().display()
             );
-            let calls = fs::read_to_string(&log_path).or_panic();
+            let calls = fs::read_to_string(&log_path)
+                .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count");
             assert_eq!(
                 calls.lines().count(),
                 3,
@@ -664,8 +671,8 @@ mod tests {
 
         let snapshot = client
             .workspace_snapshot("session", "agents")
-            .or_panic()
-            .or_panic();
+            .or_panic("workspace_snapshot_reports_a_missing_window")
+            .or_panic("workspace_snapshot_reports_a_missing_window");
 
         assert_eq!(snapshot.window, None);
     }
@@ -675,7 +682,9 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("can't find session: session");
 
-        let snapshot = client.workspace_snapshot("session", "agents").or_panic();
+        let snapshot = client
+            .workspace_snapshot("session", "agents")
+            .or_panic("workspace_snapshot_treats_a_vanished_session_as_absent");
 
         assert_eq!(snapshot, None);
     }
@@ -685,7 +694,9 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");
 
-        let snapshot = client.workspace_snapshot("session", "agents").or_panic();
+        let snapshot = client
+            .workspace_snapshot("session", "agents")
+            .or_panic("workspace_snapshot_treats_a_stopped_server_as_absent");
 
         assert_eq!(snapshot, None);
     }
@@ -697,9 +708,9 @@ mod tests {
         const MSG: &str = "kira-test-generic-list-panes-failure";
         let (_temp, client, _log_path) = scripted_tmux_with_list_failure(MSG);
 
-        let error = client
-            .workspace_snapshot("session", "agents")
-            .err_or_panic();
+        let error = client.workspace_snapshot("session", "agents").err_or_panic(
+            "workspace_snapshot_propagates_a_generic_list_panes_failure: expected Err",
+        );
 
         match error.downcast_ref::<TmuxError>() {
             Some(TmuxError::CommandFailure(message)) if message == MSG => {}
@@ -714,13 +725,14 @@ mod tests {
 
         let error = client
             .workspace_snapshot("session", "agents")
-            .err_or_panic();
+            .err_or_panic("workspace_snapshot_propagates_a_display_message_failure: expected Err");
 
         assert!(matches!(
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::CommandFailure(message)) if message == "display failed"
         ));
-        let calls = fs::read_to_string(&log_path).or_panic();
+        let calls = fs::read_to_string(&log_path)
+            .or_panic("workspace_snapshot_propagates_a_display_message_failure");
         assert_eq!(
             calls.lines().count(),
             2,
@@ -773,7 +785,8 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");
 
-        let error = list_panes_after_publish(&client, "%0").err_or_panic();
+        let error = list_panes_after_publish(&client, "%0")
+            .err_or_panic("list_panes_maps_no_server_through_shared_classifier: expected Err");
         assert!(
             matches!(
                 error.downcast_ref::<TmuxError>(),
@@ -788,7 +801,8 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("can't find window: agents");
 
-        let error = list_panes_after_publish(&client, "s:agents").err_or_panic();
+        let error = list_panes_after_publish(&client, "s:agents")
+            .err_or_panic("list_panes_maps_missing_target_through_shared_classifier: expected Err");
         assert!(matches!(
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::MissingTarget(_))
@@ -832,7 +846,7 @@ mod tests {
         display_action: &str,
         list_action: &str,
     ) -> (tempfile::TempDir, TmuxClient, PathBuf) {
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir().or_panic("scripted_tmux_with_actions");
         let script_path = temp.path().join("tmux");
         let pending_script_path = temp.path().join("tmux.pending");
         let log_path = temp.path().join("calls.log");
@@ -840,16 +854,19 @@ mod tests {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  has-session) exit 0 ;;\n  display-message)\n{display_action}\n    ;;\n  list-panes)\n{list_action}\n    ;;\nesac\n",
             log_path.display()
         );
-        fs::write(&pending_script_path, script).or_panic();
-        let mut permissions = fs::metadata(&pending_script_path).or_panic().permissions();
+        fs::write(&pending_script_path, script).or_panic("scripted_tmux_with_actions");
+        let mut permissions = fs::metadata(&pending_script_path)
+            .or_panic("scripted_tmux_with_actions")
+            .permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&pending_script_path, permissions).or_panic();
+        fs::set_permissions(&pending_script_path, permissions)
+            .or_panic("scripted_tmux_with_actions");
         // Publish the executable only after its writer is closed. This avoids
         // transient ETXTBSY failures on Linux runners when tests start it.
-        fs::rename(&pending_script_path, &script_path).or_panic();
+        fs::rename(&pending_script_path, &script_path).or_panic("scripted_tmux_with_actions");
         // Durably settle the rename before concurrent tests spawn the binary.
-        let published = fs::File::open(&script_path).or_panic();
-        published.sync_all().or_panic();
+        let published = fs::File::open(&script_path).or_panic("scripted_tmux_with_actions");
+        published.sync_all().or_panic("scripted_tmux_with_actions");
         drop(published);
         let client = TmuxClient {
             tmux_bin: script_path.display().to_string(),

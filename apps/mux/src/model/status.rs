@@ -315,7 +315,7 @@ mod tests {
         let topology = WorkspaceTopology::Absent;
 
         let output = build_agents_output(&project, &topology);
-        let json = serde_json::to_string(&output).or_panic();
+        let json = serde_json::to_string(&output).or_panic("agents_output_serializes_to_json");
 
         assert!(json.contains("\"project\""));
         assert!(json.contains("\"agents\""));
@@ -438,7 +438,8 @@ mod tests {
             command: Some("claude --model claude-opus-4-6".to_string()),
             pane_id: Some("%0".to_string()),
         };
-        let json: serde_json::Value = serde_json::to_value(&status).or_panic();
+        let json: serde_json::Value =
+            serde_json::to_value(&status).or_panic("agent_status_serializes_extended_fields");
         assert_eq!(json["id"], "opus");
         assert_eq!(json["state"], "running");
         assert_eq!(json["label"], "Claude Opus 4.6");
@@ -455,7 +456,8 @@ mod tests {
             command: Some("openrouter kimi-k2".to_string()),
             pane_id: None,
         };
-        let json: serde_json::Value = serde_json::to_value(&status).or_panic();
+        let json: serde_json::Value =
+            serde_json::to_value(&status).or_panic("agent_status_serializes_missing_agent");
         assert_eq!(json["state"], "missing_pane");
         assert!(json["pane_id"].is_null());
     }

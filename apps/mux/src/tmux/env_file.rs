@@ -187,13 +187,16 @@ mod tests {
     #[test]
     fn env_file_wrapper_argv_never_contains_resolved_secret_values() {
         let secret = "super-secret-token";
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir()
+            .or_panic("env_file_wrapper_argv_never_contains_resolved_secret_values");
         let env_file = ShellEnvFile::create_in(
             &[("KIRA_TEST_TOKEN".to_string(), secret.to_string())],
             temp.path(),
         )
-        .or_panic();
-        let env_file_path = env_file.path_arg().or_panic();
+        .or_panic("env_file_wrapper_argv_never_contains_resolved_secret_values");
+        let env_file_path = env_file
+            .path_arg()
+            .or_panic("env_file_wrapper_argv_never_contains_resolved_secret_values");
         let args = wrap_command_with_env_file(
             &env_file_path,
             &[
@@ -209,7 +212,7 @@ mod tests {
         );
         assert!(
             fs::read_to_string(&env_file.path)
-                .or_panic()
+                .or_panic("env_file_wrapper_argv_never_contains_resolved_secret_values")
                 .contains(secret),
             "env file should carry the secret for the pane wrapper"
         );
@@ -218,13 +221,16 @@ mod tests {
     #[test]
     fn respawn_pane_argv_uses_env_file_path_without_env_flags_or_values() {
         let secret = "super-secret-token";
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir()
+            .or_panic("respawn_pane_argv_uses_env_file_path_without_env_flags_or_values");
         let env_file = ShellEnvFile::create_in(
             &[("KIRA_TEST_TOKEN".to_string(), secret.to_string())],
             temp.path(),
         )
-        .or_panic();
-        let env_file_path = env_file.path_arg().or_panic();
+        .or_panic("respawn_pane_argv_uses_env_file_path_without_env_flags_or_values");
+        let env_file_path = env_file
+            .path_arg()
+            .or_panic("respawn_pane_argv_uses_env_file_path_without_env_flags_or_values");
         let args = respawn_pane_args(
             "%0",
             "/tmp/project",
@@ -244,25 +250,26 @@ mod tests {
 
     #[test]
     fn env_file_uses_owner_only_permissions() {
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir().or_panic("env_file_uses_owner_only_permissions");
         let env_file = ShellEnvFile::create_in(
             &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
             temp.path(),
         )
-        .or_panic();
-        let metadata = fs::metadata(&env_file.path).or_panic();
+        .or_panic("env_file_uses_owner_only_permissions");
+        let metadata =
+            fs::metadata(&env_file.path).or_panic("env_file_uses_owner_only_permissions");
 
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
     fn env_file_removed_on_drop_unless_defused() {
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir().or_panic("env_file_removed_on_drop_unless_defused");
         let env_file = ShellEnvFile::create_in(
             &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
             temp.path(),
         )
-        .or_panic();
+        .or_panic("env_file_removed_on_drop_unless_defused");
         let path = env_file.path.clone();
         assert!(path.exists());
 
@@ -272,12 +279,12 @@ mod tests {
 
     #[test]
     fn defused_env_file_survives_drop() {
-        let temp = tempfile::tempdir().or_panic();
+        let temp = tempfile::tempdir().or_panic("defused_env_file_survives_drop");
         let mut env_file = ShellEnvFile::create_in(
             &[("KIRA_TEST_TOKEN".to_string(), "value".to_string())],
             temp.path(),
         )
-        .or_panic();
+        .or_panic("defused_env_file_survives_drop");
         let path = env_file.path.clone();
         env_file.defuse();
 
