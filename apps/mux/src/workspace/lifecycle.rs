@@ -149,6 +149,10 @@ fn create(
             project.remain_on_exit.as_str(),
         )?;
 
+        // Interim even-vertical after each split stabilises pane-id assignment
+        // so the following set_pane_option(PANE_AGENT_ID) lands on the pane just
+        // created. apply_layout below only runs once all panes exist; removing
+        // the interim select_layout can reorder panes and break agent mapping.
         let existing = tmux.list_panes(&window_target)?.len();
         for _ in existing..project.agents.len() {
             tmux.split_window(&window_target, &root)?;

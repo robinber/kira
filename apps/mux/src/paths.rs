@@ -55,6 +55,14 @@ fn xdg_home(var_name: &str, fallback_suffix: &str) -> Result<PathBuf> {
             if path.is_absolute() {
                 Ok(path)
             } else {
+                // XDG Base Directory leaves a non-absolute value
+                // implementation-defined; fall back to $HOME/<suffix>.
+                tracing::debug!(
+                    var = var_name,
+                    value = %path.display(),
+                    fallback = %fallback_suffix,
+                    "ignoring non-absolute XDG path; using home-relative fallback"
+                );
                 Ok(home_dir()?.join(fallback_suffix))
             }
         }
