@@ -16,7 +16,7 @@ doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 deny:
-    cargo deny check advisories licenses sources
+    cargo deny check advisories licenses sources bans
 
 check: fmt-check clippy test doc deny
 

@@ -50,7 +50,7 @@ impl FromStr for ProjectTarget {
 fn parse_wait_capture_lines(raw: &str) -> Result<usize, String> {
     let lines: usize = raw
         .parse()
-        .map_err(|error| format!("invalid digit found in string: {error}"))?;
+        .map_err(|error: std::num::ParseIntError| error.to_string())?;
     if lines == 0 {
         return Err("must be at least 1 (zero empties every pane capture)".to_string());
     }

@@ -1,3 +1,5 @@
+//! Human-readable and JSON stdout formatting for CLI commands.
+
 use anyhow::Result;
 use serde::Serialize;
 

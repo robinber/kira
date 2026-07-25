@@ -1,3 +1,5 @@
+//! Serde shapes for global and project configuration files.
+
 use std::collections::BTreeMap;
 
 use serde::Deserialize;

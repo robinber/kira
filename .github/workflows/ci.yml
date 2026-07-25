@@ -55,7 +55,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           arguments: ""
-          command-arguments: "advisories licenses sources"
+          command-arguments: "advisories licenses sources bans"
 
   test:
     name: Unit tests
