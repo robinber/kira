@@ -572,7 +572,7 @@ mod tests {
         parse_display_message_line, parse_workspace_pane_line,
     };
     use crate::test_support::{TestOptionExt, TestResultExt};
-    use crate::tmux::{TmuxAdapter, TmuxError};
+    use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 
     fn failed_output(stderr: &str) -> Output {
         Output {
@@ -773,7 +773,7 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");
 
-        let error = client.list_panes("%0").err_or_panic();
+        let error = list_panes_after_publish(&client, "%0").err_or_panic();
         assert!(
             matches!(
                 error.downcast_ref::<TmuxError>(),
@@ -788,7 +788,7 @@ mod tests {
         let (_temp, client, _log_path) =
             scripted_tmux_with_list_failure("can't find window: agents");
 
-        let error = client.list_panes("s:agents").err_or_panic();
+        let error = list_panes_after_publish(&client, "s:agents").err_or_panic();
         assert!(matches!(
             error.downcast_ref::<TmuxError>(),
             Some(TmuxError::MissingTarget(_))
@@ -847,10 +847,37 @@ mod tests {
         // Publish the executable only after its writer is closed. This avoids
         // transient ETXTBSY failures on Linux runners when tests start it.
         fs::rename(&pending_script_path, &script_path).or_panic();
+        // Durably settle the rename before concurrent tests spawn the binary.
+        let published = fs::File::open(&script_path).or_panic();
+        published.sync_all().or_panic();
+        drop(published);
         let client = TmuxClient {
             tmux_bin: script_path.display().to_string(),
             socket_name: None,
         };
         (temp, client, log_path)
+    }
+
+    /// Retry a few times when the kernel still reports ETXTBSY after publish.
+    fn list_panes_after_publish(
+        client: &TmuxClient,
+        target: &str,
+    ) -> anyhow::Result<Vec<PaneInfo>> {
+        let mut last_error = None;
+        for attempt in 0..8 {
+            match client.list_panes(target) {
+                Ok(panes) => return Ok(panes),
+                Err(error) => {
+                    let spawn_race = error.to_string().contains("failed to run tmux command");
+                    if spawn_race && attempt + 1 < 8 {
+                        last_error = Some(error);
+                        std::thread::sleep(std::time::Duration::from_millis(5 * (attempt + 1)));
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("list_panes retries exhausted")))
     }
 }
