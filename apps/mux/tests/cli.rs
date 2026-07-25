@@ -985,6 +985,80 @@ fn send_wait_survives_prompt_echo_before_delayed_answer() {
 }
 
 #[test]
+fn send_lines_without_wait_is_rejected() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    // Clap rejects this before any project load / tmux work.
+    let rejected = bed.kira(&["send", "it", "alpha", "hello", "--lines", "50"]);
+    assert_eq!(
+        exit_code(&rejected),
+        2,
+        "send --lines without --wait must exit 2, stderr: {:?}",
+        stderr_of(&rejected)
+    );
+    let stderr = stderr_of(&rejected);
+    assert!(
+        stderr.contains("--wait") || stderr.contains("wait"),
+        "error should mention --wait dependency, got: {stderr:?}"
+    );
+}
+
+#[test]
+fn send_wait_zero_lines_is_rejected() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+    // Zero would empty every capture and stall wait until the hard timeout.
+    let rejected = bed.kira(&["send", "it", "alpha", "hello", "--wait", "--lines", "0"]);
+    assert_eq!(
+        exit_code(&rejected),
+        2,
+        "send --wait --lines 0 must exit 2 before project/tmux work, stderr: {:?}",
+        stderr_of(&rejected)
+    );
+    let stderr = stderr_of(&rejected);
+    assert!(
+        stderr.contains("at least 1") || stderr.contains("zero"),
+        "error should reject zero lines, got: {stderr:?}"
+    );
+}
+
+#[test]
+fn send_wait_with_lines_still_captures_full_reply() {
+    let bed = TestBed::new();
+    let script = bed.project_root.path().join("wait-agent-lines");
+    write_file(
+        &script,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 4\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: LINES_OK\\n'\ndone\n",
+    );
+    make_executable(&script);
+    bed.write_project(&format!(
+        "[[agents]]\nid = \"alpha\"\ncommand = \"{}\"\n",
+        script.display()
+    ));
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    let waited = bed.kira_within(
+        Duration::from_mins(2),
+        &[
+            "send",
+            "it",
+            "alpha",
+            "lines probe",
+            "--wait",
+            "--lines",
+            "80",
+        ],
+    );
+    assert_success(&waited, "send --wait --lines");
+    let output = stdout_of(&waited);
+    assert!(
+        output.contains("answer chunk: lines probe") && output.contains("answer final: LINES_OK"),
+        "wait --lines must still capture the full delayed reply, got: {output:?}"
+    );
+}
+
+#[test]
 fn send_keys_agents_receive_hostile_text_verbatim() {
     // A command whose basename is `opencode` selects the send-keys -l
     // delivery path — the layer where unescaped trailing `;`, leading

@@ -82,7 +82,12 @@ pub(super) fn cmd_send(
         return Ok(());
     }
 
+    // Clap rejects zero when `--lines` is set; omitted uses the wait default.
     let capture_lines = lines.unwrap_or(crate::agent_io::DEFAULT_WAIT_CAPTURE_LINES);
+    debug_assert!(
+        capture_lines >= 1,
+        "wait capture window must stay non-empty (got {capture_lines})"
+    );
     let seed = crate::agent_io::send_prompt_for_wait(
         &tmux,
         &project,
