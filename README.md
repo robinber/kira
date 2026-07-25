@@ -57,7 +57,7 @@ kira-mux open example
 kira-mux send example assistant "review the auth module"
 kira-mux capture example assistant --lines 80
 
-# Reset an agent chat UI without typing in the pane:
+# Deliver /clear to an agent UI that supports it (no prompt template):
 kira-mux send --clear example assistant
 
 # Agent-to-agent dispatch: block until the reply settles, print it on stdout.
