@@ -790,6 +790,8 @@ pub(crate) fn test_project() -> ResolvedProject {
                 env: BTreeMap::new(),
                 capabilities: vec![],
                 prompt_template: None,
+                submit: None,
+                text_delivery: None,
             },
             ResolvedAgent {
                 id: "beta".to_string(),
@@ -802,6 +804,8 @@ pub(crate) fn test_project() -> ResolvedProject {
                 env: BTreeMap::new(),
                 capabilities: vec![],
                 prompt_template: None,
+                submit: None,
+                text_delivery: None,
             },
         ],
         fingerprint: "abc123".to_string(),

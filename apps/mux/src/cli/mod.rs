@@ -165,6 +165,11 @@ pub(crate) enum CommandKind {
         /// last capture on stderr.
         #[arg(long)]
         wait: bool,
+        /// History lines captured while waiting (only with `--wait`).
+        ///
+        /// Mirrors `capture --lines`. Default is 200 when omitted.
+        #[arg(long, requires = "wait")]
+        lines: Option<usize>,
     },
     /// Capture recent pane output from a live agent.
     Capture {

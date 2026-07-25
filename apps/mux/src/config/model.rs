@@ -66,6 +66,32 @@ impl AgentMode {
     }
 }
 
+/// How many Enter keys to send after delivering a prompt.
+///
+/// When set on an agent or template, bypasses the basename heuristic lists
+/// in `agent_io::policy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SubmitPolicy {
+    /// One Enter after paste/type.
+    Single,
+    /// Two Enters (second after a short settle) for tools that need confirm.
+    Double,
+}
+
+/// How to deliver multi-line prompt text into a pane.
+///
+/// When set on an agent or template, bypasses the basename heuristic lists
+/// in `agent_io::policy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TextDelivery {
+    /// Bracketed paste via `load-buffer` / `paste-buffer`.
+    Paste,
+    /// Literal keystrokes via `send-keys -l` (needed by some TUIs).
+    SendKeys,
+}
+
 /// Policy for keeping panes open after the child process exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -165,6 +191,12 @@ pub(crate) struct AgentTemplate {
     /// Optional prompt template for send operations.
     #[serde(default)]
     pub prompt_template: Option<String>,
+    /// Optional submit policy override (`single` / `double`).
+    #[serde(default)]
+    pub submit: Option<SubmitPolicy>,
+    /// Optional text delivery override (`paste` / `send-keys`).
+    #[serde(default)]
+    pub text_delivery: Option<TextDelivery>,
 }
 
 /// Internal project shape used before full resolution.
@@ -230,6 +262,12 @@ pub(crate) struct ProjectAgent {
     /// Optional prompt template.
     #[serde(default)]
     pub prompt_template: Option<String>,
+    /// Optional submit policy override (`single` / `double`).
+    #[serde(default)]
+    pub submit: Option<SubmitPolicy>,
+    /// Optional text delivery override (`paste` / `send-keys`).
+    #[serde(default)]
+    pub text_delivery: Option<TextDelivery>,
 }
 
 /// Profile-specific overrides inside a profiled project file.
@@ -330,6 +368,29 @@ pub(crate) fn default_tmux_bin() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_accepts_submit_and_text_delivery_overrides() {
+        let toml = r#"
+id = "demo"
+root = "/tmp/demo"
+
+[[agents]]
+id = "coder"
+command = "my-agent"
+submit = "double"
+text_delivery = "send-keys"
+"#;
+        let Ok(raw) = toml::from_str::<ProjectFileRaw>(toml) else {
+            panic!("valid agent overrides must parse");
+        };
+        let Some(agents) = raw.agents else {
+            panic!("agents list required");
+        };
+        let agent = &agents[0];
+        assert_eq!(agent.submit, Some(SubmitPolicy::Double));
+        assert_eq!(agent.text_delivery, Some(TextDelivery::SendKeys));
+    }
 
     #[test]
     fn project_file_rejects_removed_orchestration_table() {
