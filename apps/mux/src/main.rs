@@ -15,8 +15,9 @@ fn main() -> ExitCode {
     match kira_mux::run() {
         Ok(()) => ExitCode::SUCCESS,
         // Unix pipeline convention: `kira-mux … | head` should not report a
-        // hard failure when the reader closes stdout early.
-        Err(error) if kira_mux::output::is_broken_pipe(&error) => ExitCode::SUCCESS,
+        // hard failure when the reader closes stdout early. Only stdout writes
+        // from `output` mint `StdoutClosed` — tmux stdin EPIPE stays a failure.
+        Err(error) if kira_mux::output::is_stdout_closed(&error) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::debug!("application error: {error:?}");
             // Best-effort: if stderr is also closed, still return the exit code.
