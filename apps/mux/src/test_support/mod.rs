@@ -1,3 +1,12 @@
+//! Shared unit-test fixtures: `FakeTmux`, `test_project`, and panic helpers.
+//!
+//! Prefer context-carrying helpers for failures that should name the operation:
+//! - [`ok`] / [`err`] for `Result` values with `Display` errors
+//! - [`some`] for `Option`
+//!
+//! [`TestResultExt::or_panic`] / [`err_or_panic`] remain for `Debug` errors
+//! (typical `anyhow::Error` paths).
+
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -350,17 +359,38 @@ impl FakeTmux {
         }
     }
 
-    fn with_pane_mut(&self, pane_id: &str, apply: impl FnOnce(&mut FakePane)) {
-        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for session in sessions.values_mut() {
-            for window in session.windows.values_mut() {
-                for pane in &mut window.panes {
-                    if pane.pane_id == pane_id {
-                        apply(pane);
-                        return;
-                    }
+    fn find_pane<'a>(
+        sessions: &'a BTreeMap<String, FakeSession>,
+        pane_id: &str,
+    ) -> Option<&'a FakePane> {
+        for session in sessions.values() {
+            for window in session.windows.values() {
+                if let Some(pane) = window.panes.iter().find(|pane| pane.pane_id == pane_id) {
+                    return Some(pane);
                 }
             }
+        }
+        None
+    }
+
+    fn find_pane_mut<'a>(
+        sessions: &'a mut BTreeMap<String, FakeSession>,
+        pane_id: &str,
+    ) -> Option<&'a mut FakePane> {
+        for session in sessions.values_mut() {
+            for window in session.windows.values_mut() {
+                if let Some(pane) = window.panes.iter_mut().find(|pane| pane.pane_id == pane_id) {
+                    return Some(pane);
+                }
+            }
+        }
+        None
+    }
+
+    fn with_pane_mut(&self, pane_id: &str, apply: impl FnOnce(&mut FakePane)) {
+        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        if let Some(pane) = Self::find_pane_mut(&mut sessions, pane_id) {
+            apply(pane);
         }
     }
 
@@ -406,14 +436,8 @@ impl FakeTmux {
             "{text}\nfake agent accepted the prompt and is streaming a response                  with enough visible output below the pasted text that the pane can                  never be mistaken for a pending input area by any verifier\n"
         );
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for session in sessions.values_mut() {
-            for window in session.windows.values_mut() {
-                for pane in &mut window.panes {
-                    if pane.pane_id == pane_id {
-                        pane.content.push_str(&appended);
-                    }
-                }
-            }
+        if let Some(pane) = Self::find_pane_mut(&mut sessions, pane_id) {
+            pane.content.push_str(&appended);
         }
     }
 }
@@ -645,31 +669,19 @@ impl TmuxAdapter for FakeTmux {
 
     fn set_pane_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for session in sessions.values_mut() {
-            for window in session.windows.values_mut() {
-                for pane in &mut window.panes {
-                    if pane.pane_id == target {
-                        pane.options.insert(name.to_string(), value.to_string());
-                        return Ok(());
-                    }
-                }
-            }
-        }
+        let Some(pane) = Self::find_pane_mut(&mut sessions, target) else {
+            return Err(TmuxError::MissingTarget(target.to_string()).into());
+        };
+        pane.options.insert(name.to_string(), value.to_string());
         Ok(())
     }
 
     fn get_pane_option(&self, target: &str, name: &str) -> Result<Option<String>> {
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for session in sessions.values() {
-            for window in session.windows.values() {
-                for pane in &window.panes {
-                    if pane.pane_id == target {
-                        return Ok(pane.options.get(name).cloned());
-                    }
-                }
-            }
-        }
-        Ok(None)
+        let Some(pane) = Self::find_pane(&sessions, target) else {
+            return Err(TmuxError::MissingTarget(target.to_string()).into());
+        };
+        Ok(pane.options.get(name).cloned())
     }
 
     fn paste_text(&self, target_pane: &str, text: &str) -> Result<()> {

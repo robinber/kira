@@ -75,48 +75,28 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::{AgentMode, Layout, RemainOnExit};
     use crate::inspector::{InspectedWorkspace, ManagedPane, WorkspaceTopology};
     use crate::model::{ResolvedAgent, ResolvedProject};
     use crate::tmux::PaneInfo;
 
     fn make_agent(id: &str, capabilities: Vec<String>) -> ResolvedAgent {
-        ResolvedAgent {
-            id: id.to_string(),
-            label: id.to_string(),
-            mode: AgentMode::Direct,
-            command: Some("echo".to_string()),
-            shell_command: None,
-            args: vec![],
-            cwd: PathBuf::from("/tmp/test"),
-            env: BTreeMap::new(),
-            capabilities,
-            prompt_template: None,
-            submit: None,
-            text_delivery: None,
-        }
+        let mut agent = crate::test_support::test_project().agents.remove(0);
+        agent.id = id.to_string();
+        agent.label = id.to_string();
+        agent.capabilities = capabilities;
+        agent
     }
 
     fn make_project(
         agents: Vec<ResolvedAgent>,
         groups: BTreeMap<String, Vec<String>>,
     ) -> ResolvedProject {
-        ResolvedProject {
-            id: "test".to_string(),
-            profile_id: "default".to_string(),
-            name: "Test".to_string(),
-            root: PathBuf::from("/tmp/test"),
-            layout: Layout::Auto,
-            main_pane_ratio: 50,
-            window_name: "agents".to_string(),
-            session_prefix: "kira".to_string(),
-            default_shell: "/bin/sh".to_string(),
-            remain_on_exit: RemainOnExit::Failed,
-            tmux_bin: "tmux".to_string(),
-            agents,
-            fingerprint: "fp".to_string(),
-            groups,
-        }
+        let mut project = crate::test_support::test_project();
+        project.root = PathBuf::from("/tmp/test");
+        project.fingerprint = "fp".to_string();
+        project.agents = agents;
+        project.groups = groups;
+        project
     }
 
     fn healthy_topology(agents: &[ResolvedAgent]) -> WorkspaceTopology {
