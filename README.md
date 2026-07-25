@@ -200,7 +200,7 @@ Scripts should treat these as stable:
 
 | Code | Meaning |
 |---|---|
-| **0** | Success |
+| **0** | Success (also used when stdout hits a broken pipe, e.g. `… \| head`) |
 | **1** | Untyped / unexpected error (`anyhow` edge) |
 | **2** | Config / validation / unknown agent or group / kill aborted / list has `config_error` rows |
 | **3** | Missing dependency (e.g. tmux binary not found) |
