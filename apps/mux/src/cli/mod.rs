@@ -191,7 +191,9 @@ pub(crate) enum CommandKind {
 
 #[cfg(test)]
 mod tests {
-    use super::ProjectTarget;
+    use clap::Parser;
+
+    use super::{Cli, CommandKind, ProjectTarget};
 
     #[test]
     fn project_target_dot_selects_current_directory() {
@@ -207,5 +209,54 @@ mod tests {
             "demo".parse::<ProjectTarget>(),
             Ok(ProjectTarget::Id("demo".to_string()))
         );
+    }
+
+    #[test]
+    fn send_wait_lines_requires_wait_flag() {
+        let err =
+            match Cli::try_parse_from(["kira-mux", "send", "demo", "alpha", "hi", "--lines", "10"])
+            {
+                Ok(cli) => panic!("expected --lines without --wait to fail, got {cli:?}"),
+                Err(error) => error,
+            };
+        let message = err.to_string();
+        assert!(
+            message.contains("wait") || message.contains("--lines"),
+            "error should mention the wait dependency, got: {message}"
+        );
+    }
+
+    #[test]
+    fn send_wait_accepts_optional_lines() {
+        let cli = match Cli::try_parse_from([
+            "kira-mux", "send", "demo", "alpha", "hi", "--wait", "--lines", "500",
+        ]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("parse failed: {error}"),
+        };
+        match cli.command {
+            CommandKind::Send {
+                wait: true,
+                lines: Some(500),
+                ..
+            } => {}
+            other => panic!("expected send --wait --lines 500, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_wait_defaults_lines_to_none() {
+        let cli = match Cli::try_parse_from(["kira-mux", "send", "demo", "alpha", "hi", "--wait"]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("parse failed: {error}"),
+        };
+        match cli.command {
+            CommandKind::Send {
+                wait: true,
+                lines: None,
+                ..
+            } => {}
+            other => panic!("expected send --wait with lines=None, got {other:?}"),
+        }
     }
 }
