@@ -44,6 +44,7 @@ cargo install --path apps/mux
 **First run**
 
 ```bash
+kira-mux examples   # copy-paste recipes
 kira-mux init
 # edit ~/.config/kira-mux/projects/example.toml
 # set `root` to a real project path and adjust agents
@@ -78,6 +79,7 @@ config.
 | Command | Purpose |
 |---|---|
 | `init` | Write default XDG config |
+| `examples` | Print copy-paste usage recipes (no config or tmux side effects) |
 | `open` | Create or repair the workspace and attach |
 | `start` | Create or repair without attaching |
 | `attach` | Attach to an existing session |

@@ -29,10 +29,34 @@ id = "assistant"
 command = "codex"
 "#;
 
+/// Static copy-paste recipes for `kira-mux examples` (no config / tmux).
+const EXAMPLES: &str = "\
+Set up:     kira-mux init
+            # edit ~/.config/kira-mux/projects/example.toml (set root, agents)
+
+Open:       kira-mux open <project>
+            # finish any first-run agent UI in the pane, then detach (Ctrl-b d)
+
+Work here:  kira-mux status .
+            kira-mux agents list .
+
+Send:       kira-mux send . <agent> \"...\"
+            kira-mux send . <agent> \"...\" --wait
+            kira-mux send --clear . <agent>
+
+Inspect:    kira-mux capture . <agent> --lines 80
+List:       kira-mux list
+Tear down:  kira-mux kill <project> --yes
+
+Details:    kira-mux <command> --help
+Also see:   examples/solo-coder/ in the repository
+";
+
 /// Dispatch a parsed CLI invocation.
 pub(crate) fn run(cli: Cli) -> Result<()> {
     match cli.command {
         CommandKind::Init { force } => init(force),
+        CommandKind::Examples => examples(),
         CommandKind::Open { project, profile } => {
             workspace_cmds::cmd_open(&project, profile.as_deref())
         }
@@ -100,6 +124,10 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     }
 }
 
+fn examples() -> Result<()> {
+    crate::output::print_pane_text(EXAMPLES)
+}
+
 /// Load a project and build a tmux client for command handlers.
 pub(super) fn load_project_context(
     project_target: &ProjectTarget,
@@ -146,4 +174,25 @@ fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
 
     fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn examples_text_covers_core_recipes() {
+        let text = super::EXAMPLES;
+        for needle in [
+            "kira-mux init",
+            "kira-mux open <project>",
+            "kira-mux status .",
+            "kira-mux send . <agent>",
+            "kira-mux capture . <agent>",
+            "kira-mux <command> --help",
+        ] {
+            assert!(
+                text.contains(needle),
+                "examples text missing recipe fragment: {needle}"
+            );
+        }
+    }
 }
