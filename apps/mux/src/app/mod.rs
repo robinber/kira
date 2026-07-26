@@ -1,4 +1,6 @@
 //! Command handlers for the `kira-mux` CLI.
+//!
+//! Dispatches clap `CommandKind` to workspace, agent I/O, init, and examples.
 
 mod agent_cmds;
 mod workspace_cmds;

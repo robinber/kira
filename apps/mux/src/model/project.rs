@@ -1,3 +1,5 @@
+//! Resolved project and agent types after config load + template merge.
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

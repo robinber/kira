@@ -1,3 +1,5 @@
+//! Interactive prompts for destructive CLI operations (e.g. kill confirm).
+
 use std::io::{self, Write};
 
 use anyhow::Result;

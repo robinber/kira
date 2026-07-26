@@ -1,3 +1,5 @@
+//! Parse tmux stdout lines and classify common failure messages.
+
 use std::process::Output;
 
 use anyhow::{Context, Result};

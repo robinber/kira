@@ -1,3 +1,8 @@
+//! Capture recent pane history for a resolved agent.
+//!
+//! Resolves the live managed pane, then returns text (or a JSON-ready
+//! payload) for `kira-mux capture`.
+
 use anyhow::Result;
 use serde::Serialize;
 

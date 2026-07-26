@@ -1,3 +1,8 @@
+//! Deliver a prompt into a live agent pane.
+//!
+//! Prepares (optional template), pastes or types text, applies submit
+//! policy, and can seed `wait` with a pre-submit capture for convergence.
+
 use std::time::Duration;
 
 use anyhow::Result;

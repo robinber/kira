@@ -1,3 +1,5 @@
+//! Prompt template context built from project identity and live topology.
+
 use crate::inspector::WorkspaceTopology;
 use crate::model::ResolvedProject;
 

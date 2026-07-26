@@ -1,3 +1,8 @@
+//! Submit and text-delivery heuristics for agent panes.
+//!
+//! Config overrides (`submit`, `text_delivery`) win; otherwise basename
+//! lists pick double-Enter and paste-vs-send-keys behavior.
+
 use crate::config::{AgentMode, SubmitPolicy, TextDelivery};
 use crate::model::ResolvedAgent;
 use crate::tmux::metadata::PANE_COMMAND_SHELL;

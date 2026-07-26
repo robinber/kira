@@ -1,3 +1,7 @@
+//! Start, repair, attach, restart, and kill managed workspaces.
+//!
+//! Ownership checks and topology guards keep foreign sessions out of scope.
+
 use anyhow::{Result, bail};
 
 use super::launch::{TopologyGuard, apply_layout, launch_agent};

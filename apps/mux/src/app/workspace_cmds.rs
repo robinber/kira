@@ -1,3 +1,7 @@
+//! Handlers for workspace lifecycle CLI commands.
+//!
+//! `open` / `start` / `attach` / `list` / `status` / `restart` / `kill`.
+
 use anyhow::Result;
 
 use super::load_project_context;

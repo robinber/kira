@@ -1,3 +1,7 @@
+//! Session / window / pane option names and values owned by kira-mux.
+//!
+//! Fingerprint, project/profile ids, window role, and per-pane agent markers.
+
 /// Session option storing the configured project ID.
 pub(crate) const SESSION_PROJECT_ID: &str = "@kira_mux_project_id";
 /// Session option storing the active profile ID.

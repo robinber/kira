@@ -1,3 +1,5 @@
+//! Short-lived env files for injecting pane environment without argv secrets.
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

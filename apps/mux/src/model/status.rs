@@ -1,3 +1,5 @@
+//! DTOs for `status`, `list`, and `agents` output (text and JSON).
+
 use std::collections::BTreeMap;
 use std::fmt;
 
