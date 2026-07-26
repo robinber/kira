@@ -1,4 +1,6 @@
 //! Domain types for resolved projects, agents, and workspace status.
+//!
+//! Runtime config after resolve, plus DTOs shared by CLI text/JSON output.
 
 pub(crate) mod project;
 pub(crate) mod status;

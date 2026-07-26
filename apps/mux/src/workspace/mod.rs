@@ -1,4 +1,7 @@
 //! Tmux workspace lifecycle for project-scoped agent sessions.
+//!
+//! Create or repair sessions, attach, restart panes, kill, and summarize
+//! live state for `status` / `list`.
 
 mod identity;
 mod launch;

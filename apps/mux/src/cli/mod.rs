@@ -1,4 +1,6 @@
 //! Clap definitions for the `kira-mux` CLI.
+//!
+//! Top-level commands, project target `.`, and send/wait flag parsing.
 
 use std::convert::Infallible;
 use std::str::FromStr;

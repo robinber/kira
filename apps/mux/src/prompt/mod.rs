@@ -1,4 +1,6 @@
 //! Prompt template rendering for agent panes.
+//!
+//! Builds context from project + topology, then substitutes `{{variables}}`.
 
 mod context;
 mod render;

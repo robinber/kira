@@ -1,3 +1,8 @@
+//! Concrete `TmuxAdapter`: spawn `tmux`, parse output, map target failures.
+//!
+//! Keeps secrets off argv (pane env goes through env files). Unit tests live
+//! in `client/tests.rs`.
+
 use std::borrow::Cow;
 use std::env;
 use std::io::Write;

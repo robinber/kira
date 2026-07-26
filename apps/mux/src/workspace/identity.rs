@@ -1,3 +1,5 @@
+//! Derive stable tmux session and window target names from a project.
+
 use sha2::{Digest, Sha256};
 
 use crate::model::ResolvedProject;

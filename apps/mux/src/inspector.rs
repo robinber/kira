@@ -1,4 +1,7 @@
 //! Topology classification and live inspection for managed workspaces.
+//!
+//! `inspect` reads tmux state; `classify_*` maps snapshots to healthy,
+//! degraded, drifted, or absent — the single topology truth for pane I/O.
 
 use std::collections::{BTreeMap, BTreeSet};
 

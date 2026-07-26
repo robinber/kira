@@ -1,3 +1,5 @@
+//! `{{var}}` template rendering and unknown-variable linting.
+
 use super::context::PromptContext;
 
 type ContextAccessor = fn(&PromptContext) -> &str;

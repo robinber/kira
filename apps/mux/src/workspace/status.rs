@@ -1,3 +1,5 @@
+//! Build `status` / `list` summaries from config + live inspection.
+
 use anyhow::Result;
 
 use crate::config::ResolutionMode;

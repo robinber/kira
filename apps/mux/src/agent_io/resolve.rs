@@ -1,3 +1,8 @@
+//! Resolve a live managed pane for send / capture under topology rules.
+//!
+//! Shares the inspector drift contract: a healthy workspace yields a pane
+//! id, drifted/absent/dead targets become typed domain errors.
+
 use anyhow::Result;
 
 use crate::error::{KiraMuxError, WorkspaceDriftReason};

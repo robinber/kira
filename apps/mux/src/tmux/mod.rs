@@ -1,4 +1,7 @@
 //! Tmux subprocess client, output parsing, and session metadata.
+//!
+//! Adapter trait + real client, paste helpers, env-file injection, and the
+//! `@kira_mux_*` option namespace.
 
 mod adapter;
 mod client;

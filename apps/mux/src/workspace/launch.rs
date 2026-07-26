@@ -1,3 +1,5 @@
+//! Create panes, apply layout, and launch agent commands into a session.
+
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};

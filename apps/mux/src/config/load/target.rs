@@ -1,3 +1,7 @@
+//! Resolve the contextual project target `.` from the process CWD.
+//!
+//! Matches registered project roots by physical path; deepest root wins.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

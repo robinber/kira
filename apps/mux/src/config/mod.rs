@@ -1,4 +1,7 @@
 //! Configuration loading, validation, and resolution for kira-mux projects.
+//!
+//! XDG global + project TOML → validated shapes → `ResolvedProject`, with a
+//! deterministic fingerprint used for workspace drift detection.
 
 mod error;
 mod fingerprint;

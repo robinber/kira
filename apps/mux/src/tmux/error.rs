@@ -1,3 +1,5 @@
+//! Typed tmux client errors (no server, missing target/session, command fail).
+
 use thiserror::Error;
 
 /// Errors returned by tmux command execution and target resolution.

@@ -1,3 +1,5 @@
+//! Clap surface for the `agents` subcommand tree.
+
 use clap::Subcommand;
 
 use super::ProjectTarget;
