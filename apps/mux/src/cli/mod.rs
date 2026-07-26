@@ -145,7 +145,7 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         force: bool,
     },
-    /// Print copy-paste usage recipes (no config or tmux side effects).
+    /// Print usage recipes (no config or tmux side effects).
     Examples,
     /// Deliver a prompt to a live agent pane.
     ///

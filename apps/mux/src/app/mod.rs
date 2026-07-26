@@ -29,27 +29,29 @@ id = "assistant"
 command = "codex"
 "#;
 
-/// Static copy-paste recipes for `kira-mux examples` (no config / tmux).
+/// Static usage recipes for `kira-mux examples` (no config / tmux).
+///
+/// Uses concrete ids from the default `init` project so lines paste cleanly
+/// into a shell (no `<placeholder>` redirections).
 const EXAMPLES: &str = "\
 Set up:     kira-mux init
             # edit ~/.config/kira-mux/projects/example.toml (set root, agents)
 
-Open:       kira-mux open <project>
+Open:       kira-mux open example
             # finish any first-run agent UI in the pane, then detach (Ctrl-b d)
 
 Work here:  kira-mux status .
             kira-mux agents list .
 
-Send:       kira-mux send . <agent> \"...\"
-            kira-mux send . <agent> \"...\" --wait
-            kira-mux send --clear . <agent>
+Send:       kira-mux send . assistant \"review the auth module\"
+            kira-mux send . assistant \"review the auth module\" --wait
+            kira-mux send --clear . assistant
 
-Inspect:    kira-mux capture . <agent> --lines 80
+Inspect:    kira-mux capture . assistant --lines 80
 List:       kira-mux list
-Tear down:  kira-mux kill <project> --yes
+Tear down:  kira-mux kill example --yes
 
-Details:    kira-mux <command> --help
-Also see:   examples/solo-coder/ in the repository
+Details:    kira-mux send --help
 ";
 
 /// Dispatch a parsed CLI invocation.
@@ -183,16 +185,24 @@ mod tests {
         let text = super::EXAMPLES;
         for needle in [
             "kira-mux init",
-            "kira-mux open <project>",
+            "kira-mux open example",
             "kira-mux status .",
-            "kira-mux send . <agent>",
-            "kira-mux capture . <agent>",
-            "kira-mux <command> --help",
+            "kira-mux send . assistant",
+            "kira-mux capture . assistant",
+            "kira-mux send --help",
         ] {
             assert!(
                 text.contains(needle),
                 "examples text missing recipe fragment: {needle}"
             );
         }
+        assert!(
+            !text.contains('<') && !text.contains('>'),
+            "recipes must not use shell-hostile <placeholder> tokens"
+        );
+        assert!(
+            !text.contains("solo-coder"),
+            "repo-relative paths are useless after cargo install"
+        );
     }
 }
