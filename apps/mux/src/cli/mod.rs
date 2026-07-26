@@ -145,6 +145,8 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         force: bool,
     },
+    /// Print usage recipes (no config or tmux side effects).
+    Examples,
     /// Deliver a prompt to a live agent pane.
     ///
     /// Does not wait for TUI readiness: `send` only refuses dead panes. On a
@@ -362,5 +364,17 @@ mod tests {
                 || message.contains("prompt"),
             "error should require PROMPT, got: {message}"
         );
+    }
+
+    #[test]
+    fn examples_parses_as_unit_command() {
+        let cli = match Cli::try_parse_from(["kira-mux", "examples"]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("parse failed: {error}"),
+        };
+        match cli.command {
+            CommandKind::Examples => {}
+            other => panic!("expected Examples, got {other:?}"),
+        }
     }
 }
