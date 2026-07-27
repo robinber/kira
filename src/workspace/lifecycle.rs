@@ -74,7 +74,7 @@ pub(crate) fn restart(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
     agent_id: Option<&str>,
-) -> Result<()> {
+) -> Result<StartOutcome> {
     let session = session_name(project);
     tracing::debug!(
         project_id = project.id.as_str(),
@@ -215,24 +215,44 @@ fn create(
 
     guard.commit();
 
+    Ok(launch_all(
+        tmux,
+        project,
+        "create",
+        pane_ids
+            .iter()
+            .map(String::as_str)
+            .zip(project.agents.iter()),
+    ))
+}
+
+/// Launch every `(pane_id, agent)` target, keep going past individual
+/// failures, and report one outcome — the single degraded-launch policy
+/// shared by create, repair, and restart. The app layer maps the outcome
+/// to the user-facing warning and exit exactly once.
+fn launch_all<'a>(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+    op: &'static str,
+    targets: impl IntoIterator<Item = (&'a str, &'a ResolvedAgent)>,
+) -> StartOutcome {
     let mut any_launch_failed = false;
-    for (pane_id, agent) in pane_ids.iter().zip(project.agents.iter()) {
-        let launch_result = launch_agent(tmux, pane_id, project, agent);
-        if let Err(error) = launch_result {
+    for (pane_id, agent) in targets {
+        if let Err(error) = launch_agent(tmux, pane_id, project, agent) {
             tracing::warn!(
                 project_id = project.id.as_str(),
                 agent_id = agent.id.as_str(),
+                op,
                 %error,
-                "agent launch failed, workspace will be degraded"
+                "agent launch failed, workspace degraded"
             );
             any_launch_failed = true;
         }
     }
-
     if any_launch_failed {
-        Ok(StartOutcome::Degraded)
+        StartOutcome::Degraded
     } else {
-        Ok(StartOutcome::Healthy)
+        StartOutcome::Healthy
     }
 }
 
@@ -249,28 +269,15 @@ fn repair(
             .map(|managed| &managed.agent),
     )?;
 
-    let mut any_launch_failed = false;
-    for managed in panes {
-        if managed.pane.pane_dead {
-            let launch_result =
-                launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent);
-            if let Err(error) = launch_result {
-                tracing::warn!(
-                    project_id = project.id.as_str(),
-                    agent_id = managed.agent.id.as_str(),
-                    %error,
-                    "agent re-launch failed during repair, workspace remains degraded"
-                );
-                any_launch_failed = true;
-            }
-        }
-    }
-
-    if any_launch_failed {
-        Ok(StartOutcome::Degraded)
-    } else {
-        Ok(StartOutcome::Healthy)
-    }
+    Ok(launch_all(
+        tmux,
+        project,
+        "repair",
+        panes
+            .iter()
+            .filter(|managed| managed.pane.pane_dead)
+            .map(|managed| (managed.pane.pane_id.as_str(), &managed.agent)),
+    ))
 }
 
 fn restart_managed_panes(
@@ -278,53 +285,31 @@ fn restart_managed_panes(
     project: &ResolvedProject,
     panes: &[ManagedPane],
     agent_id: Option<&str>,
-) -> Result<()> {
+) -> Result<StartOutcome> {
     if let Some(agent_id) = agent_id {
         let managed = panes
             .iter()
             .find(|pane| pane.agent.id == agent_id)
             .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.to_string()))?;
         validate_launch_paths(project, std::iter::once(&managed.agent))?;
-        // Match restart-all / start: a failed launch is a degraded workspace,
-        // not an opaque I/O failure (exit 1).
-        if let Err(error) =
-            launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)
-        {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                agent_id,
-                %error,
-                "agent restart failed, workspace will be degraded"
-            );
-            return Err(KiraMuxError::Degraded(project.id.clone()).into());
-        }
-        return Ok(());
+        return Ok(launch_all(
+            tmux,
+            project,
+            "restart",
+            std::iter::once((managed.pane.pane_id.as_str(), &managed.agent)),
+        ));
     }
 
     validate_launch_paths(project, panes.iter().map(|managed| &managed.agent))?;
 
-    // Match create()/repair(): keep going past individual failures and
-    // report the workspace as degraded, instead of stopping half-restarted
-    // with no signal.
-    let mut any_launch_failed = false;
-    for managed in panes {
-        if let Err(error) =
-            launch_agent(tmux, managed.pane.pane_id.as_str(), project, &managed.agent)
-        {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                agent_id = managed.agent.id.as_str(),
-                %error,
-                "agent restart failed, workspace will be degraded"
-            );
-            any_launch_failed = true;
-        }
-    }
-    if any_launch_failed {
-        return Err(KiraMuxError::Degraded(project.id.clone()).into());
-    }
-
-    Ok(())
+    Ok(launch_all(
+        tmux,
+        project,
+        "restart",
+        panes
+            .iter()
+            .map(|managed| (managed.pane.pane_id.as_str(), &managed.agent)),
+    ))
 }
 
 fn validate_launch_paths<'a>(
@@ -525,14 +510,12 @@ mod tests {
         setup_healthy_session(&fake, &project);
         fake.set_respawn_exits_immediately(true);
 
-        let err = restart(&fake, &project, Some("alpha"))
-            .err_or_panic("restart_single_agent_reports_degraded_on_immediate_exit: expected Err");
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Degraded(_))
-            ),
-            "single-agent restart must use degraded semantics, got: {err}"
+        let outcome = restart(&fake, &project, Some("alpha"))
+            .or_panic("restart_single_agent_reports_degraded_on_immediate_exit");
+        assert_eq!(
+            outcome,
+            StartOutcome::Degraded,
+            "single-agent restart must use degraded semantics"
         );
     }
 
@@ -590,14 +573,12 @@ mod tests {
         setup_healthy_session(&fake, &project);
         fake.set_fail_respawn(true);
 
-        let err = restart(&fake, &project, None)
-            .err_or_panic("restart_all_reports_degraded_after_attempting_every_pane: expected Err");
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Degraded(_))
-            ),
-            "restart must keep create()/repair() degraded semantics, got: {err}"
+        let outcome = restart(&fake, &project, None)
+            .or_panic("restart_all_reports_degraded_after_attempting_every_pane");
+        assert_eq!(
+            outcome,
+            StartOutcome::Degraded,
+            "restart must keep create()/repair() degraded semantics"
         );
     }
 
