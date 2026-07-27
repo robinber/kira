@@ -92,9 +92,10 @@ Before non-trivial runtime edits:
 | 3rd copy of a helper | Extract shared code or justify divergence |
 | `#[allow]` / `#[expect]` | Smallest scope + `reason = "..."`; no silent broadening |
 
-Current large files (approx., total LOC): `tests/cli.rs` (~1.1k), `config/resolve.rs`,
+Current large files (approx., total LOC): `tests/cli.rs` (~1.1k),
 `test_support/fake_tmux.rs`, `tmux/client.rs`, `inspector.rs`, `workspace/lifecycle.rs`,
-`config/load.rs`, `agent_io/send.rs` — treat as pressure zones (many are test-heavy).
+`config/load.rs`, `config/resolve/` (split: `mod`/`agents`/`paths`/`validate`),
+`agent_io/send.rs` — treat as pressure zones (many are test-heavy).
 
 Details: `references/drift-control.md`.
 

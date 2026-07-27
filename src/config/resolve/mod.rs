@@ -1,47 +1,22 @@
 //! Resolve raw project/template config into runtime `ResolvedProject` values.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::path::{Path, PathBuf};
+mod agents;
+mod paths;
+mod validate;
+
+use std::path::PathBuf;
+
+use agents::{build_template_map, resolve_agents};
 
 use super::error::ConfigError;
-use crate::model::{ResolvedAgent, ResolvedProject};
+use super::fingerprint::{FingerprintInput, compute_fingerprint};
+use super::model::{GlobalConfig, Layout, ProjectFile, ResolutionMode};
+use crate::model::ResolvedProject;
 
 type Result<T> = std::result::Result<T, ConfigError>;
-use super::fingerprint::{
-    EnvValue, FingerprintAgentMaterial, FingerprintInput, classify_env_value, compute_fingerprint,
-    env_fingerprint,
-};
-use super::model::{
-    AgentMode, AgentTemplate, GlobalConfig, Layout, ProjectAgent, ProjectFile, ResolutionMode,
-};
 
-/// Non-whitespace characters rejected in identifiers that end up in tmux
-/// session names or target syntax (`session:window.pane`). All Unicode
-/// whitespace is rejected separately because tmux option reads are trimmed.
-const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &[':', '.'];
-
-fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
-    if let Some(ch) = id
-        .chars()
-        .find(|ch| ch.is_whitespace() || FORBIDDEN_IDENTIFIER_CHARS.contains(ch))
-    {
-        return Err(ConfigError::InvalidIdentifierChar {
-            kind,
-            id: id.to_string(),
-            ch,
-        });
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_main_pane_ratio(ratio: u8) -> Result<()> {
-    if (30..=70).contains(&ratio) {
-        Ok(())
-    } else {
-        Err(ConfigError::MainPaneRatioOutOfRange)
-    }
-}
+pub(crate) use paths::normalize_project_root;
+pub(crate) use validate::{validate_global_config, validate_main_pane_ratio};
 
 pub(crate) fn resolve_project(
     project: ProjectFile,
@@ -49,18 +24,18 @@ pub(crate) fn resolve_project(
     global: &GlobalConfig,
     resolution_mode: ResolutionMode,
 ) -> Result<ResolvedProject> {
-    validate_project_shape(&project)?;
-    validate_identifier("profile id", profile_id)?;
-    validate_identifier("session prefix", &global.session_prefix)?;
+    validate::validate_project_shape(&project)?;
+    validate::validate_identifier("profile id", profile_id)?;
+    validate::validate_identifier("session prefix", &global.session_prefix)?;
 
     let (root, layout, main_pane_ratio, window_name, name) =
         resolve_workspace_defaults(&project, global, resolution_mode)?;
-    validate_identifier("window name", &window_name)?;
+    validate::validate_identifier("window name", &window_name)?;
     let template_map = build_template_map(&global.agent_templates)?;
     let (agents, fingerprint_agents, seen_agents) =
         resolve_agents(project.agents, &template_map, &root, resolution_mode)?;
 
-    validate_groups(&project.groups, &seen_agents)?;
+    validate::validate_groups(&project.groups, &seen_agents)?;
 
     let fingerprint = compute_fingerprint(FingerprintInput {
         project_id: &project.id,
@@ -111,474 +86,22 @@ fn resolve_workspace_defaults(
     Ok((root, layout, main_pane_ratio, window_name, name))
 }
 
-fn resolve_agents(
-    agents: Vec<ProjectAgent>,
-    template_map: &BTreeMap<String, &AgentTemplate>,
-    root: &Path,
-    resolution_mode: ResolutionMode,
-) -> Result<(
-    Vec<ResolvedAgent>,
-    Vec<FingerprintAgentMaterial>,
-    BTreeSet<String>,
-)> {
-    let mut seen = BTreeSet::new();
-    let mut resolved = Vec::new();
-    let mut fingerprint_materials = Vec::new();
-
-    for agent in agents {
-        if !seen.insert(agent.id.clone()) {
-            return Err(ConfigError::DuplicateAgentId(agent.id));
-        }
-
-        let template = match agent.template.as_ref() {
-            Some(name) => Some(
-                template_map
-                    .get(name)
-                    .copied()
-                    .ok_or_else(|| ConfigError::UnknownTemplate(name.clone()))?,
-            ),
-            None => None,
-        };
-
-        let (agent, material) = resolve_single_agent(agent, template, root, resolution_mode)?;
-        resolved.push(agent);
-        fingerprint_materials.push(material);
-    }
-
-    Ok((resolved, fingerprint_materials, seen))
-}
-
-fn resolve_single_agent(
-    agent: ProjectAgent,
-    template: Option<&AgentTemplate>,
-    root: &Path,
-    resolution_mode: ResolutionMode,
-) -> Result<(ResolvedAgent, FingerprintAgentMaterial)> {
-    let label = agent
-        .label
-        .clone()
-        .or_else(|| template.map(template_label))
-        .filter(|label| !label.is_empty())
-        .unwrap_or_else(|| agent.id.clone());
-    let mode = agent
-        .mode
-        .or_else(|| template.and_then(|item| item.mode))
-        .unwrap_or_default();
-    let command = agent
-        .command
-        .clone()
-        .or_else(|| template.and_then(|item| item.command.clone()));
-    let shell_command = agent
-        .shell_command
-        .clone()
-        .or_else(|| template.and_then(|item| item.shell_command.clone()));
-    let args = agent
-        .args
-        .clone()
-        .unwrap_or_else(|| template.map(|item| item.args.clone()).unwrap_or_default());
-    let cwd = resolve_agent_cwd(
-        &agent.id,
-        agent
-            .cwd
-            .as_deref()
-            .or_else(|| template.and_then(|item| item.cwd.as_deref())),
-        root,
-        resolution_mode,
-    )?;
-
-    let mut unresolved_env = template.map(|item| item.env.clone()).unwrap_or_default();
-    unresolved_env.extend(agent.env.clone());
-
-    validate_agent(
-        &agent.id,
-        mode,
-        command.as_deref(),
-        shell_command.as_deref(),
-        &args,
-    )?;
-
-    let fingerprint_material = FingerprintAgentMaterial {
-        id: agent.id.clone(),
-        mode,
-        command: command.clone(),
-        shell_command: shell_command.clone(),
-        args: args.clone(),
-        cwd: cwd.display().to_string(),
-        env: unresolved_env
-            .iter()
-            .map(|(key, value)| (key.clone(), env_fingerprint(value)))
-            .collect(),
-    };
-
-    let env = match resolution_mode {
-        ResolutionMode::Deferred => unresolved_env,
-        ResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env)?,
-    };
-
-    let capabilities = match &agent.capabilities {
-        Some(caps) => caps.clone(),
-        None => template
-            .map(|item| item.capabilities.clone())
-            .unwrap_or_default(),
-    };
-    let prompt_template = agent
-        .prompt_template
-        .clone()
-        .or_else(|| template.and_then(|item| item.prompt_template.clone()));
-    let submit = agent
-        .submit
-        .or_else(|| template.and_then(|item| item.submit));
-    let text_delivery = agent
-        .text_delivery
-        .or_else(|| template.and_then(|item| item.text_delivery));
-
-    if let Some(ref tmpl) = prompt_template {
-        let unknowns = crate::prompt::lint_template(tmpl);
-        if !unknowns.is_empty() {
-            tracing::warn!(
-                "agent {} prompt_template has unknown variable(s): {}",
-                agent.id,
-                unknowns.join(", ")
-            );
-        }
-    }
-
-    let resolved = ResolvedAgent {
-        id: agent.id,
-        label,
-        mode,
-        command,
-        shell_command,
-        args,
-        cwd,
-        env,
-        capabilities,
-        prompt_template,
-        submit,
-        text_delivery,
-    };
-
-    Ok((resolved, fingerprint_material))
-}
-
-pub(crate) fn validate_global_config(global: &GlobalConfig) -> Result<()> {
-    validate_main_pane_ratio(global.main_pane_ratio)?;
-
-    let _ = build_template_map(&global.agent_templates)?;
-    Ok(())
-}
-
-fn validate_project_shape(project: &ProjectFile) -> Result<()> {
-    if project.id.trim().is_empty() {
-        return Err(ConfigError::EmptyProjectId);
-    }
-    validate_identifier("project id", &project.id)?;
-    if project.root.trim().is_empty() {
-        return Err(ConfigError::EmptyProjectRoot);
-    }
-    if project.agents.is_empty() {
-        return Err(ConfigError::NoAgents);
-    }
-    for agent in &project.agents {
-        if agent.id.trim().is_empty() {
-            return Err(ConfigError::EmptyAgentId);
-        }
-        validate_identifier("agent id", &agent.id)?;
-    }
-
-    Ok(())
-}
-
-fn validate_groups(
-    groups: &BTreeMap<String, Vec<String>>,
-    known_agents: &BTreeSet<String>,
-) -> Result<()> {
-    for (group_name, members) in groups {
-        if group_name.trim().is_empty() {
-            return Err(ConfigError::EmptyGroupName);
-        }
-        if members.is_empty() {
-            return Err(ConfigError::EmptyGroup {
-                group: group_name.clone(),
-            });
-        }
-        let mut seen = BTreeSet::new();
-        for member in members {
-            if !seen.insert(member) {
-                return Err(ConfigError::DuplicateAgentInGroup {
-                    group: group_name.clone(),
-                    agent: member.clone(),
-                });
-            }
-            if !known_agents.contains(member) {
-                return Err(ConfigError::UnknownAgentInGroup {
-                    group: group_name.clone(),
-                    agent: member.clone(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_agent(
-    agent_id: &str,
-    mode: AgentMode,
-    command: Option<&str>,
-    shell_command: Option<&str>,
-    args: &[String],
-) -> Result<()> {
-    match mode {
-        AgentMode::Direct if command.is_none_or(str::is_empty) => {
-            Err(ConfigError::MissingCommand {
-                agent_id: agent_id.to_string(),
-            })
-        }
-        AgentMode::Shell if shell_command.is_none_or(str::is_empty) => {
-            Err(ConfigError::MissingShellCommand {
-                agent_id: agent_id.to_string(),
-            })
-        }
-        // Launch only passes args in direct mode; rejecting here keeps config
-        // honest instead of silently ignoring shell-mode args.
-        AgentMode::Shell if !args.is_empty() => Err(ConfigError::ShellArgsNotSupported {
-            agent_id: agent_id.to_string(),
-        }),
-        _ => Ok(()),
-    }
-}
-
-pub(super) fn normalize_project_root(
-    root: &str,
-    resolution_mode: ResolutionMode,
-) -> Result<PathBuf> {
-    // Session names hash the project root. Resolving relative roots against
-    // process CWD would make the same XDG config target different sessions
-    // depending on where kira-mux is invoked — reject that footgun.
-    require_stable_project_root(root)?;
-
-    let expanded = expand_path(root, None)?;
-
-    if !expanded.exists() && resolution_mode == ResolutionMode::Runtime {
-        return Err(ConfigError::ProjectRootNotFound(expanded));
-    }
-    if expanded.exists() && !expanded.is_dir() {
-        return Err(ConfigError::ProjectRootNotDirectory(expanded));
-    }
-
-    // Keep the normalized configured path as the stable workspace identity.
-    // Canonicalizing here would change the session hash when a configured
-    // symlink becomes broken after launch, making the session impossible to
-    // find for status or cleanup.
-    Ok(expanded)
-}
-
-/// Project roots must be absolute or `~/...` so resolution never depends on
-/// the process current directory. Agent `cwd` may still be relative to root.
-fn require_stable_project_root(root: &str) -> Result<()> {
-    if root == "~" || root.starts_with("~/") {
-        return Ok(());
-    }
-    if Path::new(root).is_absolute() {
-        return Ok(());
-    }
-    Err(ConfigError::RelativeProjectRoot(root.to_string()))
-}
-
-fn resolve_agent_cwd(
-    agent_id: &str,
-    raw: Option<&str>,
-    project_root: &Path,
-    resolution_mode: ResolutionMode,
-) -> Result<PathBuf> {
-    let Some(value) = raw else {
-        return Ok(project_root.to_path_buf());
-    };
-
-    if value.trim().is_empty() {
-        return Err(ConfigError::EmptyAgentCwd {
-            agent_id: agent_id.to_string(),
-        });
-    }
-
-    let expanded = expand_path(value, Some(project_root))?;
-    let resolved = normalize_path(&expanded);
-
-    let is_absolute_or_home =
-        PathBuf::from(value).is_absolute() || value.starts_with("~/") || value == "~";
-
-    if !is_absolute_or_home && !resolved.starts_with(project_root) {
-        return Err(ConfigError::AgentCwdEscapesRoot {
-            agent_id: agent_id.to_string(),
-            path: resolved,
-        });
-    }
-
-    if !is_absolute_or_home
-        && resolved
-            .symlink_metadata()
-            .is_ok_and(|m| m.file_type().is_symlink())
-        && let Some(path) = check_symlink_escape(&resolved, project_root)
-    {
-        return Err(ConfigError::AgentCwdEscapesRoot {
-            agent_id: agent_id.to_string(),
-            path,
-        });
-    }
-
-    if !resolved.exists() && resolution_mode == ResolutionMode::Deferred {
-        return Ok(resolved);
-    }
-    if !resolved.exists() {
-        return Err(ConfigError::AgentCwdNotFound {
-            agent_id: agent_id.to_string(),
-            path: resolved,
-        });
-    }
-    if !resolved.is_dir() {
-        return Err(ConfigError::AgentCwdNotDirectory {
-            agent_id: agent_id.to_string(),
-            path: resolved,
-        });
-    }
-
-    if !is_absolute_or_home {
-        let canonical_root =
-            project_root
-                .canonicalize()
-                .map_err(|source| ConfigError::PathResolution {
-                    path: project_root.to_path_buf(),
-                    source,
-                })?;
-        let canonical = resolved
-            .canonicalize()
-            .map_err(|source| ConfigError::PathResolution {
-                path: resolved.clone(),
-                source,
-            })?;
-        if !canonical.starts_with(&canonical_root) {
-            return Err(ConfigError::AgentCwdEscapesRoot {
-                agent_id: agent_id.to_string(),
-                path: canonical,
-            });
-        }
-    }
-
-    Ok(resolved)
-}
-
-fn resolve_env_map(
-    agent_id: &str,
-    env_map: BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>> {
-    let mut resolved = BTreeMap::new();
-
-    for (key, value) in env_map {
-        let resolved_value = match classify_env_value(&value) {
-            EnvValue::Reference(reference) => {
-                env::var(reference).map_err(|_source| ConfigError::UnresolvedEnvVar {
-                    agent_id: agent_id.to_string(),
-                    var_name: reference.to_string(),
-                })?
-            }
-            EnvValue::Literal(_) => value,
-        };
-        resolved.insert(key, resolved_value);
-    }
-
-    Ok(resolved)
-}
-
-fn build_template_map(templates: &[AgentTemplate]) -> Result<BTreeMap<String, &AgentTemplate>> {
-    let mut by_name = BTreeMap::new();
-
-    for template in templates {
-        if template.name.trim().is_empty() {
-            return Err(ConfigError::EmptyTemplateName);
-        }
-        if by_name.insert(template.name.clone(), template).is_some() {
-            return Err(ConfigError::DuplicateTemplate(template.name.clone()));
-        }
-    }
-
-    Ok(by_name)
-}
-
-fn template_label(template: &AgentTemplate) -> String {
-    template
-        .label
-        .clone()
-        .unwrap_or_else(|| template.name.clone())
-}
-
-fn expand_path(value: &str, project_root: Option<&Path>) -> Result<PathBuf> {
-    if let Some(rest) = value.strip_prefix("~/") {
-        return Ok(home_dir()?.join(rest));
-    }
-
-    if value == "~" {
-        return home_dir();
-    }
-
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        Ok(normalize_path(&path))
-    } else if let Some(root) = project_root {
-        Ok(normalize_path(&root.join(path)))
-    } else {
-        let cwd = env::current_dir().map_err(|source| ConfigError::PathResolution {
-            path: PathBuf::from("."),
-            source,
-        })?;
-        Ok(normalize_path(&cwd.join(path)))
-    }
-}
-
-/// Normalizes `.` and `..` components in-place. Parent traversals above the
-/// root are clamped (silently dropped), not rejected.
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-
-    normalized
-}
-
-fn check_symlink_escape(path: &Path, project_root: &Path) -> Option<PathBuf> {
-    let canonical_root = project_root.canonicalize().ok()?;
-    match path.canonicalize() {
-        Ok(canonical) if !canonical.starts_with(&canonical_root) => Some(canonical),
-        Err(_) => std::fs::read_link(path).ok().and_then(|target| {
-            let effective = if target.is_absolute() {
-                normalize_path(&target)
-            } else {
-                let parent = path.parent().unwrap_or(project_root);
-                let resolved_parent = parent
-                    .canonicalize()
-                    .unwrap_or_else(|_| normalize_path(parent));
-                normalize_path(&resolved_parent.join(target))
-            };
-            (!effective.starts_with(&canonical_root)).then_some(effective)
-        }),
-        Ok(_) => None,
-    }
-}
-
-fn home_dir() -> Result<PathBuf> {
-    crate::paths::home_dir().map_err(|_source| ConfigError::HomeDirUnavailable)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::path::Path;
+
+    use super::agents::{resolve_env_map, resolve_single_agent};
+    use super::paths::{
+        check_symlink_escape, normalize_project_root, require_stable_project_root,
+        resolve_agent_cwd,
+    };
+    use super::validate::{validate_agent, validate_identifier};
     use super::*;
+    use crate::config::error::ConfigError;
+    use crate::config::fingerprint::FingerprintAgentMaterial;
+    use crate::config::model::{AgentMode, AgentTemplate, ProjectAgent, ResolutionMode};
     use crate::test_support::{TestOptionExt, TestResultExt};
 
     #[test]
