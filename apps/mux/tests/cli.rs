@@ -1219,11 +1219,13 @@ fn send_wait_deepens_alternate_screen_reply_and_restores_window() {
         r#"#!/bin/sh
 printf '\033[?1049h'
 total=0
+header=""
 repaint() {
   rows=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f1)
   [ -n "$rows" ] || rows=24
   printf '\033[2J\033[H'
-  start=$((total - rows + 2))
+  [ -n "$header" ] && printf '%s\n' "$header"
+  start=$((total - rows + 3))
   [ "$start" -lt 1 ] && start=1
   i=$start
   while [ "$i" -le "$total" ]; do
@@ -1233,7 +1235,15 @@ repaint() {
 }
 trap repaint WINCH
 repaint
-IFS= read -r _prompt
+# A trapped WINCH (e.g. a layout resize) can interrupt read and make it
+# fail on dash without consuming anything: retry until a real prompt
+# arrives, and echo it into the reply so the test proves the reply is a
+# response to the sent prompt, not a generic paint.
+prompt=""
+until [ -n "$prompt" ]; do
+  IFS= read -r prompt || prompt=""
+done
+header="reply to: $prompt"
 total=100
 repaint
 while :; do sleep 1; done
@@ -1263,6 +1273,12 @@ while :; do sleep 1; done
     );
     assert_success(&waited, "send --wait to alt-screen TUI");
     let output = stdout_of(&waited);
+    assert!(
+        output.contains("reply to: answer tall"),
+        "the reply must provably respond to the sent prompt (the TUI \
+         consumed it), got head: {:?}",
+        output.lines().take(3).collect::<Vec<_>>()
+    );
     assert!(
         output.contains("reply line 1\n") && output.contains("reply line 100"),
         "wait must return the whole reply through the alternate screen, \

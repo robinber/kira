@@ -360,13 +360,14 @@ fallback warnings in scripted JSON flows — or check the JSON flags instead.
 `capture --json` reports the depth context per capture: `alternate_on` (the
 pane runs on the alternate screen), `pane_height` (the plain-capture depth
 ceiling), `deep_capture` (the zoom/resize ran and a repaint of the enlarged
-frame was observed), `depth_request_clamped` (the request exceeded the
-1000-row ceiling, so content beyond it is unreachable even on a completed
-deep capture), and `deep_capture_status` — one of `not_applicable`
-(normal-screen or dead pane), `not_needed` (the visible frame already
-satisfies the request), `completed`, `busy` (another capture owns the
-window; retry later), or `unavailable` (deepening failed; output is capped
-at the visible frame).
+frame was observed), `depth_request_clamped` (the request exceeds what deep
+capture can ever deliver for this pane — content beyond the 1000-row
+ceiling is unreachable regardless of the outcome, including on
+`not_needed`), and `deep_capture_status` — one of `not_applicable`
+(normal-screen or dead pane), `not_needed` (no geometry change would deepen
+further: the visible frame already covers the achievable depth),
+`completed`, `busy` (another capture owns the window; retry later), or
+`unavailable` (deepening failed; output is capped at the visible frame).
 
 Concurrent deep captures of panes in the same window are serialized by a
 per-window file lock (a sidecar next to the tmux server socket, released

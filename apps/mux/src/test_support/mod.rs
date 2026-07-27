@@ -64,6 +64,17 @@ pub(crate) struct FakeTmux {
     /// Countdown of `capture_pane` calls before the fake server stops
     /// (flipping `no_server`), simulating tmux server loss mid-wait.
     server_stops_after_captures: Mutex<Option<usize>>,
+    /// Scripted pane relocation: after N `window_geometry` calls, move the
+    /// pane to another window — simulates an operator `move-pane` between
+    /// the deep-capture lock probe and the under-lock geometry read.
+    relocate_after_geometry_reads: Mutex<Option<FakeRelocation>>,
+}
+
+struct FakeRelocation {
+    pane_id: String,
+    to_session: String,
+    to_window: String,
+    remaining_reads: usize,
 }
 
 #[track_caller]
@@ -280,6 +291,66 @@ impl FakeTmux {
             vanish_before_kill: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
             server_stops_after_captures: Mutex::new(None),
+            relocate_after_geometry_reads: Mutex::new(None),
+        }
+    }
+
+    /// Move `pane_id` to `to_session:to_window` once `reads` calls to
+    /// `window_geometry` have been served.
+    pub(crate) fn set_pane_relocated_after_geometry_reads(
+        &self,
+        pane_id: &str,
+        to_session: &str,
+        to_window: &str,
+        reads: usize,
+    ) {
+        *ok(
+            self.relocate_after_geometry_reads.lock(),
+            "fake tmux relocation mutex poisoned",
+        ) = Some(FakeRelocation {
+            pane_id: pane_id.to_string(),
+            to_session: to_session.to_string(),
+            to_window: to_window.to_string(),
+            remaining_reads: reads,
+        });
+    }
+
+    fn note_geometry_served(&self) {
+        let mut slot = ok(
+            self.relocate_after_geometry_reads.lock(),
+            "fake tmux relocation mutex poisoned",
+        );
+        let Some(relocation) = slot.as_mut() else {
+            return;
+        };
+        relocation.remaining_reads = relocation.remaining_reads.saturating_sub(1);
+        if relocation.remaining_reads > 0 {
+            return;
+        }
+        let Some(relocation) = slot.take() else {
+            return;
+        };
+        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        let mut moved = None;
+        'find: for session in sessions.values_mut() {
+            for window in session.windows.values_mut() {
+                if let Some(idx) = window
+                    .panes
+                    .iter()
+                    .position(|pane| pane.pane_id == relocation.pane_id)
+                {
+                    moved = Some(window.panes.remove(idx));
+                    break 'find;
+                }
+            }
+        }
+        if let (Some(pane), Some(window)) = (
+            moved,
+            sessions
+                .get_mut(&relocation.to_session)
+                .and_then(|session| session.windows.get_mut(&relocation.to_window)),
+        ) {
+            window.panes.push(pane);
         }
     }
 
@@ -1087,10 +1158,11 @@ impl TmuxAdapter for FakeTmux {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
-        for (session_name, session) in sessions.iter() {
+        let mut geometry = None;
+        'find: for (session_name, session) in sessions.iter() {
             for (window_name, window) in &session.windows {
                 if window.panes.iter().any(|pane| pane.pane_id == pane_id) {
-                    return Ok(WindowGeometry {
+                    geometry = Some(WindowGeometry {
                         // Fake window id: a `session:window` target, which
                         // the window-addressed fake ops resolve like tmux
                         // resolves `@N`.
@@ -1103,10 +1175,18 @@ impl TmuxAdapter for FakeTmux {
                         active_pane_id: window.active_pane_id(),
                         size_option: window.size_option.clone(),
                     });
+                    break 'find;
                 }
             }
         }
-        Err(TmuxError::MissingTarget(pane_id.to_string()).into())
+        drop(sessions);
+        match geometry {
+            Some(geometry) => {
+                self.note_geometry_served();
+                Ok(geometry)
+            }
+            None => Err(TmuxError::MissingTarget(pane_id.to_string()).into()),
+        }
     }
 
     fn resize_window(&self, target: &str, width: usize, height: usize) -> Result<()> {
