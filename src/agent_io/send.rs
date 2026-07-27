@@ -16,10 +16,10 @@ use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
 use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 
-/// Delay between typing literal text and submitting it, so the TUI has
-/// rendered the input before the Enter arrives.
-const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
-/// Delay before the second Enter for double-enter agents.
+/// Upper bound on waiting for the pane to react to the first Enter before
+/// the second Enter of a double-enter submit is sent. The wait exits early
+/// once the frame visibly changes; the bound only applies when the first
+/// Enter produces no observable render.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 /// Default lines of pane history observed by `send --wait`.
 pub(crate) const DEFAULT_WAIT_CAPTURE_LINES: usize = 200;
@@ -217,16 +217,25 @@ fn paste_and_submit_inner(
 ) -> Result<()> {
     let pane_command = tmux.get_pane_option(&pane.pane_id, PANE_AGENT_COMMAND)?;
     if !final_prompt.is_empty() && needs_send_keys_for_text(agent, pane_command.as_deref()) {
-        tmux.send_text(&pane.pane_id, final_prompt)?;
-        std::thread::sleep(SEND_TEXT_SETTLE);
-        tmux.send_keys(&pane.pane_id, &["Enter"])?;
+        crate::tmux::send_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     } else {
         crate::tmux::paste_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     }
 
     let behavior = infer_submit_behavior(agent, pane_command.as_deref());
     if behavior == SubmitBehavior::DoubleEnter {
-        std::thread::sleep(DOUBLE_ENTER_DELAY);
+        // The baseline is taken right after the first Enter: an early frame
+        // change (TUI reacting to it) releases the second Enter sooner, and
+        // a missed change degrades to the previous fixed delay.
+        match tmux.capture_pane(&pane.pane_id, 50) {
+            Ok(baseline) => crate::tmux::wait_for_render_change(
+                tmux,
+                &pane.pane_id,
+                &baseline,
+                DOUBLE_ENTER_DELAY,
+            ),
+            Err(_) => std::thread::sleep(DOUBLE_ENTER_DELAY),
+        }
         tmux.send_keys(&pane.pane_id, &["Enter"])?;
     }
     Ok(())

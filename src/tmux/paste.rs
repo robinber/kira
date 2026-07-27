@@ -1,8 +1,9 @@
-//! Generic paste-then-submit helpers built on the [`TmuxAdapter`] primitives.
+//! Generic deliver-then-submit helpers built on the [`TmuxAdapter`] primitives.
 //!
 //! These helpers know nothing about agents or submit behavior; they handle
-//! the readiness-check + paste + Enter sequence that any caller pasting
-//! text into a TUI pane needs.
+//! the readiness-check + delivery + Enter sequence that any caller putting
+//! text into a TUI pane needs, whether the text arrives via paste buffer or
+//! literal send-keys.
 
 use std::time::{Duration, Instant};
 
@@ -25,11 +26,31 @@ pub(crate) fn paste_then_submit_text(
     pane_id: &str,
     text: &str,
 ) -> Result<()> {
+    deliver_then_submit(tmux, pane_id, text, |tmux| tmux.paste_text(pane_id, text))
+}
+
+/// Type `text` into `pane_id` via literal send-keys and submit a single
+/// `Enter`, with the same receipt wait as [`paste_then_submit_text`] so the
+/// Enter cannot race a TUI that has not rendered the text yet.
+pub(crate) fn send_then_submit_text(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    text: &str,
+) -> Result<()> {
+    deliver_then_submit(tmux, pane_id, text, |tmux| tmux.send_text(pane_id, text))
+}
+
+fn deliver_then_submit(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    text: &str,
+    deliver: impl FnOnce(&dyn TmuxAdapter) -> Result<()>,
+) -> Result<()> {
     if !text.is_empty() {
         let baseline = tmux.capture_pane(pane_id, 50).ok();
-        tmux.paste_text(pane_id, text)?;
+        deliver(tmux)?;
         if let Some(baseline) = baseline {
-            wait_for_paste_receipt(tmux, pane_id, &baseline);
+            wait_for_render_change(tmux, pane_id, &baseline, PASTE_RECEIPT_TIMEOUT);
         }
     }
     tmux.send_keys(pane_id, &["Enter"])?;
@@ -37,10 +58,15 @@ pub(crate) fn paste_then_submit_text(
 }
 
 /// Poll `capture_pane` until content differs from `baseline`, confirming
-/// the TUI received and rendered the pasted content. Best-effort: returns
-/// silently after [`PASTE_RECEIPT_TIMEOUT`].
-fn wait_for_paste_receipt(tmux: &dyn TmuxAdapter, pane_id: &str, baseline: &str) {
-    let deadline = Instant::now() + PASTE_RECEIPT_TIMEOUT;
+/// the TUI received and rendered newly delivered input. Best-effort:
+/// returns silently once `timeout` elapses.
+pub(crate) fn wait_for_render_change(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    baseline: &str,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         std::thread::sleep(PASTE_RECEIPT_POLL_INTERVAL);
         if let Ok(current) = tmux.capture_pane(pane_id, 50)
@@ -79,6 +105,31 @@ mod tests {
         assert!(
             paste_idx < enter_idx,
             "paste must precede enter (paste={paste_idx}, enter={enter_idx})"
+        );
+    }
+
+    #[test]
+    fn send_then_submit_records_send_text_then_enter() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "w");
+        fake.add_pane("s", "w", "%0", false);
+
+        send_then_submit_text(&fake, "%0", "hello")
+            .or_panic("send_then_submit_records_send_text_then_enter");
+
+        let ops = fake.ops();
+        let send_idx = ops
+            .iter()
+            .position(|op| matches!(op, FakeOp::SendText { text, .. } if text == "hello"))
+            .or_panic("send_then_submit_records_send_text_then_enter");
+        let enter_idx = ops
+            .iter()
+            .position(|op| matches!(op, FakeOp::SendKeys { keys, .. } if keys == &vec!["Enter".to_string()]))
+            .or_panic("send_then_submit_records_send_text_then_enter");
+        assert!(
+            send_idx < enter_idx,
+            "send_text must precede enter (send={send_idx}, enter={enter_idx})"
         );
     }
 
