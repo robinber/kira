@@ -17,11 +17,18 @@ pub(crate) fn cmd_start(
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Runtime)?;
     let outcome = workspace::start(&tmux, &project, attach_after)?;
+    require_healthy(&project.id, outcome, "started")
+}
+
+/// The single outcome→signal mapping for degraded launches: warn on stderr
+/// and exit 6 via [`KiraMuxError::Degraded`], identically for every
+/// lifecycle command.
+fn require_healthy(project_id: &str, outcome: workspace::StartOutcome, verb: &str) -> Result<()> {
     if outcome == workspace::StartOutcome::Degraded {
         eprintln!(
-            "warning: workspace started in degraded state — one or more agents failed to launch"
+            "warning: workspace {verb} in degraded state — one or more agents failed to launch"
         );
-        return Err(KiraMuxError::Degraded(project.id).into());
+        return Err(KiraMuxError::Degraded(project_id.to_string()).into());
     }
     Ok(())
 }
@@ -41,7 +48,8 @@ pub(crate) fn cmd_restart(
     agent_id: Option<&str>,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Runtime)?;
-    workspace::restart(&tmux, &project, agent_id)
+    let outcome = workspace::restart(&tmux, &project, agent_id)?;
+    require_healthy(&project.id, outcome, "restarted")
 }
 
 pub(crate) fn cmd_kill(
