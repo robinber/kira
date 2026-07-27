@@ -32,7 +32,7 @@ use anyhow::Result;
 
 use super::send::WaitSeed;
 use crate::error::KiraMuxError;
-use crate::tmux::{TmuxAdapter, TmuxError};
+use crate::tmux::{TmuxAdapter, TmuxError, normalize_search_text, prompt_fragments};
 
 const RECENT_FRAME_LIMIT: usize = 8;
 
@@ -407,31 +407,6 @@ fn normalize_frame(capture: &str) -> String {
         lines.pop();
     }
     lines.join("\n")
-}
-
-fn normalize_search_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn prompt_fragments(rendered_prompt: &str) -> Vec<String> {
-    const FRAGMENT_CHARS: usize = 64;
-
-    let normalized = normalize_search_text(rendered_prompt);
-    let chars: Vec<char> = normalized.chars().collect();
-    if chars.is_empty() {
-        return Vec::new();
-    }
-    if chars.len() <= FRAGMENT_CHARS {
-        return vec![normalized];
-    }
-
-    vec![
-        chars.iter().take(FRAGMENT_CHARS).collect(),
-        chars
-            .iter()
-            .skip(chars.len().saturating_sub(FRAGMENT_CHARS))
-            .collect(),
-    ]
 }
 
 fn prompt_appeared(pre_submit: &str, current: &str, fragments: &[String]) -> bool {

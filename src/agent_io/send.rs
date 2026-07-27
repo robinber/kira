@@ -16,10 +16,10 @@ use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
 use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 
-/// Upper bound on waiting for the pane to react to the first Enter before
-/// the second Enter of a double-enter submit is sent. The wait exits early
-/// once the frame visibly changes; the bound only applies when the first
-/// Enter produces no observable render.
+/// Delay before the second Enter for double-enter agents. A frame delta
+/// cannot attest that the TUI consumed the first Enter (spinners repaint
+/// regardless), so this spacing stays a fixed delay rather than a
+/// lookalike readiness check.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 /// Default lines of pane history observed by `send --wait`.
 pub(crate) const DEFAULT_WAIT_CAPTURE_LINES: usize = 200;
@@ -224,18 +224,7 @@ fn paste_and_submit_inner(
 
     let behavior = infer_submit_behavior(agent, pane_command.as_deref());
     if behavior == SubmitBehavior::DoubleEnter {
-        // The baseline is taken right after the first Enter: an early frame
-        // change (TUI reacting to it) releases the second Enter sooner, and
-        // a missed change degrades to the previous fixed delay.
-        match tmux.capture_pane(&pane.pane_id, 50) {
-            Ok(baseline) => crate::tmux::wait_for_render_change(
-                tmux,
-                &pane.pane_id,
-                &baseline,
-                DOUBLE_ENTER_DELAY,
-            ),
-            Err(_) => std::thread::sleep(DOUBLE_ENTER_DELAY),
-        }
+        std::thread::sleep(DOUBLE_ENTER_DELAY);
         tmux.send_keys(&pane.pane_id, &["Enter"])?;
     }
     Ok(())
