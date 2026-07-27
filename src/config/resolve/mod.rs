@@ -37,19 +37,7 @@ pub(crate) fn resolve_project(
 
     validate::validate_groups(&project.groups, &seen_agents)?;
 
-    let fingerprint = compute_fingerprint(FingerprintInput {
-        project_id: &project.id,
-        profile_id,
-        root: &root,
-        layout,
-        main_pane_ratio,
-        window_name: &window_name,
-        default_shell: &global.default_shell,
-        remain_on_exit: global.remain_on_exit,
-        agents: &fingerprint_agents,
-    });
-
-    Ok(ResolvedProject {
+    let mut resolved = ResolvedProject {
         id: project.id,
         profile_id: profile_id.to_string(),
         name,
@@ -62,9 +50,14 @@ pub(crate) fn resolve_project(
         remain_on_exit: global.remain_on_exit,
         tmux_bin: global.tmux_bin.clone(),
         agents,
-        fingerprint,
+        fingerprint: String::new(),
         groups: project.groups,
-    })
+    };
+    resolved.fingerprint = compute_fingerprint(FingerprintInput::from_project(
+        &resolved,
+        &fingerprint_agents,
+    ));
+    Ok(resolved)
 }
 
 fn resolve_workspace_defaults(

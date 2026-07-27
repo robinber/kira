@@ -5,9 +5,7 @@ use std::env;
 use std::path::Path;
 
 use super::super::error::ConfigError;
-use super::super::fingerprint::{
-    EnvValue, FingerprintAgentMaterial, classify_env_value, env_fingerprint,
-};
+use super::super::fingerprint::{EnvValue, FingerprintAgentMaterial, classify_env_value};
 use super::super::model::{AgentTemplate, ProjectAgent, ResolutionMode};
 use super::paths::resolve_agent_cwd;
 use super::validate::validate_agent;
@@ -101,22 +99,9 @@ pub(super) fn resolve_single_agent(
         &args,
     )?;
 
-    let fingerprint_material = FingerprintAgentMaterial {
-        id: agent.id.clone(),
-        mode,
-        command: command.clone(),
-        shell_command: shell_command.clone(),
-        args: args.clone(),
-        cwd: cwd.display().to_string(),
-        env: unresolved_env
-            .iter()
-            .map(|(key, value)| (key.clone(), env_fingerprint(value)))
-            .collect(),
-    };
-
     let env = match resolution_mode {
-        ResolutionMode::Deferred => unresolved_env,
-        ResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env)?,
+        ResolutionMode::Deferred => unresolved_env.clone(),
+        ResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env.clone())?,
     };
 
     let capabilities = match &agent.capabilities {
@@ -161,6 +146,7 @@ pub(super) fn resolve_single_agent(
         submit,
         text_delivery,
     };
+    let fingerprint_material = FingerprintAgentMaterial::from_agent(&resolved, &unresolved_env);
 
     Ok((resolved, fingerprint_material))
 }
