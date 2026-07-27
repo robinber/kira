@@ -244,7 +244,29 @@ pub(crate) fn inspect(
     project: &ResolvedProject,
 ) -> Result<WorkspaceTopology> {
     let session = session_name(project);
-    let Some(snapshot) = tmux.workspace_snapshot(&session, &project.window_name)? else {
+    let snapshot = match tmux.workspace_snapshot(&session, &project.window_name) {
+        Ok(snapshot) => snapshot,
+        // Typed races between the existence check and the metadata reads
+        // classify as the state a re-inspection would report, so every
+        // inspect() consumer (status, list, agents, send/capture) agrees
+        // instead of surfacing a generic transport error.
+        Err(error) => match error.downcast_ref::<TmuxError>() {
+            Some(TmuxError::NoServer(_) | TmuxError::MissingSession(_)) => {
+                return Ok(WorkspaceTopology::Absent);
+            }
+            // Coarse by necessity: the client already softens list-panes
+            // MissingTarget into `window: None`, so an escaping
+            // MissingTarget comes from the session-scoped metadata read and
+            // window absence is the closest drift reason available.
+            Some(TmuxError::MissingTarget(_)) => {
+                return Ok(WorkspaceTopology::Drifted {
+                    reason: WorkspaceDriftReason::ManagedWindowMissing,
+                });
+            }
+            Some(TmuxError::CommandFailure(_)) | None => return Err(error),
+        },
+    };
+    let Some(snapshot) = snapshot else {
         return Ok(WorkspaceTopology::Absent);
     };
     let shared = classify_snapshot(project, &snapshot);
