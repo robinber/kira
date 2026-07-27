@@ -30,6 +30,19 @@ pub(crate) enum ProjectState {
     ConfigError,
 }
 
+impl From<&WorkspaceTopology> for ProjectState {
+    /// The single topology→state mapping, shared by `status` and `list` so
+    /// the two commands can never disagree on what a topology means.
+    fn from(topology: &WorkspaceTopology) -> Self {
+        match topology {
+            WorkspaceTopology::Absent => Self::Stopped,
+            WorkspaceTopology::Healthy(_) => Self::Running,
+            WorkspaceTopology::Degraded(_) => Self::Degraded,
+            WorkspaceTopology::Drifted { .. } => Self::Drifted,
+        }
+    }
+}
+
 impl fmt::Display for ProjectState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Keep text output aligned with the serde snake_case names.

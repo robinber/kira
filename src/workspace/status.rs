@@ -3,30 +3,24 @@
 use anyhow::Result;
 
 use crate::config::ResolutionMode;
-use crate::inspector::{self, InspectedWorkspace, SharedTopology, WorkspaceTopology};
+use crate::inspector::{self, InspectedWorkspace, WorkspaceTopology};
 use crate::model::{
     AgentState, AgentStatus, PaneLiveness, ProjectState, ProjectStatus, ProjectSummary,
     ResolvedProject,
 };
 use crate::paths::AppPaths;
-use crate::tmux::{TmuxAdapter, TmuxClient, TmuxError, WorkspaceSnapshot};
-use crate::workspace::session_name;
+use crate::tmux::{TmuxAdapter, TmuxClient};
 
 pub(crate) fn project_status(
     tmux: &dyn TmuxAdapter,
     project: &ResolvedProject,
 ) -> Result<ProjectStatus> {
-    let (state, agents) = match inspector::inspect(tmux, project)? {
-        WorkspaceTopology::Absent => (
-            ProjectState::Stopped,
-            offline_agent_statuses(project, AgentState::MissingPane),
-        ),
-        WorkspaceTopology::Healthy(w) => (ProjectState::Running, live_agent_statuses(&w)),
-        WorkspaceTopology::Degraded(w) => (ProjectState::Degraded, live_agent_statuses(&w)),
-        WorkspaceTopology::Drifted { .. } => (
-            ProjectState::Drifted,
-            offline_agent_statuses(project, AgentState::Error),
-        ),
+    let topology = inspector::inspect(tmux, project)?;
+    let state = ProjectState::from(&topology);
+    let agents = match &topology {
+        WorkspaceTopology::Absent => offline_agent_statuses(project, AgentState::MissingPane),
+        WorkspaceTopology::Healthy(w) | WorkspaceTopology::Degraded(w) => live_agent_statuses(w),
+        WorkspaceTopology::Drifted { .. } => offline_agent_statuses(project, AgentState::Error),
     };
 
     Ok(ProjectStatus {
@@ -100,49 +94,12 @@ fn summary_from_config_failure(failure: crate::config::ProjectConfigFailure) -> 
     }
 }
 
-fn summarize_project(tmux: &TmuxClient, project: &ResolvedProject) -> Result<ProjectState> {
-    let session = session_name(project);
-    match tmux.workspace_snapshot(&session, &project.window_name) {
-        Ok(snapshot) => Ok(project_state_from_snapshot(project, snapshot.as_ref())),
-        Err(error) => match classified_summary_error(&error) {
-            Some(state) => Ok(state),
-            None => Err(error),
-        },
-    }
-}
-
-/// Classify a successful workspace snapshot payload for `list`.
-///
-/// `None` means no session (or no server) — stopped. A present snapshot is
-/// fed through the shared topology classifier so list/status agree on drift.
-fn project_state_from_snapshot(
-    project: &ResolvedProject,
-    snapshot: Option<&WorkspaceSnapshot>,
-) -> ProjectState {
-    let Some(snap) = snapshot else {
-        return ProjectState::Stopped;
-    };
-
-    let shared = inspector::classify_snapshot(project, snap);
-
-    match shared {
-        SharedTopology::Healthy { .. } => ProjectState::Running,
-        SharedTopology::Degraded { .. } => ProjectState::Degraded,
-        SharedTopology::Drifted { .. } => ProjectState::Drifted,
-    }
-}
-
-/// Map typed tmux failures from workspace inspection to a list state.
-///
-/// Returns `None` when the error is not classifiable (transport / generic
-/// command failure) so the caller can surface `ProjectState::Error` instead
-/// of lying with a false Drifted.
-fn classified_summary_error(error: &anyhow::Error) -> Option<ProjectState> {
-    match error.downcast_ref::<TmuxError>() {
-        Some(TmuxError::NoServer(_) | TmuxError::MissingSession(_)) => Some(ProjectState::Stopped),
-        Some(TmuxError::MissingTarget(_)) => Some(ProjectState::Drifted),
-        Some(TmuxError::CommandFailure(_)) | None => None,
-    }
+/// One state per project for `list`: the same `inspect()` classification
+/// `status` uses, projected through the shared topology→state mapping.
+/// Unclassifiable failures propagate so the caller reports `Error` instead
+/// of a false Stopped/Drifted.
+fn summarize_project(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<ProjectState> {
+    Ok(ProjectState::from(&inspector::inspect(tmux, project)?))
 }
 
 fn live_agent_statuses(workspace: &InspectedWorkspace) -> Vec<AgentStatus> {
@@ -176,150 +133,87 @@ fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
-    use crate::tmux::{PaneInfo, WorkspacePaneSnapshot, WorkspaceWindowSnapshot};
+    use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+    use crate::tmux::TmuxError;
 
     #[test]
-    fn classified_summary_error_maps_missing_target_to_drifted() {
-        let error = TmuxError::MissingTarget("s:agents".into()).into();
+    fn summarize_absent_session_is_stopped() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+
+        let state = summarize_project(&fake, &project).or_panic("summarize_absent");
+
+        assert_eq!(state, ProjectState::Stopped);
+    }
+
+    #[test]
+    fn summarize_healthy_session_is_running() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+
+        let state = summarize_project(&fake, &project).or_panic("summarize_healthy");
+
+        assert_eq!(state, ProjectState::Running);
+    }
+
+    #[test]
+    fn vanished_session_race_classifies_identically_for_list_and_status() {
+        // Issue #83: a session vanishing between the existence check and the
+        // metadata read made `list` report Stopped while `status` surfaced a
+        // generic error. Both go through inspect() now.
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+
+        fake.set_workspace_snapshot_error(TmuxError::MissingSession("gone".into()));
         assert_eq!(
-            classified_summary_error(&error),
-            Some(ProjectState::Drifted)
-        );
-    }
-
-    #[test]
-    fn classified_summary_error_maps_missing_session_to_stopped() {
-        let error = TmuxError::MissingSession("s".into()).into();
-        assert_eq!(
-            classified_summary_error(&error),
-            Some(ProjectState::Stopped)
-        );
-    }
-
-    #[test]
-    fn classified_summary_error_maps_no_server_to_stopped() {
-        let error = TmuxError::NoServer("no server running on /tmp/tmux".into()).into();
-        assert_eq!(
-            classified_summary_error(&error),
-            Some(ProjectState::Stopped)
-        );
-    }
-
-    #[test]
-    fn classified_summary_error_leaves_command_failure_unclassified() {
-        let error = TmuxError::CommandFailure("server unexpectedly closed".into()).into();
-        assert_eq!(classified_summary_error(&error), None);
-    }
-
-    #[test]
-    fn classified_summary_error_leaves_untyped_errors_unclassified() {
-        let error = anyhow::anyhow!("io transport glitch");
-        assert_eq!(classified_summary_error(&error), None);
-    }
-
-    #[test]
-    fn project_state_from_snapshot_none_is_stopped() {
-        let project = crate::test_support::test_project();
-        assert_eq!(
-            project_state_from_snapshot(&project, None),
+            summarize_project(&fake, &project).or_panic("list side"),
             ProjectState::Stopped
         );
+
+        fake.set_workspace_snapshot_error(TmuxError::MissingSession("gone".into()));
+        let status = project_status(&fake, &project).or_panic("status side");
+        assert_eq!(status.state, ProjectState::Stopped);
     }
 
     #[test]
-    fn project_state_from_snapshot_healthy_is_running() {
-        let project = crate::test_support::test_project();
-        let snap = workspace_snapshot(&project, false);
+    fn vanished_window_race_classifies_as_drifted_for_list_and_status() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+
+        fake.set_workspace_snapshot_error(TmuxError::MissingTarget("s:agents".into()));
         assert_eq!(
-            project_state_from_snapshot(&project, Some(&snap)),
-            ProjectState::Running
+            summarize_project(&fake, &project).or_panic("list side"),
+            ProjectState::Drifted
         );
-    }
 
-    #[test]
-    fn project_state_from_snapshot_dead_pane_is_degraded() {
-        let project = crate::test_support::test_project();
-        let snap = workspace_snapshot(&project, true);
+        fake.set_workspace_snapshot_error(TmuxError::MissingTarget("s:agents".into()));
         assert_eq!(
-            project_state_from_snapshot(&project, Some(&snap)),
-            ProjectState::Degraded
-        );
-    }
-
-    #[test]
-    fn project_state_from_snapshot_missing_metadata_is_drifted_not_error() {
-        // A successful but untagged payload is real drift. Command failures
-        // must not become an empty snapshot that is misclassified as drift.
-        let project = crate::test_support::test_project();
-        let snap = WorkspaceSnapshot {
-            fingerprint: None,
-            project_id: None,
-            profile_id: None,
-            window: Some(WorkspaceWindowSnapshot {
-                role: None,
-                panes: Vec::new(),
-            }),
-        };
-        assert_eq!(
-            project_state_from_snapshot(&project, Some(&snap)),
+            project_status(&fake, &project)
+                .or_panic("status side")
+                .state,
             ProjectState::Drifted
         );
     }
 
     #[test]
-    fn project_state_from_snapshot_fingerprint_mismatch_is_drifted() {
-        let project = crate::test_support::test_project();
-        let mut snap = workspace_snapshot(&project, false);
-        snap.fingerprint = Some("wrong".into());
-        assert_eq!(
-            project_state_from_snapshot(&project, Some(&snap)),
-            ProjectState::Drifted
-        );
-    }
+    fn command_failure_propagates_for_list_and_status() {
+        // Unclassifiable transport failures must stay errors (list renders
+        // Error at the caller) rather than lying with Stopped/Drifted.
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
 
-    #[test]
-    fn project_state_from_snapshot_missing_window_is_drifted() {
-        let project = crate::test_support::test_project();
-        let mut snap = workspace_snapshot(&project, false);
-        snap.window = None;
+        fake.set_workspace_snapshot_error(TmuxError::CommandFailure(
+            "server unexpectedly closed".into(),
+        ));
+        summarize_project(&fake, &project).err_or_panic("list side: expected Err");
 
-        assert_eq!(
-            project_state_from_snapshot(&project, Some(&snap)),
-            ProjectState::Drifted
-        );
-    }
-
-    fn workspace_snapshot(project: &ResolvedProject, first_pane_dead: bool) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
-            fingerprint: Some(project.fingerprint.clone()),
-            project_id: Some(project.id.clone()),
-            profile_id: Some(project.profile_id.clone()),
-            window: Some(WorkspaceWindowSnapshot {
-                role: Some(WINDOW_ROLE_AGENTS.to_string()),
-                panes: vec![
-                    WorkspacePaneSnapshot {
-                        pane: PaneInfo {
-                            pane_id: "%0".into(),
-                            pane_dead: first_pane_dead,
-                            pane_dead_status: first_pane_dead.then_some(1),
-                            alternate_on: false,
-                            pane_height: 24,
-                        },
-                        agent_id: Some("alpha".into()),
-                    },
-                    WorkspacePaneSnapshot {
-                        pane: PaneInfo {
-                            pane_id: "%1".into(),
-                            pane_dead: false,
-                            pane_dead_status: None,
-                            alternate_on: false,
-                            pane_height: 24,
-                        },
-                        agent_id: Some("beta".into()),
-                    },
-                ],
-            }),
-        }
+        fake.set_workspace_snapshot_error(TmuxError::CommandFailure(
+            "server unexpectedly closed".into(),
+        ));
+        project_status(&fake, &project).err_or_panic("status side: expected Err");
     }
 }
