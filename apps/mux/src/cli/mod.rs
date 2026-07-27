@@ -211,10 +211,14 @@ pub(crate) enum CommandKind {
     /// it zooms the pane, temporarily grows the window (to at most 1000
     /// rows) so the TUI repaints its internal transcript, captures, then
     /// restores the window exactly as found — size, zoom, active pane, and
-    /// window-size policy (attached clients see a brief resize). If
+    /// window-size policy (attached clients see a brief resize). Concurrent
+    /// deep captures of the same window are serialized by a per-window
+    /// lock; the contender falls back to the visible frame immediately. If
     /// deepening cannot run or the TUI never repaints, the visible-frame
-    /// capture is returned and a warning is logged. `--json` reports both
-    /// facts as `alternate_on` and `deep_capture`.
+    /// capture is returned and a warning is logged. `--json` reports the
+    /// depth context: `alternate_on`, `pane_height`, `deep_capture`,
+    /// `deep_capture_status` (`not_applicable` / `not_needed` / `completed`
+    /// / `busy` / `unavailable`), and `depth_request_clamped`.
     Capture {
         /// Project id, or `.` for the registered project containing the CWD.
         project: ProjectTarget,

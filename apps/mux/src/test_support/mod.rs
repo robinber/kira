@@ -30,6 +30,11 @@ const FAKE_WINDOW_WIDTH: usize = 200;
 const FAKE_WINDOW_HEIGHT: usize = 24;
 
 pub(crate) struct FakeTmux {
+    /// Unique fake server socket path, so per-window deep-capture locks are
+    /// isolated between `FakeTmux` instances (and between parallel tests).
+    /// The tempdir keeps lock sidecar files out of the repo and is removed
+    /// on drop.
+    socket_dir: tempfile::TempDir,
     sessions: Mutex<BTreeMap<String, FakeSession>>,
     ops: Mutex<Vec<FakeOp>>,
     workspace_snapshot_error: Mutex<Option<TmuxError>>,
@@ -260,6 +265,7 @@ pub(crate) enum FakeOp {
 impl FakeTmux {
     pub(crate) fn new() -> Self {
         Self {
+            socket_dir: ok(tempfile::tempdir(), "fake tmux socket tempdir"),
             sessions: Mutex::new(BTreeMap::new()),
             ops: Mutex::new(Vec::new()),
             workspace_snapshot_error: Mutex::new(None),
@@ -570,6 +576,16 @@ impl FakeTmux {
             .get(session)
             .and_then(|session| session.windows.get(window))
             .and_then(|window| window.size_option.clone())
+    }
+
+    /// Fake tmux server socket path (unique per instance) — also usable by
+    /// tests to contend on the deep-capture window lock.
+    pub(crate) fn socket_path(&self) -> String {
+        self.socket_dir
+            .path()
+            .join("fake-socket")
+            .display()
+            .to_string()
     }
 
     /// Read the zoom state of a window for assertions.
@@ -1079,6 +1095,7 @@ impl TmuxAdapter for FakeTmux {
                         // the window-addressed fake ops resolve like tmux
                         // resolves `@N`.
                         window_id: format!("{session_name}:{window_name}"),
+                        socket_path: self.socket_path(),
                         width: window.width,
                         height: window.height,
                         zoomed: window.zoomed_pane.is_some(),

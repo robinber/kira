@@ -1166,14 +1166,8 @@ while :; do sleep 1; done
     );
 
     // Snapshot the pre-capture window state the restore must reproduce.
-    // The session name embeds a hash; resolve it through list-sessions.
-    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    let session_name = stdout_of(&sessions).trim().to_string();
-    let window = format!("{session_name}:agents");
-    let state_format = "#{window_width}x#{window_height} zoomed=#{window_zoomed_flag} \
-                        active=#{pane_id} layout=#{window_layout}";
-    let before = bed.tmux(&["display-message", "-p", "-t", &window, state_format]);
-    assert_success(&before, "window state before deep capture");
+    let window = format!("{}:agents", managed_session_name(&bed));
+    let before = window_state(&bed, &window);
 
     // Deep request: the resize-based capture must recover the full transcript.
     let deep = bed.kira(&["capture", "it", "tui", "--lines", "200", "--json"]);
@@ -1181,6 +1175,12 @@ while :; do sleep 1; done
     let value = parse_json(&deep);
     assert_eq!(value["alternate_on"], true, "got: {value}");
     assert_eq!(value["deep_capture"], true, "got: {value}");
+    assert_eq!(value["deep_capture_status"], "completed", "got: {value}");
+    assert_eq!(value["depth_request_clamped"], false, "got: {value}");
+    assert!(
+        value["pane_height"].as_u64().is_some_and(|h| h > 0),
+        "pane_height must be reported, got: {value}"
+    );
     let output = value["output"]
         .as_str()
         .map_or_else(String::new, str::to_owned);
@@ -1193,11 +1193,9 @@ while :; do sleep 1; done
     // The window must come back exactly as before: size, zoom, active pane,
     // and the multi-pane layout, with no leftover window-local `window-size`
     // override.
-    let after = bed.tmux(&["display-message", "-p", "-t", &window, state_format]);
-    assert_success(&after, "window state after deep capture");
     assert_eq!(
-        stdout_of(&after).trim(),
-        stdout_of(&before).trim(),
+        window_state(&bed, &window),
+        before,
         "deep capture must restore size, zoom, active pane, and layout"
     );
     let size_option = bed.tmux(&["show-options", "-w", "-t", &window, "window-size"]);
@@ -1205,6 +1203,83 @@ while :; do sleep 1; done
         stdout_of(&size_option).trim(),
         "",
         "deep capture must not leave a window-size manual override behind"
+    );
+}
+
+#[test]
+fn send_wait_deepens_alternate_screen_reply_and_restores_window() {
+    // The exact #69 route, end to end: an alternate-screen TUI that reads a
+    // prompt from stdin and answers with a reply taller than the pane.
+    // `send --wait` must print the WHOLE reply (deepened final capture), and
+    // leave the window exactly as found.
+    let bed = TestBed::new();
+    let script = bed.project_root.path().join("mini-wait-tui");
+    write_file(
+        &script,
+        r#"#!/bin/sh
+printf '\033[?1049h'
+total=0
+repaint() {
+  rows=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f1)
+  [ -n "$rows" ] || rows=24
+  printf '\033[2J\033[H'
+  start=$((total - rows + 2))
+  [ "$start" -lt 1 ] && start=1
+  i=$start
+  while [ "$i" -le "$total" ]; do
+    printf 'reply line %s\n' "$i"
+    i=$((i + 1))
+  done
+}
+trap repaint WINCH
+repaint
+IFS= read -r _prompt
+total=100
+repaint
+while :; do sleep 1; done
+"#,
+    );
+    make_executable(&script);
+    bed.write_project(&format!(
+        "[[agents]]\nid = \"tui\"\ncommand = \"{}\"\n",
+        script.display()
+    ));
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+    let window = format!("{}:agents", managed_session_name(&bed));
+    let before = window_state(&bed, &window);
+
+    let waited = bed.kira_within(
+        Duration::from_mins(3),
+        &[
+            "send",
+            "it",
+            "tui",
+            "answer tall",
+            "--wait",
+            "--lines",
+            "200",
+        ],
+    );
+    assert_success(&waited, "send --wait to alt-screen TUI");
+    let output = stdout_of(&waited);
+    assert!(
+        output.contains("reply line 1\n") && output.contains("reply line 100"),
+        "wait must return the whole reply through the alternate screen, \
+         got head: {:?}",
+        output.lines().take(3).collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        window_state(&bed, &window),
+        before,
+        "the deepened final capture must restore the window exactly"
+    );
+    let size_option = bed.tmux(&["show-options", "-w", "-t", &window, "window-size"]);
+    assert_eq!(
+        stdout_of(&size_option).trim(),
+        "",
+        "no window-size override may survive the deepened wait capture"
     );
 }
 
@@ -1227,4 +1302,26 @@ fn make_executable(path: &std::path::Path) {
     if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
         panic!("failed to chmod {}: {error}", path.display());
     }
+}
+
+/// Resolve the managed session name (it embeds a hash) via list-sessions.
+fn managed_session_name(bed: &TestBed) -> String {
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_success(&sessions, "list-sessions");
+    stdout_of(&sessions).trim().to_string()
+}
+
+/// Full window-state fingerprint a deep capture must leave untouched:
+/// size, zoom, active pane, and the exact pane layout.
+fn window_state(bed: &TestBed, window: &str) -> String {
+    let state = bed.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        window,
+        "#{window_width}x#{window_height} zoomed=#{window_zoomed_flag} \
+         active=#{pane_id} layout=#{window_layout}",
+    ]);
+    assert_success(&state, "window state read");
+    stdout_of(&state).trim().to_string()
 }

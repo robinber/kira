@@ -353,23 +353,24 @@ impl TmuxAdapter for TmuxClient {
         }
     }
 
-    /// Read the window id, width/height, zoom state, whether the observed
-    /// pane is active, the window's active pane, and the window-local
-    /// `window-size` value.
+    /// Read the window id, server socket path, width/height, zoom state,
+    /// whether the observed pane is active, the window's active pane, and
+    /// the window-local `window-size` value.
     fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
         let output = self.output([
             "display-message",
             "-p",
             "-t",
             pane_id,
-            "#{window_id}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
+            "#{window_id}|#{socket_path}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
         ])?;
         if !output.status.success() {
             return Err(failed_tmux_status(pane_id, &output));
         }
         let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut parts = line.splitn(5, '|');
+        let mut parts = line.splitn(6, '|');
         let window_id = parts.next().context("missing window_id")?.to_string();
+        let socket_path = parts.next().context("missing socket_path")?.to_string();
         let width: usize = parts
             .next()
             .and_then(|value| value.parse().ok())
@@ -408,6 +409,7 @@ impl TmuxAdapter for TmuxClient {
 
         Ok(WindowGeometry {
             window_id,
+            socket_path,
             width,
             height,
             zoomed,
