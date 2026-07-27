@@ -318,7 +318,7 @@ impl FakeTmux {
         self.fail_capture.store(fail, Ordering::Relaxed);
     }
 
-    pub(super) fn fail_capture_enabled(&self) -> bool {
+    fn fail_capture_enabled(&self) -> bool {
         self.fail_capture.load(Ordering::Relaxed)
     }
 
@@ -377,7 +377,7 @@ impl FakeTmux {
     /// Guard every pane-addressed delivery op the way the real client's
     /// `run_on_target` does: a stopped server or unknown pane id is a typed
     /// error, never a silent success.
-    pub(super) fn ensure_deliverable(&self, target_pane: &str) -> Result<()> {
+    fn ensure_deliverable(&self, target_pane: &str) -> Result<()> {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }

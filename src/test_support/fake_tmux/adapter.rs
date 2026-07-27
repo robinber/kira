@@ -354,13 +354,19 @@ impl TmuxAdapter for FakeTmux {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }
-        if self.fail_capture_enabled() {
-            return Err(TmuxError::CommandFailure("fake transient capture failure".into()).into());
-        }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         for session in sessions.values_mut() {
             for window in session.windows.values_mut() {
                 if let Some(idx) = window.panes.iter().position(|pane| pane.pane_id == pane_id) {
+                    // Checked after target resolution so a vanished pane
+                    // still classifies as MissingTarget, not as this
+                    // transient failure.
+                    if self.fail_capture_enabled() {
+                        return Err(TmuxError::CommandFailure(
+                            "fake transient capture failure".into(),
+                        )
+                        .into());
+                    }
                     let pane = &mut window.panes[idx];
                     if let Some(next) = pane.queued_contents.pop_front() {
                         pane.content = next;

@@ -81,6 +81,25 @@ fn delivery_ops_reject_vanished_pane() {
 }
 
 #[test]
+fn vanished_pane_wins_over_transient_capture_knob() {
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.add_window("s", "w");
+    fake.set_fail_capture(true);
+
+    let error = fake
+        .capture_pane("%0", 50)
+        .err_or_panic("vanished_pane_wins_over_transient_capture_knob: expected Err");
+    assert!(
+        matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingTarget(_))
+        ),
+        "a vanished pane must classify as MissingTarget, got: {error}"
+    );
+}
+
+#[test]
 fn delivery_ops_reject_stopped_server() {
     let fake = FakeTmux::new();
     fake.add_session("s");
