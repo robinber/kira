@@ -3,11 +3,9 @@
 use anyhow::Result;
 
 /// Summary of a tmux pane returned by `list-panes`.
+///
+/// Field names mirror tmux's format variables (`pane_dead`, `alternate_on`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "field names mirror tmux's pane_* format variables"
-)]
 pub(crate) struct PaneInfo {
     /// Pane target ID such as `%1`.
     pub(crate) pane_id: String,
@@ -15,6 +13,30 @@ pub(crate) struct PaneInfo {
     pub(crate) pane_dead: bool,
     /// Exit status recorded by tmux when the pane is dead.
     pub(crate) pane_dead_status: Option<i32>,
+    /// Whether the pane program is on the tmux alternate screen. Alternate
+    /// screens accumulate no history: capture depth is capped at the visible
+    /// frame no matter how many lines are requested.
+    pub(crate) alternate_on: bool,
+    /// Visible pane height in rows — the capture depth ceiling when
+    /// `alternate_on` is set.
+    pub(crate) pane_height: usize,
+}
+
+/// Window state saved before (and restored after) a deep capture resize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WindowGeometry {
+    /// Window width in columns.
+    pub(crate) width: usize,
+    /// Window height in rows.
+    pub(crate) height: usize,
+    /// Whether the window is currently zoomed on a pane.
+    pub(crate) zoomed: bool,
+    /// Whether the observed pane is the window's active pane (the zoomed
+    /// pane when `zoomed` is set).
+    pub(crate) pane_active: bool,
+    /// Whether `window-size` was already set locally on the window before
+    /// kira touched it (a later `resize-window` forces it to `manual`).
+    pub(crate) size_option_set: bool,
 }
 
 /// Live pane metadata paired with its kira-mux agent assignment.
@@ -135,4 +157,15 @@ pub(crate) trait TmuxAdapter {
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()>;
     /// Capture recent pane history (at most `history_limit` lines).
     fn capture_pane(&self, pane_id: &str, history_limit: usize) -> Result<String>;
+    /// Read the window geometry (and zoom/option state) for a pane's window.
+    fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry>;
+    /// Resize a pane's window to an explicit size (sets `window-size` to
+    /// `manual` as a tmux side effect — see
+    /// [`WindowGeometry::size_option_set`]).
+    fn resize_window(&self, pane_id: &str, width: usize, height: usize) -> Result<()>;
+    /// Toggle window zoom on a pane (`resize-pane -Z`).
+    fn toggle_pane_zoom(&self, pane_id: &str) -> Result<()>;
+    /// Remove the window-local `window-size` override so the window follows
+    /// clients (or the session default size) again.
+    fn unset_window_size_option(&self, pane_id: &str) -> Result<()>;
 }

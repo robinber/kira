@@ -12,7 +12,8 @@ mod parse;
 mod paste;
 
 pub(crate) use adapter::{
-    PaneInfo, TmuxAdapter, WorkspacePaneSnapshot, WorkspaceSnapshot, WorkspaceWindowSnapshot,
+    PaneInfo, TmuxAdapter, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
+    WorkspaceWindowSnapshot,
 };
 pub(crate) use client::TmuxClient;
 pub(crate) use error::TmuxError;

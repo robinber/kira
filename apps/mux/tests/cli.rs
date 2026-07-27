@@ -1113,6 +1113,103 @@ fn capture_honors_line_limit_and_strips_screen_padding() {
 }
 
 #[test]
+fn capture_deepens_alternate_screen_tui_and_restores_window() {
+    // Mini alternate-screen TUI, faithful to real agent TUIs (Claude Code,
+    // Grok Build): it keeps a 100-line transcript internally, repaints only
+    // the visible tail, and never scrolls the terminal — so tmux history
+    // stays empty and plain capture is capped at the pane height.
+    let bed = TestBed::new();
+    let script = bed.project_root.path().join("mini-alt-tui");
+    write_file(
+        &script,
+        r#"#!/bin/sh
+printf '\033[?1049h'
+total=100
+repaint() {
+  rows=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f1)
+  [ -n "$rows" ] || rows=24
+  printf '\033[2J\033[H'
+  start=$((total - rows + 2))
+  [ "$start" -lt 1 ] && start=1
+  i=$start
+  while [ "$i" -le "$total" ]; do
+    printf 'transcript line %s\n' "$i"
+    i=$((i + 1))
+  done
+}
+trap repaint WINCH
+repaint
+while :; do sleep 1; done
+"#,
+    );
+    make_executable(&script);
+    bed.write_project(&format!(
+        "[[agents]]\nid = \"tui\"\ncommand = \"{}\"\n",
+        script.display()
+    ));
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    // Shallow capture (10 ≤ pane height): stays plain and proves the pane is
+    // genuinely depth-capped — the transcript head is unreachable.
+    let shallow = wait_until("alt-screen TUI to paint its tail", || {
+        let output = bed.kira(&["capture", "it", "tui", "--lines", "10"]);
+        let text = stdout_of(&output);
+        (output.status.success() && text.contains("transcript line 100")).then_some(text)
+    });
+    assert!(
+        !shallow.contains("transcript line 1\n"),
+        "the visible frame must not reach the transcript head: {shallow:?}"
+    );
+
+    // Deep request: the resize-based capture must recover the full transcript.
+    let deep = bed.kira(&["capture", "it", "tui", "--lines", "200", "--json"]);
+    assert_success(&deep, "deep capture");
+    let value = parse_json(&deep);
+    assert_eq!(value["alternate_on"], true, "got: {value}");
+    assert_eq!(value["deep_capture"], true, "got: {value}");
+    let output = value["output"]
+        .as_str()
+        .map_or_else(String::new, str::to_owned);
+    assert!(
+        output.contains("transcript line 1\n") && output.contains("transcript line 100"),
+        "deep capture must recover the whole transcript, got head: {:?}",
+        output.lines().take(3).collect::<Vec<_>>()
+    );
+
+    // The window must come back exactly as before: original size, no zoom,
+    // and no leftover window-local `window-size manual` override.
+    // The session name embeds a hash; resolve it through list-sessions.
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    let session_name = stdout_of(&sessions).trim().to_string();
+    let geometry = bed.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("{session_name}:agents"),
+        "#{window_width}x#{window_height} zoomed=#{window_zoomed_flag}",
+    ]);
+    assert_success(&geometry, "window geometry after deep capture");
+    assert_eq!(
+        stdout_of(&geometry).trim(),
+        "200x24 zoomed=0",
+        "deep capture must restore window size and zoom"
+    );
+    let size_option = bed.tmux(&[
+        "show-options",
+        "-w",
+        "-t",
+        &format!("{session_name}:agents"),
+        "window-size",
+    ]);
+    assert_eq!(
+        stdout_of(&size_option).trim(),
+        "",
+        "deep capture must not leave a window-size manual override behind"
+    );
+}
+
+#[test]
 fn agents_list_reports_live_runtime_state() {
     let bed = TestBed::new();
     bed.write_project(CAT_AGENT);

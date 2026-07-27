@@ -50,23 +50,27 @@ fn parse_display_message_line_maps_empty_fields_to_none() {
 
 #[test]
 fn parse_workspace_pane_line_reads_full_metadata() {
-    let (pane, role) = parse_workspace_pane_line("%5\t1\t137\talpha\tagents")
+    let (pane, role) = parse_workspace_pane_line("%5\t1\t137\t1\t42\talpha\tagents")
         .or_panic("parse_workspace_pane_line_reads_full_metadata");
 
     assert_eq!(pane.pane.pane_id, "%5");
     assert!(pane.pane.pane_dead);
     assert_eq!(pane.pane.pane_dead_status, Some(137));
+    assert!(pane.pane.alternate_on);
+    assert_eq!(pane.pane.pane_height, 42);
     assert_eq!(pane.agent_id.as_deref(), Some("alpha"));
     assert_eq!(role.as_deref(), Some("agents"));
 }
 
 #[test]
 fn parse_workspace_pane_line_maps_empty_options_to_none() {
-    let (pane, role) = parse_workspace_pane_line("%5\t0\t\t\t")
+    let (pane, role) = parse_workspace_pane_line("%5\t0\t\t0\t24\t\t")
         .or_panic("parse_workspace_pane_line_maps_empty_options_to_none");
 
     assert!(!pane.pane.pane_dead);
     assert_eq!(pane.pane.pane_dead_status, None);
+    assert!(!pane.pane.alternate_on);
+    assert_eq!(pane.pane.pane_height, 24);
     assert_eq!(pane.agent_id, None);
     assert_eq!(role, None);
 }

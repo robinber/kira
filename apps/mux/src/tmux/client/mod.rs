@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, bail};
 
 use super::adapter::{
-    PaneInfo, TmuxAdapter, WorkspacePaneSnapshot, WorkspaceSnapshot, WorkspaceWindowSnapshot,
+    PaneInfo, TmuxAdapter, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
+    WorkspaceWindowSnapshot,
 };
 use super::env_file::{ShellEnvFile, respawn_pane_args};
 use super::error::TmuxError;
@@ -105,7 +106,7 @@ impl TmuxAdapter for TmuxClient {
 
         let window_target = format!("{session_name}:{window_name}");
         let pane_fmt = format!(
-            "#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{{PANE_AGENT_ID}}}\t#{{{WINDOW_ROLE}}}",
+            "#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{alternate_on}}\t#{{pane_height}}\t#{{{PANE_AGENT_ID}}}\t#{{{WINDOW_ROLE}}}",
         );
         let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
         let window = if pane_output.status.success() {
@@ -164,7 +165,7 @@ impl TmuxAdapter for TmuxClient {
         let output = self.output([
             "list-panes",
             "-F",
-            "#{pane_id}|#{pane_dead}|#{pane_dead_status}",
+            "#{pane_id}|#{pane_dead}|#{pane_dead_status}|#{alternate_on}|#{pane_height}",
             "-t",
             target,
         ])?;
@@ -350,6 +351,87 @@ impl TmuxAdapter for TmuxClient {
         } else {
             Ok(lines.join("\n") + "\n")
         }
+    }
+
+    /// Read window width/height, zoom state, and whether the observed pane is
+    /// active, plus whether `window-size` is set locally on the window.
+    fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
+        let output = self.output([
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
+        ])?;
+        if !output.status.success() {
+            return Err(failed_tmux_status(pane_id, &output));
+        }
+        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let mut parts = line.splitn(4, '|');
+        let width: usize = parts
+            .next()
+            .and_then(|value| value.parse().ok())
+            .context("missing window_width")?;
+        let height: usize = parts
+            .next()
+            .and_then(|value| value.parse().ok())
+            .context("missing window_height")?;
+        let zoomed = parts.next().context("missing window_zoomed_flag")? == "1";
+        let pane_active = parts.next().context("missing pane_active")? == "1";
+        // `show-options -w` without -A lists only window-local values, so an
+        // empty read means the window still inherits the global window-size.
+        let size_option_set = self
+            .read_option(
+                pane_id,
+                [
+                    "show-options",
+                    "-w",
+                    "-q",
+                    "-v",
+                    "-t",
+                    pane_id,
+                    "window-size",
+                ],
+            )?
+            .is_some();
+
+        Ok(WindowGeometry {
+            width,
+            height,
+            zoomed,
+            pane_active,
+            size_option_set,
+        })
+    }
+
+    /// Resize a pane's window (tmux resolves the pane target to its window).
+    fn resize_window(&self, pane_id: &str, width: usize, height: usize) -> Result<()> {
+        self.run_on_target(
+            pane_id,
+            [
+                "resize-window",
+                "-t",
+                pane_id,
+                "-x",
+                &width.to_string(),
+                "-y",
+                &height.to_string(),
+            ],
+        )
+    }
+
+    /// Toggle window zoom on the target pane.
+    fn toggle_pane_zoom(&self, pane_id: &str) -> Result<()> {
+        self.run_on_target(pane_id, ["resize-pane", "-Z", "-t", pane_id])
+    }
+
+    /// Drop the window-local `window-size` override left behind by
+    /// `resize-window`.
+    fn unset_window_size_option(&self, pane_id: &str) -> Result<()> {
+        self.run_on_target(
+            pane_id,
+            ["set-option", "-w", "-q", "-u", "-t", pane_id, "window-size"],
+        )
     }
 }
 
@@ -551,7 +633,7 @@ fn parse_display_message_line(raw: &str) -> DisplayedSessionMetadata {
 }
 
 fn parse_workspace_pane_line(line: &str) -> Result<(WorkspacePaneSnapshot, Option<String>)> {
-    let mut parts = line.splitn(5, '\t');
+    let mut parts = line.splitn(7, '\t');
     let pane_id = parts.next().context("missing pane_id")?.to_string();
     let pane_dead = parts.next().context("missing pane_dead")? == "1";
     let pane_dead_status = parts.next().and_then(|value| {
@@ -561,6 +643,11 @@ fn parse_workspace_pane_line(line: &str) -> Result<(WorkspacePaneSnapshot, Optio
             value.parse().ok()
         }
     });
+    let alternate_on = parts.next().is_some_and(|value| value == "1");
+    let pane_height = parts
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
     let agent_id = parts.next().and_then(non_empty);
     let window_role = parts.next().and_then(non_empty);
 
@@ -570,6 +657,8 @@ fn parse_workspace_pane_line(line: &str) -> Result<(WorkspacePaneSnapshot, Optio
                 pane_id,
                 pane_dead,
                 pane_dead_status,
+                alternate_on,
+                pane_height,
             },
             agent_id,
         },

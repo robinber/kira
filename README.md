@@ -331,6 +331,29 @@ short; a model that stays visually silent past the 30 s submission-only
 window is reported done with only the echo captured; and an idle monotonic
 counter (clock, watcher) never converges and reaches the hard timeout.
 
+### Capture depth and alternate-screen TUIs
+
+Some agent TUIs (Claude Code, Grok Build) run on the tmux **alternate
+screen** and keep their transcript internally: tmux accumulates no history
+for those panes, so a plain `capture-pane` can never return more than the
+visible frame, no matter what `--lines` asks for. Others (Codex) write to the
+normal screen and scroll into real tmux history.
+
+When `capture` or the final `send --wait` capture targets an alternate-screen
+pane and asks for more lines than the pane is tall, kira performs a **deep
+capture**: it zooms the pane, temporarily grows the window (up to the
+requested lines, capped at 1000 rows), lets the TUI repaint its transcript
+into the taller frame, captures it, then restores the window size, zoom, and
+`window-size` option exactly as found. An attached client sees a brief
+resize flicker while this happens. If deep capture cannot run (for example
+the window is zoomed on another pane), kira falls back to the visible-frame
+capture and logs a warning on stderr.
+
+`capture --json` reports the depth context per capture: `alternate_on` (the
+pane runs on the alternate screen) and `deep_capture` (the output came from a
+deep capture). `alternate_on: true` with `deep_capture: false` means the
+output is capped at the visible frame.
+
 ## Layout
 
 ```text

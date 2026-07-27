@@ -105,7 +105,17 @@ pub(super) fn cmd_send(
         agent_id,
         &seed,
         &crate::agent_io::WaitOptions::default(),
-    );
+    )
+    // Alternate-screen TUIs cap the converged capture at the visible frame;
+    // deepen it best-effort so long replies come back whole.
+    .map(|converged| {
+        crate::agent_io::deepen_wait_capture(
+            &tmux,
+            &seed.delivered.pane_id,
+            capture_lines,
+            converged,
+        )
+    });
     finish_wait(wait_result)
 }
 

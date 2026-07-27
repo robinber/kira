@@ -21,9 +21,13 @@ use crate::tmux::metadata::{
     WINDOW_ROLE_AGENTS,
 };
 use crate::tmux::{
-    PaneInfo, TmuxAdapter, TmuxError, WorkspacePaneSnapshot, WorkspaceSnapshot,
+    PaneInfo, TmuxAdapter, TmuxError, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
     WorkspaceWindowSnapshot,
 };
+
+/// Default fake window/pane geometry (mirrors a small real workspace).
+const FAKE_WINDOW_WIDTH: usize = 200;
+const FAKE_WINDOW_HEIGHT: usize = 24;
 
 pub(crate) struct FakeTmux {
     sessions: Mutex<BTreeMap<String, FakeSession>>,
@@ -122,6 +126,26 @@ struct FakeSession {
 struct FakeWindow {
     options: BTreeMap<String, String>,
     panes: Vec<FakePane>,
+    width: usize,
+    height: usize,
+    /// Pane id the window is zoomed on, when zoomed.
+    zoomed_pane: Option<String>,
+    /// Mirrors the tmux side effect of `resize-window`: a window-local
+    /// `window-size manual` that stays until explicitly unset.
+    size_option_set: bool,
+}
+
+impl FakeWindow {
+    fn new() -> Self {
+        Self {
+            options: BTreeMap::new(),
+            panes: Vec::new(),
+            width: FAKE_WINDOW_WIDTH,
+            height: FAKE_WINDOW_HEIGHT,
+            zoomed_pane: None,
+            size_option_set: false,
+        }
+    }
 }
 
 struct FakePane {
@@ -129,6 +153,12 @@ struct FakePane {
     options: BTreeMap<String, String>,
     dead: bool,
     dead_status: Option<i32>,
+    /// Whether the fake pane program is on the alternate screen. Captures of
+    /// such panes are capped at `height` lines, mirroring real tmux (no
+    /// history) — the full `content` plays the TUI's internal transcript.
+    alternate_on: bool,
+    /// Visible pane height; tracks the window height through `resize_window`.
+    height: usize,
     content: String,
     /// Scripted capture sequence: each `capture_pane` call pops the front
     /// into `content`, so tests can drive a changing pane deterministically.
@@ -149,10 +179,22 @@ impl FakePane {
             options: BTreeMap::new(),
             dead,
             dead_status: dead.then_some(1),
+            alternate_on: false,
+            height: FAKE_WINDOW_HEIGHT,
             content: String::new(),
             queued_contents: VecDeque::new(),
             dies_after_captures: None,
             removed_after_captures: None,
+        }
+    }
+
+    fn info(&self) -> PaneInfo {
+        PaneInfo {
+            pane_id: self.pane_id.clone(),
+            pane_dead: self.dead,
+            pane_dead_status: self.dead_status,
+            alternate_on: self.alternate_on,
+            pane_height: self.height,
         }
     }
 }
@@ -176,6 +218,17 @@ pub(crate) enum FakeOp {
         cwd: String,
         env: Vec<(String, String)>,
         command: Vec<String>,
+    },
+    ResizeWindow {
+        pane_id: String,
+        width: usize,
+        height: usize,
+    },
+    ToggleZoom {
+        pane_id: String,
+    },
+    UnsetWindowSizeOption {
+        pane_id: String,
     },
 }
 
@@ -332,13 +385,9 @@ impl FakeTmux {
             sessions.get_mut(session),
             format!("missing fake session '{session}'"),
         );
-        session.windows.insert(
-            window.to_string(),
-            FakeWindow {
-                options: BTreeMap::new(),
-                panes: Vec::new(),
-            },
-        );
+        session
+            .windows
+            .insert(window.to_string(), FakeWindow::new());
     }
 
     pub(crate) fn add_pane(&self, session: &str, window: &str, pane_id: &str, dead: bool) {
@@ -451,6 +500,29 @@ impl FakeTmux {
         self.with_pane_mut(pane_id, |pane| pane.content = content.to_string());
     }
 
+    /// Put the fake pane program on the alternate screen: captures become
+    /// capped at the pane height until the window is resized taller.
+    pub(crate) fn set_pane_alternate_on(&self, pane_id: &str, alternate_on: bool) {
+        self.with_pane_mut(pane_id, |pane| pane.alternate_on = alternate_on);
+    }
+
+    pub(crate) fn set_pane_height(&self, pane_id: &str, height: usize) {
+        self.with_pane_mut(pane_id, |pane| pane.height = height);
+    }
+
+    fn with_window_of_pane_mut(&self, pane_id: &str, apply: impl FnOnce(&mut FakeWindow)) -> bool {
+        let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        for session in sessions.values_mut() {
+            for window in session.windows.values_mut() {
+                if window.panes.iter().any(|pane| pane.pane_id == pane_id) {
+                    apply(window);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn set_pane_dead_status(&self, pane_id: &str, status: i32) {
         self.with_pane_mut(pane_id, |pane| {
             pane.dead = true;
@@ -529,11 +601,7 @@ impl TmuxAdapter for FakeTmux {
                 .panes
                 .iter()
                 .map(|pane| WorkspacePaneSnapshot {
-                    pane: PaneInfo {
-                        pane_id: pane.pane_id.clone(),
-                        pane_dead: pane.dead,
-                        pane_dead_status: pane.dead_status,
-                    },
+                    pane: pane.info(),
                     agent_id: pane.options.get(PANE_AGENT_ID).cloned(),
                 })
                 .collect();
@@ -576,11 +644,7 @@ impl TmuxAdapter for FakeTmux {
             for session in sessions.values() {
                 for window in session.windows.values() {
                     if let Some(pane) = window.panes.iter().find(|pane| pane.pane_id == target) {
-                        return Ok(vec![PaneInfo {
-                            pane_id: pane.pane_id.clone(),
-                            pane_dead: pane.dead,
-                            pane_dead_status: pane.dead_status,
-                        }]);
+                        return Ok(vec![pane.info()]);
                     }
                 }
             }
@@ -602,24 +666,12 @@ impl TmuxAdapter for FakeTmux {
             let Some(window) = session.windows.get(window_name) else {
                 return Err(TmuxError::MissingTarget(target.to_string()).into());
             };
-            Ok(window
-                .panes
-                .iter()
-                .map(|p| PaneInfo {
-                    pane_id: p.pane_id.clone(),
-                    pane_dead: p.dead,
-                    pane_dead_status: p.dead_status,
-                })
-                .collect())
+            Ok(window.panes.iter().map(FakePane::info).collect())
         } else {
             let mut all = Vec::new();
             for window in session.windows.values() {
                 for p in &window.panes {
-                    all.push(PaneInfo {
-                        pane_id: p.pane_id.clone(),
-                        pane_dead: p.dead,
-                        pane_dead_status: p.dead_status,
-                    });
+                    all.push(p.info());
                 }
             }
             Ok(all)
@@ -877,9 +929,18 @@ impl TmuxAdapter for FakeTmux {
                     } else {
                         false
                     };
+                    // An alternate-screen pane has no tmux history: capture
+                    // depth is capped at the visible pane height, mirroring
+                    // real tmux. The full content plays the TUI's internal
+                    // transcript, reachable only after a resize.
+                    let depth = if pane.alternate_on {
+                        history_limit.min(pane.height)
+                    } else {
+                        history_limit
+                    };
                     let lines: Vec<&str> = pane.content.lines().collect();
-                    let content = if lines.len() > history_limit {
-                        lines[lines.len() - history_limit..].join("\n") + "\n"
+                    let content = if lines.len() > depth {
+                        lines[lines.len() - depth..].join("\n") + "\n"
                     } else {
                         pane.content.clone()
                     };
@@ -892,6 +953,91 @@ impl TmuxAdapter for FakeTmux {
             }
         }
         Err(TmuxError::MissingTarget(pane_id.to_string()).into())
+    }
+
+    fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        for session in sessions.values() {
+            for window in session.windows.values() {
+                if window.panes.iter().any(|pane| pane.pane_id == pane_id) {
+                    return Ok(WindowGeometry {
+                        width: window.width,
+                        height: window.height,
+                        zoomed: window.zoomed_pane.is_some(),
+                        pane_active: window
+                            .zoomed_pane
+                            .as_deref()
+                            .is_none_or(|zoomed| zoomed == pane_id),
+                        size_option_set: window.size_option_set,
+                    });
+                }
+            }
+        }
+        Err(TmuxError::MissingTarget(pane_id.to_string()).into())
+    }
+
+    fn resize_window(&self, pane_id: &str, width: usize, height: usize) -> Result<()> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let found = self.with_window_of_pane_mut(pane_id, |window| {
+            window.width = width;
+            window.height = height;
+            window.size_option_set = true;
+            // Approximation: every pane tracks the window height (exact for
+            // the zoomed pane, close enough for layout panes in tests).
+            for pane in &mut window.panes {
+                pane.height = height;
+            }
+        });
+        if !found {
+            return Err(TmuxError::MissingTarget(pane_id.to_string()).into());
+        }
+        ok(self.ops.lock(), "fake tmux ops mutex poisoned").push(FakeOp::ResizeWindow {
+            pane_id: pane_id.to_string(),
+            width,
+            height,
+        });
+        Ok(())
+    }
+
+    fn toggle_pane_zoom(&self, pane_id: &str) -> Result<()> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let found = self.with_window_of_pane_mut(pane_id, |window| {
+            window.zoomed_pane = if window.zoomed_pane.is_some() {
+                None
+            } else {
+                Some(pane_id.to_string())
+            };
+        });
+        if !found {
+            return Err(TmuxError::MissingTarget(pane_id.to_string()).into());
+        }
+        ok(self.ops.lock(), "fake tmux ops mutex poisoned").push(FakeOp::ToggleZoom {
+            pane_id: pane_id.to_string(),
+        });
+        Ok(())
+    }
+
+    fn unset_window_size_option(&self, pane_id: &str) -> Result<()> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let found = self.with_window_of_pane_mut(pane_id, |window| {
+            window.size_option_set = false;
+        });
+        if !found {
+            return Err(TmuxError::MissingTarget(pane_id.to_string()).into());
+        }
+        ok(self.ops.lock(), "fake tmux ops mutex poisoned").push(FakeOp::UnsetWindowSizeOption {
+            pane_id: pane_id.to_string(),
+        });
+        Ok(())
     }
 }
 
