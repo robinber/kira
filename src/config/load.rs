@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use super::error::ConfigError;
 use super::model::{
-    GlobalConfig, ProjectFile, ProjectFileRaw, ProjectIdOnly, ResolutionMode,
-    default_session_prefix, default_shell, default_tmux_bin, default_window_name,
+    GlobalConfig, ProjectFile, ProjectFileRaw, ResolutionMode, default_session_prefix,
+    default_shell, default_tmux_bin, default_window_name,
 };
 use super::resolve::{resolve_project, validate_global_config};
 use crate::model::ResolvedProject;
@@ -58,9 +59,26 @@ pub(crate) fn load_projects(
 ) -> Result<LoadedProjects> {
     let global = load_global_config(&paths.global_config_path())?;
     let mut loaded = LoadedProjects::default();
-    let mut ids = BTreeSet::new();
 
-    for path in project_files(paths)? {
+    for record in discover_projects(paths)? {
+        let (path, project_id) = match record {
+            DiscoveredProject::Broken { path, error } => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "skipping invalid project file"
+                );
+                loaded.failures.push(ProjectConfigFailure {
+                    project_id: file_stem_id(&path),
+                    path,
+                    profile_id: None,
+                    error: error.to_string(),
+                });
+                continue;
+            }
+            DiscoveredProject::Identified { path, id, root: _ } => (path, id),
+        };
+
         let raw = match parse_project_raw(&path) {
             Ok(raw) => raw,
             Err(error) => {
@@ -70,21 +88,14 @@ pub(crate) fn load_projects(
                     "skipping invalid project file"
                 );
                 loaded.failures.push(ProjectConfigFailure {
-                    path: path.clone(),
-                    project_id: best_effort_project_id(&path),
+                    path,
+                    project_id: Some(project_id),
                     profile_id: None,
                     error: error.to_string(),
                 });
                 continue;
             }
         };
-
-        if !ids.insert(raw.id.clone()) {
-            return Err(ConfigError::DuplicateProjectId {
-                id: raw.id,
-                path: path.clone(),
-            });
-        }
 
         for pid in profile_ids(&raw) {
             let resolved_profile = resolve_profile(&raw, pid, &global, resolution_mode);
@@ -111,13 +122,70 @@ pub(crate) fn load_projects(
     Ok(loaded)
 }
 
-/// Best-effort id from a broken file so list rows stay identifiable.
-fn best_effort_project_id(path: &Path) -> Option<String> {
-    project_id_from_file(path).ok().or_else(|| {
-        path.file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(str::to_string)
-    })
+/// Minimal identity parsed during discovery: enough for duplicate
+/// detection, explicit-id lookup, and contextual root matching, tolerant of
+/// everything else in the file.
+#[derive(Debug, Deserialize)]
+struct ProjectIdentity {
+    id: String,
+    /// Any TOML type is tolerated so a mistyped `root` cannot poison the
+    /// identity (the full parse reports the real error); only a string
+    /// participates in contextual matching.
+    #[serde(default)]
+    root: Option<toml::Value>,
+}
+
+/// One projects-dir file as seen by the shared discovery pass.
+pub(super) enum DiscoveredProject {
+    /// Identity parsed; full validation may still fail later.
+    Identified {
+        path: PathBuf,
+        id: String,
+        root: Option<String>,
+    },
+    /// The identity itself could not be parsed.
+    Broken { path: PathBuf, error: ConfigError },
+}
+
+/// The single projects-dir scan shared by every entry point (`list`,
+/// explicit id, contextual `.`): sorted file order, one identity parse per
+/// file, and one duplicate policy — two files claiming the same id abort
+/// discovery regardless of which project the caller wanted.
+pub(super) fn discover_projects(paths: &AppPaths) -> Result<Vec<DiscoveredProject>> {
+    let mut ids = BTreeSet::new();
+    let mut records = Vec::new();
+
+    for path in project_files(paths)? {
+        match parse_project_file::<ProjectIdentity>(&path) {
+            Ok(identity) => {
+                if !ids.insert(identity.id.clone()) {
+                    return Err(ConfigError::DuplicateProjectId {
+                        id: identity.id,
+                        path,
+                    });
+                }
+                records.push(DiscoveredProject::Identified {
+                    path,
+                    id: identity.id,
+                    root: identity
+                        .root
+                        .as_ref()
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_string),
+                });
+            }
+            Err(error) => records.push(DiscoveredProject::Broken { path, error }),
+        }
+    }
+
+    Ok(records)
+}
+
+/// File-stem id for rows whose identity could not be parsed at all.
+fn file_stem_id(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
 }
 
 /// Load one resolved project by ID and optional profile.
@@ -331,33 +399,33 @@ fn project_files(paths: &AppPaths) -> Result<Vec<PathBuf>> {
 }
 
 /// Locate and fully parse the single project file matching `project_id`.
+///
+/// A declared id always wins; a broken file whose *filename* matches the
+/// requested id surfaces its parse error only when no file declares the id,
+/// so the operator sees why their lookup failed instead of "unknown id".
 fn find_project_raw(paths: &AppPaths, project_id: &str) -> Result<ProjectFileRaw> {
     let mut matched = None;
+    let mut broken_stem_match = None;
 
-    for path in project_files(paths)? {
-        match project_id_from_file(&path) {
-            Ok(id) if id == project_id => {
-                if matched.replace(path.clone()).is_some() {
-                    return Err(ConfigError::DuplicateProjectId {
-                        id: project_id.to_string(),
-                        path,
-                    });
-                }
+    for record in discover_projects(paths)? {
+        match record {
+            DiscoveredProject::Identified { path, id, root: _ } if id == project_id => {
+                matched = Some(path);
             }
-            Err(error) if path.file_stem().and_then(|stem| stem.to_str()) == Some(project_id) => {
-                return Err(error);
+            DiscoveredProject::Broken { path, error }
+                if path.file_stem().and_then(|stem| stem.to_str()) == Some(project_id) =>
+            {
+                broken_stem_match = Some(error);
             }
-            Ok(_) | Err(_) => {}
+            DiscoveredProject::Identified { .. } | DiscoveredProject::Broken { .. } => {}
         }
     }
 
-    let path = matched.ok_or_else(|| ConfigError::UnknownProjectId(project_id.to_string()))?;
-    parse_project_raw(&path)
-}
-
-fn project_id_from_file(path: &Path) -> Result<String> {
-    let project: ProjectIdOnly = parse_project_file(path)?;
-    Ok(project.id)
+    match (matched, broken_stem_match) {
+        (Some(path), _) => parse_project_raw(&path),
+        (None, Some(error)) => Err(error),
+        (None, None) => Err(ConfigError::UnknownProjectId(project_id.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +624,151 @@ command = "echo"
         );
 
         assert!(matches!(error, ConfigError::FileParse { .. }));
+    }
+
+    #[test]
+    fn duplicate_id_detection_is_uniform_across_entry_points() {
+        // File A is fully valid; file B declares the same id but fails full
+        // parse (unknown field). The old per-entry checks disagreed: `list`
+        // only counted fully-parsed files and missed this duplicate.
+        let config_home = ok(tempfile::tempdir(), "config home");
+        let projects = config_home.path().join("kira-mux/projects");
+        ok(fs::create_dir_all(&projects), "projects dir");
+
+        ok(
+            fs::write(
+                projects.join("a.toml"),
+                r#"
+id = "dup"
+root = "/tmp/dup-a"
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+            ),
+            "write a",
+        );
+        ok(
+            fs::write(
+                projects.join("b.toml"),
+                r#"
+id = "dup"
+root = "/tmp/dup-b"
+nope = true
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+            ),
+            "write b",
+        );
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+
+        let list_err = err(
+            load_projects(&paths, ResolutionMode::Deferred),
+            "list entry: expected duplicate error",
+        );
+        assert!(
+            matches!(list_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {list_err}"
+        );
+
+        let explicit_err = err(
+            find_project_raw(&paths, "dup"),
+            "explicit entry: expected duplicate error",
+        );
+        assert!(
+            matches!(explicit_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {explicit_err}"
+        );
+
+        let unrelated_err = err(
+            find_project_raw(&paths, "unrelated"),
+            "unrelated explicit lookup: duplicates abort discovery globally",
+        );
+        assert!(
+            matches!(unrelated_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {unrelated_err}"
+        );
+
+        let contextual_err = err(
+            target::find_project_path(&paths, config_home.path()),
+            "contextual entry: expected duplicate error",
+        );
+        assert!(
+            matches!(contextual_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {contextual_err}"
+        );
+    }
+
+    #[test]
+    fn mistyped_root_does_not_poison_the_declared_identity() {
+        // `root = 42` must not knock the file out of discovery: its id
+        // still counts for duplicate detection, and explicit lookup
+        // surfaces the real parse error instead of UnknownProjectId.
+        let config_home = ok(tempfile::tempdir(), "config home");
+        let projects = config_home.path().join("kira-mux/projects");
+        ok(fs::create_dir_all(&projects), "projects dir");
+
+        ok(
+            fs::write(
+                projects.join("bad-root.toml"),
+                r#"
+id = "wanted"
+root = 42
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+            ),
+            "write bad root",
+        );
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let error = err(
+            find_project_raw(&paths, "wanted"),
+            "expected the full-parse error",
+        );
+        assert!(
+            !matches!(error, ConfigError::UnknownProjectId(_)),
+            "declared id must stay discoverable, got: {error}"
+        );
+    }
+
+    #[test]
+    fn explicit_lookup_prefers_declared_id_over_broken_stem_match() {
+        // A broken file named `wanted.toml` must not shadow a healthy file
+        // that properly declares `id = "wanted"`.
+        let config_home = ok(tempfile::tempdir(), "config home");
+        let projects = config_home.path().join("kira-mux/projects");
+        ok(fs::create_dir_all(&projects), "projects dir");
+
+        ok(
+            fs::write(projects.join("wanted.toml"), "id = [\nnot = toml\n"),
+            "write broken",
+        );
+        ok(
+            fs::write(
+                projects.join("real.toml"),
+                r#"
+id = "wanted"
+root = "/tmp/wanted"
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+            ),
+            "write real",
+        );
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let raw = ok(find_project_raw(&paths, "wanted"), "declared id must win");
+        assert_eq!(raw.id, "wanted");
     }
 
     #[test]
