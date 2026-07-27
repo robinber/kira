@@ -182,11 +182,34 @@ impl TmuxAdapter for TmuxClient {
     }
 
     /// Split the target window, creating another pane in `start_directory`.
-    fn split_window(&self, target: &str, start_directory: &str) -> Result<()> {
-        self.run_on_target(
+    ///
+    /// `-P -F '#{pane_id}'` prints the created pane's id, which is returned
+    /// so callers never have to re-derive it from listing order.
+    fn split_window(&self, target: &str, start_directory: &str) -> Result<String> {
+        let output = self.output([
+            "split-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
             target,
-            ["split-window", "-d", "-t", target, "-c", start_directory],
-        )
+            "-c",
+            start_directory,
+        ])?;
+        if !output.status.success() {
+            // Same classifier as run_on_target: no-server and missing
+            // targets must stay typed.
+            return Err(failed_tmux_status(target, &output));
+        }
+        let pane_id = stdout_lines(&output).into_iter().next().unwrap_or_default();
+        if !pane_id.starts_with('%') {
+            return Err(TmuxError::CommandFailure(format!(
+                "split-window did not report a pane id for target {target}: {pane_id:?}"
+            ))
+            .into());
+        }
+        Ok(pane_id)
     }
 
     /// Apply a tmux layout preset to the target window.

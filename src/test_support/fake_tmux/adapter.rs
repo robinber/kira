@@ -124,7 +124,7 @@ impl TmuxAdapter for FakeTmux {
         }
     }
 
-    fn split_window(&self, target: &str, _start_directory: &str) -> Result<()> {
+    fn split_window(&self, target: &str, _start_directory: &str) -> Result<String> {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }
@@ -141,9 +141,9 @@ impl TmuxAdapter for FakeTmux {
         let Some(window) = session.windows.get_mut(window_name) else {
             return Err(TmuxError::MissingTarget(target.to_string()).into());
         };
-        let idx = window.panes.len();
-        window.panes.push(FakePane::new(&format!("%{idx}"), false));
-        Ok(())
+        let pane_id = format!("%{}", window.panes.len());
+        window.panes.push(FakePane::new(&pane_id, false));
+        Ok(pane_id)
     }
 
     fn select_layout(&self, target: &str, _: &str) -> Result<()> {
