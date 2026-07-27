@@ -454,13 +454,6 @@ impl ProjectFileRaw {
     }
 }
 
-/// Minimal TOML shape used when scanning project IDs.
-#[derive(Debug, Deserialize)]
-pub(crate) struct ProjectIdOnly {
-    /// Stable project ID.
-    pub id: String,
-}
-
 /// Default tmux session-name prefix.
 pub(crate) fn default_session_prefix() -> String {
     "kira".to_string()

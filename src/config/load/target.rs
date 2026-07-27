@@ -2,26 +2,15 @@
 //!
 //! Matches registered project roots by physical path; deepest root wins.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use super::{parse_project_file, project_files};
+use super::{DiscoveredProject, discover_projects};
 use crate::config::error::ConfigError;
 use crate::config::model::ResolutionMode;
 use crate::config::resolve::normalize_project_root;
 use crate::paths::AppPaths;
 
 type Result<T> = std::result::Result<T, ConfigError>;
-
-/// Minimal project shape used to locate a registered root before validating
-/// the selected project's complete configuration.
-#[derive(Debug, Deserialize)]
-struct ProjectLocation {
-    id: String,
-    root: String,
-}
 
 struct ProjectCandidate {
     id: String,
@@ -37,13 +26,31 @@ pub(super) fn find_project_path(paths: &AppPaths, directory: &Path) -> Result<Pa
                 path: directory.to_path_buf(),
                 source,
             })?;
-    let mut project_ids = BTreeSet::new();
     let mut candidates = Vec::new();
 
-    for path in project_files(paths)? {
-        let location = match parse_project_file::<ProjectLocation>(&path) {
-            Ok(location) => location,
-            Err(error) => {
+    for record in discover_projects(paths)? {
+        // Broken files and root-less identities cannot participate in
+        // contextual matching; list / explicit-id lookups surface their
+        // errors instead.
+        let (path, id, root) = match record {
+            DiscoveredProject::Identified {
+                path,
+                id,
+                root: Some(root),
+            } => (path, id, root),
+            DiscoveredProject::Identified {
+                path,
+                id,
+                root: None,
+            } => {
+                tracing::debug!(
+                    path = %path.display(),
+                    project_id = id.as_str(),
+                    "skipping project config without a root for contextual matching"
+                );
+                continue;
+            }
+            DiscoveredProject::Broken { path, error } => {
                 tracing::debug!(
                     path = %path.display(),
                     %error,
@@ -53,18 +60,11 @@ pub(super) fn find_project_path(paths: &AppPaths, directory: &Path) -> Result<Pa
             }
         };
 
-        if !project_ids.insert(location.id.clone()) {
-            return Err(ConfigError::DuplicateProjectId {
-                id: location.id,
-                path,
-            });
-        }
-
-        let root = match normalize_project_root(&location.root, ResolutionMode::Deferred) {
+        let root = match normalize_project_root(&root, ResolutionMode::Deferred) {
             Ok(root) => root,
             Err(error) => {
                 tracing::debug!(
-                    project_id = location.id.as_str(),
+                    project_id = id.as_str(),
                     %error,
                     "skipping project with an invalid contextual root"
                 );
@@ -75,7 +75,7 @@ pub(super) fn find_project_path(paths: &AppPaths, directory: &Path) -> Result<Pa
             Ok(root) => root,
             Err(error) => {
                 tracing::debug!(
-                    project_id = location.id.as_str(),
+                    project_id = id.as_str(),
                     root = %root.display(),
                     %error,
                     "skipping project whose contextual root is unavailable"
@@ -86,7 +86,7 @@ pub(super) fn find_project_path(paths: &AppPaths, directory: &Path) -> Result<Pa
 
         if canonical_directory.starts_with(&canonical_root) {
             candidates.push(ProjectCandidate {
-                id: location.id,
+                id,
                 path,
                 depth: canonical_root.components().count(),
             });
