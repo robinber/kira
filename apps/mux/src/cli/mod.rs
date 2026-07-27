@@ -198,7 +198,8 @@ pub(crate) enum CommandKind {
         ///
         /// For alternate-screen TUIs (Claude Code, Grok Build) the final
         /// capture deepens automatically via a temporary window resize when
-        /// the request exceeds the pane height — see `capture --help`.
+        /// the request exceeds the pane height — one resize after
+        /// convergence, never during the wait polls. See `capture --help`.
         #[arg(long, requires = "wait", value_parser = parse_wait_capture_lines)]
         lines: Option<usize>,
     },
@@ -207,11 +208,13 @@ pub(crate) enum CommandKind {
     /// Alternate-screen TUIs (Claude Code, Grok Build) accumulate no tmux
     /// history: a plain capture is capped at the visible frame. When
     /// `--lines` exceeds the pane height on such a pane, kira deep-captures:
-    /// it zooms the pane, temporarily grows the window so the TUI repaints
-    /// its internal transcript, captures, then restores the window exactly
-    /// as found (attached clients see a brief resize). If deepening cannot
-    /// run, the visible-frame capture is returned and a warning is logged.
-    /// `--json` reports both facts as `alternate_on` and `deep_capture`.
+    /// it zooms the pane, temporarily grows the window (to at most 1000
+    /// rows) so the TUI repaints its internal transcript, captures, then
+    /// restores the window exactly as found — size, zoom, active pane, and
+    /// window-size policy (attached clients see a brief resize). If
+    /// deepening cannot run or the TUI never repaints, the visible-frame
+    /// capture is returned and a warning is logged. `--json` reports both
+    /// facts as `alternate_on` and `deep_capture`.
     Capture {
         /// Project id, or `.` for the registered project containing the CWD.
         project: ProjectTarget,

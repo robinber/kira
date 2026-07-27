@@ -353,21 +353,23 @@ impl TmuxAdapter for TmuxClient {
         }
     }
 
-    /// Read window width/height, zoom state, and whether the observed pane is
-    /// active, plus whether `window-size` is set locally on the window.
+    /// Read the window id, width/height, zoom state, whether the observed
+    /// pane is active, the window's active pane, and the window-local
+    /// `window-size` value.
     fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
         let output = self.output([
             "display-message",
             "-p",
             "-t",
             pane_id,
-            "#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
+            "#{window_id}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
         ])?;
         if !output.status.success() {
             return Err(failed_tmux_status(pane_id, &output));
         }
         let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut parts = line.splitn(4, '|');
+        let mut parts = line.splitn(5, '|');
+        let window_id = parts.next().context("missing window_id")?.to_string();
         let width: usize = parts
             .next()
             .and_then(|value| value.parse().ok())
@@ -378,40 +380,51 @@ impl TmuxAdapter for TmuxClient {
             .context("missing window_height")?;
         let zoomed = parts.next().context("missing window_zoomed_flag")? == "1";
         let pane_active = parts.next().context("missing pane_active")? == "1";
+
+        // `display-message` on a window target resolves to its active pane.
+        let active_output =
+            self.output(["display-message", "-p", "-t", &window_id, "#{pane_id}"])?;
+        if !active_output.status.success() {
+            return Err(failed_tmux_status(&window_id, &active_output));
+        }
+        let active_pane_id = String::from_utf8_lossy(&active_output.stdout)
+            .trim()
+            .to_string();
+
         // `show-options -w` without -A lists only window-local values, so an
         // empty read means the window still inherits the global window-size.
-        let size_option_set = self
-            .read_option(
-                pane_id,
-                [
-                    "show-options",
-                    "-w",
-                    "-q",
-                    "-v",
-                    "-t",
-                    pane_id,
-                    "window-size",
-                ],
-            )?
-            .is_some();
+        let size_option = self.read_option(
+            &window_id,
+            [
+                "show-options",
+                "-w",
+                "-q",
+                "-v",
+                "-t",
+                &window_id,
+                "window-size",
+            ],
+        )?;
 
         Ok(WindowGeometry {
+            window_id,
             width,
             height,
             zoomed,
             pane_active,
-            size_option_set,
+            active_pane_id,
+            size_option,
         })
     }
 
-    /// Resize a pane's window (tmux resolves the pane target to its window).
-    fn resize_window(&self, pane_id: &str, width: usize, height: usize) -> Result<()> {
+    /// Resize a window (tmux resolves a pane target to its window).
+    fn resize_window(&self, target: &str, width: usize, height: usize) -> Result<()> {
         self.run_on_target(
-            pane_id,
+            target,
             [
                 "resize-window",
                 "-t",
-                pane_id,
+                target,
                 "-x",
                 &width.to_string(),
                 "-y",
@@ -420,18 +433,23 @@ impl TmuxAdapter for TmuxClient {
         )
     }
 
-    /// Toggle window zoom on the target pane.
-    fn toggle_pane_zoom(&self, pane_id: &str) -> Result<()> {
-        self.run_on_target(pane_id, ["resize-pane", "-Z", "-t", pane_id])
+    /// Toggle window zoom. A window target resolves to its active pane.
+    fn toggle_pane_zoom(&self, target: &str) -> Result<()> {
+        self.run_on_target(target, ["resize-pane", "-Z", "-t", target])
     }
 
     /// Drop the window-local `window-size` override left behind by
     /// `resize-window`.
-    fn unset_window_size_option(&self, pane_id: &str) -> Result<()> {
+    fn unset_window_size_option(&self, target: &str) -> Result<()> {
         self.run_on_target(
-            pane_id,
-            ["set-option", "-w", "-q", "-u", "-t", pane_id, "window-size"],
+            target,
+            ["set-option", "-w", "-q", "-u", "-t", target, "window-size"],
         )
+    }
+
+    /// Make a pane the active pane of its window.
+    fn select_pane(&self, pane_id: &str) -> Result<()> {
+        self.run_on_target(pane_id, ["select-pane", "-t", pane_id])
     }
 }
 

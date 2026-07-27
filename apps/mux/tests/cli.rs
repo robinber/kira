@@ -1143,8 +1143,11 @@ while :; do sleep 1; done
 "#,
     );
     make_executable(&script);
+    // Multi-pane workspace (the product's normal topology): the TUI is the
+    // second, initially inactive pane, so deep capture must zoom it, then
+    // hand the active pane back.
     bed.write_project(&format!(
-        "[[agents]]\nid = \"tui\"\ncommand = \"{}\"\n",
+        "{CAT_AGENT}\n[[agents]]\nid = \"tui\"\ncommand = \"{}\"\n",
         script.display()
     ));
     assert_success(&bed.kira(&["start", "it"]), "start");
@@ -1162,6 +1165,16 @@ while :; do sleep 1; done
         "the visible frame must not reach the transcript head: {shallow:?}"
     );
 
+    // Snapshot the pre-capture window state the restore must reproduce.
+    // The session name embeds a hash; resolve it through list-sessions.
+    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    let session_name = stdout_of(&sessions).trim().to_string();
+    let window = format!("{session_name}:agents");
+    let state_format = "#{window_width}x#{window_height} zoomed=#{window_zoomed_flag} \
+                        active=#{pane_id} layout=#{window_layout}";
+    let before = bed.tmux(&["display-message", "-p", "-t", &window, state_format]);
+    assert_success(&before, "window state before deep capture");
+
     // Deep request: the resize-based capture must recover the full transcript.
     let deep = bed.kira(&["capture", "it", "tui", "--lines", "200", "--json"]);
     assert_success(&deep, "deep capture");
@@ -1177,31 +1190,17 @@ while :; do sleep 1; done
         output.lines().take(3).collect::<Vec<_>>()
     );
 
-    // The window must come back exactly as before: original size, no zoom,
-    // and no leftover window-local `window-size manual` override.
-    // The session name embeds a hash; resolve it through list-sessions.
-    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    let session_name = stdout_of(&sessions).trim().to_string();
-    let geometry = bed.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &format!("{session_name}:agents"),
-        "#{window_width}x#{window_height} zoomed=#{window_zoomed_flag}",
-    ]);
-    assert_success(&geometry, "window geometry after deep capture");
+    // The window must come back exactly as before: size, zoom, active pane,
+    // and the multi-pane layout, with no leftover window-local `window-size`
+    // override.
+    let after = bed.tmux(&["display-message", "-p", "-t", &window, state_format]);
+    assert_success(&after, "window state after deep capture");
     assert_eq!(
-        stdout_of(&geometry).trim(),
-        "200x24 zoomed=0",
-        "deep capture must restore window size and zoom"
+        stdout_of(&after).trim(),
+        stdout_of(&before).trim(),
+        "deep capture must restore size, zoom, active pane, and layout"
     );
-    let size_option = bed.tmux(&[
-        "show-options",
-        "-w",
-        "-t",
-        &format!("{session_name}:agents"),
-        "window-size",
-    ]);
+    let size_option = bed.tmux(&["show-options", "-w", "-t", &window, "window-size"]);
     assert_eq!(
         stdout_of(&size_option).trim(),
         "",
