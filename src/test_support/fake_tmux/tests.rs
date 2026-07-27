@@ -81,6 +81,38 @@ fn delivery_ops_reject_vanished_pane() {
 }
 
 #[test]
+fn delivered_text_echoes_minimally_unless_a_response_is_declared() {
+    // The fake must not ship a universal always-converges response frame:
+    // tests that need visible agent output declare it explicitly.
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.add_window("s", "w");
+    fake.add_pane("s", "w", "%0", false);
+
+    fake.paste_text("%0", "hello")
+        .or_panic("delivered_text_echoes_minimally: paste");
+    let echoed = fake
+        .capture_pane("%0", 50)
+        .or_panic("delivered_text_echoes_minimally: capture");
+    assert!(echoed.contains("hello"), "got: {echoed}");
+    assert!(
+        !echoed.contains("streaming a response"),
+        "no implicit agent response frame: {echoed}"
+    );
+
+    fake.set_delivery_response("agent replied with a full answer");
+    fake.paste_text("%0", "second prompt")
+        .or_panic("delivered_text_echoes_minimally: paste 2");
+    let responded = fake
+        .capture_pane("%0", 50)
+        .or_panic("delivered_text_echoes_minimally: capture 2");
+    assert!(
+        responded.contains("agent replied with a full answer"),
+        "declared response frame must render: {responded}"
+    );
+}
+
+#[test]
 fn vanished_pane_wins_over_transient_capture_knob() {
     let fake = FakeTmux::new();
     fake.add_session("s");

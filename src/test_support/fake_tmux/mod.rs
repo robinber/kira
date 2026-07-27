@@ -55,6 +55,9 @@ pub(crate) struct FakeTmux {
     /// the pane stays live — a transient capture failure, unlike the typed
     /// vanished-target errors.
     fail_capture: AtomicBool,
+    /// Content the fake "agent" renders below every delivered text. `None`
+    /// (the default) echoes only the text itself.
+    delivery_response: Mutex<Option<String>>,
     /// When set, `list_panes` returns panes in reversed order so tests can
     /// prove callers never depend on listing order for pane identity.
     reverse_pane_listing: AtomicBool,
@@ -230,6 +233,7 @@ impl FakeTmux {
             vanish_before_kill: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
             fail_capture: AtomicBool::new(false),
+            delivery_response: Mutex::new(None),
             reverse_pane_listing: AtomicBool::new(false),
             server_stops_after_captures: Mutex::new(None),
             relocate_after_geometry_reads: Mutex::new(None),
@@ -316,6 +320,18 @@ impl FakeTmux {
     /// pane stays live), for best-effort-capture tests.
     pub(crate) fn set_fail_capture(&self, fail: bool) {
         self.fail_capture.store(fail, Ordering::Relaxed);
+    }
+
+    /// Declare the single frame the fake "agent" renders below every
+    /// delivered text (delivery is one atomic append). Tests whose
+    /// assertions depend on visible agent output at delivery time state
+    /// that frame here; multi-frame streams (production evidence over
+    /// several polls) stay on [`FakeTmux::queue_pane_contents`].
+    pub(crate) fn set_delivery_response(&self, response: &str) {
+        *ok(
+            self.delivery_response.lock(),
+            "fake tmux delivery response mutex poisoned",
+        ) = Some(response.to_string());
     }
 
     fn fail_capture_enabled(&self) -> bool {
@@ -710,10 +726,20 @@ impl FakeTmux {
     fn record_text_op(&self, op: FakeOp, pane_id: &str, text: &str) {
         ok(self.ops.lock(), "fake tmux ops mutex poisoned").push(op);
         // Mirror the pasted/typed text into pane content so readiness waits
-        // observe the change, matching a live TUI accepting input.
-        let appended = format!(
-            "{text}\nfake agent accepted the prompt and is streaming a response                  with enough visible output below the pasted text that the pane can                  never be mistaken for a pending input area by any verifier\n"
-        );
+        // observe the change, matching a live TUI accepting input. By
+        // default only the text echoes — tests whose assertions depend on
+        // the agent visibly responding must declare that frame via
+        // [`FakeTmux::set_delivery_response`] instead of inheriting a
+        // universal skeleton key tuned to satisfy every verifier.
+        let response = ok(
+            self.delivery_response.lock(),
+            "fake tmux delivery response mutex poisoned",
+        )
+        .clone();
+        let appended = match response {
+            Some(response) => format!("{text}\n{response}\n"),
+            None => format!("{text}\n"),
+        };
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         if let Some(pane) = Self::find_pane_mut(&mut sessions, pane_id) {
             pane.content.push_str(&appended);
