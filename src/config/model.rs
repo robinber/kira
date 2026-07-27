@@ -178,18 +178,19 @@ pub(crate) struct AgentTemplate {
     /// Optional shell command override.
     #[serde(default)]
     pub shell_command: Option<String>,
-    /// Extra command-line arguments.
+    /// Optional argument list (same optional shape as project agents so an
+    /// absent list is distinguishable from an explicitly empty one).
     #[serde(default)]
-    pub args: Vec<String>,
+    pub args: Option<Vec<String>>,
     /// Optional working directory override.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Environment overrides applied to the agent.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Capability tags advertised by the agent.
+    /// Optional capability list.
     #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub capabilities: Option<Vec<String>>,
     /// Optional prompt template for send operations.
     #[serde(default)]
     pub prompt_template: Option<String>,
@@ -199,6 +200,89 @@ pub(crate) struct AgentTemplate {
     /// Optional text delivery override (`paste` / `send-keys`).
     #[serde(default)]
     pub text_delivery: Option<TextDelivery>,
+}
+
+/// The mergeable agent field set, one optional value per field.
+///
+/// This is the single partial shape behind both TOML frontends
+/// ([`AgentTemplate`] and [`ProjectAgent`] keep their own serde structs only
+/// because `deny_unknown_fields` cannot be combined with `flatten`). Both
+/// extraction methods and [`AgentOverrides::or`] destructure exhaustively,
+/// so adding an agent field is a compile error at every place that must
+/// decide how it merges.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentOverrides {
+    pub label: Option<String>,
+    pub mode: Option<AgentMode>,
+    pub command: Option<String>,
+    pub shell_command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub capabilities: Option<Vec<String>>,
+    pub prompt_template: Option<String>,
+    pub submit: Option<SubmitPolicy>,
+    pub text_delivery: Option<TextDelivery>,
+}
+
+impl AgentOverrides {
+    /// Layered merge: `self` (the more specific layer) wins field-by-field;
+    /// `env` merges with `self`'s entries overriding the base's.
+    pub(crate) fn or(self, base: &AgentOverrides) -> AgentOverrides {
+        AgentOverrides {
+            label: self.label.or_else(|| base.label.clone()),
+            mode: self.mode.or(base.mode),
+            command: self.command.or_else(|| base.command.clone()),
+            shell_command: self.shell_command.or_else(|| base.shell_command.clone()),
+            args: self.args.or_else(|| base.args.clone()),
+            cwd: self.cwd.or_else(|| base.cwd.clone()),
+            env: {
+                let mut merged = base.env.clone();
+                merged.extend(self.env);
+                merged
+            },
+            capabilities: self.capabilities.or_else(|| base.capabilities.clone()),
+            prompt_template: self
+                .prompt_template
+                .or_else(|| base.prompt_template.clone()),
+            submit: self.submit.or(base.submit),
+            text_delivery: self.text_delivery.or(base.text_delivery),
+        }
+    }
+}
+
+impl AgentTemplate {
+    /// Extract the mergeable field set (exhaustive destructuring — a new
+    /// field will not compile until it is routed here).
+    pub(crate) fn overrides(&self) -> AgentOverrides {
+        let Self {
+            name: _,
+            label,
+            mode,
+            command,
+            shell_command,
+            args,
+            cwd,
+            env,
+            capabilities,
+            prompt_template,
+            submit,
+            text_delivery,
+        } = self;
+        AgentOverrides {
+            label: label.clone(),
+            mode: *mode,
+            command: command.clone(),
+            shell_command: shell_command.clone(),
+            args: args.clone(),
+            cwd: cwd.clone(),
+            env: env.clone(),
+            capabilities: capabilities.clone(),
+            prompt_template: prompt_template.clone(),
+            submit: *submit,
+            text_delivery: *text_delivery,
+        }
+    }
 }
 
 /// Internal project shape used before full resolution.
@@ -270,6 +354,41 @@ pub(crate) struct ProjectAgent {
     /// Optional text delivery override (`paste` / `send-keys`).
     #[serde(default)]
     pub text_delivery: Option<TextDelivery>,
+}
+
+impl ProjectAgent {
+    /// Extract the mergeable field set (exhaustive destructuring — a new
+    /// field will not compile until it is routed here).
+    pub(crate) fn overrides(&self) -> AgentOverrides {
+        let Self {
+            id: _,
+            template: _,
+            label,
+            mode,
+            command,
+            shell_command,
+            args,
+            cwd,
+            env,
+            capabilities,
+            prompt_template,
+            submit,
+            text_delivery,
+        } = self;
+        AgentOverrides {
+            label: label.clone(),
+            mode: *mode,
+            command: command.clone(),
+            shell_command: shell_command.clone(),
+            args: args.clone(),
+            cwd: cwd.clone(),
+            env: env.clone(),
+            capabilities: capabilities.clone(),
+            prompt_template: prompt_template.clone(),
+            submit: *submit,
+            text_delivery: *text_delivery,
+        }
+    }
 }
 
 /// Profile-specific overrides inside a profiled project file.
