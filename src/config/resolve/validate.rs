@@ -1,0 +1,123 @@
+//! Shape and identifier validation for project/global config.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::super::error::ConfigError;
+use super::super::model::{AgentMode, GlobalConfig, ProjectFile};
+use super::agents::build_template_map;
+
+type Result<T> = std::result::Result<T, ConfigError>;
+
+/// Non-whitespace characters rejected in identifiers that end up in tmux
+/// session names or target syntax (`session:window.pane`). All Unicode
+/// whitespace is rejected separately because tmux option reads are trimmed.
+const FORBIDDEN_IDENTIFIER_CHARS: &[char] = &[':', '.'];
+
+pub(super) fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
+    if let Some(ch) = id
+        .chars()
+        .find(|ch| ch.is_whitespace() || FORBIDDEN_IDENTIFIER_CHARS.contains(ch))
+    {
+        return Err(ConfigError::InvalidIdentifierChar {
+            kind,
+            id: id.to_string(),
+            ch,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_main_pane_ratio(ratio: u8) -> Result<()> {
+    if (30..=70).contains(&ratio) {
+        Ok(())
+    } else {
+        Err(ConfigError::MainPaneRatioOutOfRange)
+    }
+}
+
+pub(crate) fn validate_global_config(global: &GlobalConfig) -> Result<()> {
+    validate_main_pane_ratio(global.main_pane_ratio)?;
+
+    let _ = build_template_map(&global.agent_templates)?;
+    Ok(())
+}
+
+pub(super) fn validate_project_shape(project: &ProjectFile) -> Result<()> {
+    if project.id.trim().is_empty() {
+        return Err(ConfigError::EmptyProjectId);
+    }
+    validate_identifier("project id", &project.id)?;
+    if project.root.trim().is_empty() {
+        return Err(ConfigError::EmptyProjectRoot);
+    }
+    if project.agents.is_empty() {
+        return Err(ConfigError::NoAgents);
+    }
+    for agent in &project.agents {
+        if agent.id.trim().is_empty() {
+            return Err(ConfigError::EmptyAgentId);
+        }
+        validate_identifier("agent id", &agent.id)?;
+    }
+
+    Ok(())
+}
+
+pub(super) fn validate_groups(
+    groups: &BTreeMap<String, Vec<String>>,
+    known_agents: &BTreeSet<String>,
+) -> Result<()> {
+    for (group_name, members) in groups {
+        if group_name.trim().is_empty() {
+            return Err(ConfigError::EmptyGroupName);
+        }
+        if members.is_empty() {
+            return Err(ConfigError::EmptyGroup {
+                group: group_name.clone(),
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for member in members {
+            if !seen.insert(member) {
+                return Err(ConfigError::DuplicateAgentInGroup {
+                    group: group_name.clone(),
+                    agent: member.clone(),
+                });
+            }
+            if !known_agents.contains(member) {
+                return Err(ConfigError::UnknownAgentInGroup {
+                    group: group_name.clone(),
+                    agent: member.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_agent(
+    agent_id: &str,
+    mode: AgentMode,
+    command: Option<&str>,
+    shell_command: Option<&str>,
+    args: &[String],
+) -> Result<()> {
+    match mode {
+        AgentMode::Direct if command.is_none_or(str::is_empty) => {
+            Err(ConfigError::MissingCommand {
+                agent_id: agent_id.to_string(),
+            })
+        }
+        AgentMode::Shell if shell_command.is_none_or(str::is_empty) => {
+            Err(ConfigError::MissingShellCommand {
+                agent_id: agent_id.to_string(),
+            })
+        }
+        // Launch only passes args in direct mode; rejecting here keeps config
+        // honest instead of silently ignoring shell-mode args.
+        AgentMode::Shell if !args.is_empty() => Err(ConfigError::ShellArgsNotSupported {
+            agent_id: agent_id.to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
