@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::lock;
 use super::resolve::resolve_managed_pane;
 use super::send::or_dead_pane;
 use crate::model::ResolvedProject;
@@ -57,7 +58,41 @@ impl DeepCaptureOptions {
     }
 }
 
+/// Machine-readable outcome of the depth strategy for one capture, exposed
+/// through `capture --json` so scripted callers do not depend on stderr
+/// warnings (suppressed at the default `--json` log level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeepCaptureStatus {
+    /// Normal-screen or dead pane: depth comes from real tmux history.
+    NotApplicable,
+    /// The visible frame already satisfies the request.
+    NotNeeded,
+    /// The zoom/resize ran and a repaint of the enlarged frame was observed.
+    Completed,
+    /// Another capture currently owns the window lock; retry later.
+    Busy,
+    /// Deepening was attempted but could not complete (zoom conflict,
+    /// repaint timeout, …): output is capped at the visible frame.
+    Unavailable,
+}
+
+/// What one deep-capture attempt produced.
+enum DeepOutcome {
+    /// Deepened output: geometry ran and a repaint was observed.
+    Deepened(String),
+    /// The pane already spans a tall-enough window; plain capture is
+    /// already full-depth.
+    NothingToDeepen,
+    /// Another capture owns the window lock.
+    Busy,
+}
+
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "JSON DTO: each bool is a stable field of the capture contract, not a state machine"
+)]
 pub(crate) struct PaneCapture {
     pub project_id: String,
     pub profile_id: String,
@@ -68,10 +103,21 @@ pub(crate) struct PaneCapture {
     /// Whether the pane program was on the tmux alternate screen (no tmux
     /// history: plain capture depth is capped at the visible frame).
     pub alternate_on: bool,
-    /// Whether `output` came from a completed deep capture: the zoom/resize
-    /// ran and a repaint of the enlarged frame was observed. `false` with
-    /// `alternate_on` means depth is limited to the visible frame.
+    /// Visible pane height at resolve time — the plain-capture depth ceiling
+    /// when `alternate_on` is set.
+    pub pane_height: usize,
+    /// Whether `output` came from a completed deep capture. Kept alongside
+    /// [`Self::deep_capture_status`] for compatibility
+    /// (`deep_capture == (deep_capture_status == "completed")`).
     pub deep_capture: bool,
+    /// Depth-strategy outcome; see [`DeepCaptureStatus`].
+    pub deep_capture_status: DeepCaptureStatus,
+    /// Whether the request exceeds what deep capture can ever deliver for
+    /// this pane: on an alternate-screen live pane, content beyond the
+    /// height ceiling (1000 rows) is unreachable regardless of the outcome —
+    /// including when the pane already spans a ceiling-height window and the
+    /// status reads `not_needed`.
+    pub depth_request_clamped: bool,
     /// Requested line limit, not the number of lines actually returned.
     pub lines: usize,
     pub output: String,
@@ -84,7 +130,7 @@ pub(crate) fn capture_output(
     lines: usize,
 ) -> Result<PaneCapture> {
     let (pane, _agent, _topology) = resolve_managed_pane(tmux, project, agent_id)?;
-    let (output, deep_capture) = or_dead_pane(
+    let (output, status) = or_dead_pane(
         agent_id,
         capture_with_depth(tmux, &pane, lines, &DeepCaptureOptions::default()),
     )?;
@@ -97,40 +143,60 @@ pub(crate) fn capture_output(
         pane_dead: pane.pane_dead,
         pane_dead_status: pane.pane_dead_status,
         alternate_on: pane.alternate_on,
-        deep_capture,
+        pane_height: pane.pane_height,
+        deep_capture: status == DeepCaptureStatus::Completed,
+        deep_capture_status: status,
+        // Request-based, not outcome-based: a `not_needed` on a pane already
+        // spanning a ceiling-height window must not read as "fully
+        // satisfied" when the request goes beyond the ceiling.
+        depth_request_clamped: pane.alternate_on
+            && !pane.pane_dead
+            && lines > pane.pane_height.max(DEEP_CAPTURE_MAX_HEIGHT),
         lines,
         output,
     })
 }
 
 /// Capture up to `lines` from `pane`, deepening through the alternate screen
-/// when needed. Returns the text and whether a completed deep capture
-/// produced it.
+/// when needed. Returns the text and the depth-strategy outcome.
 ///
-/// Deep-capture failures fall back to the plain (visible-frame) capture with
-/// a warning rather than failing the whole command: truncated output plus a
-/// diagnostic beats no output.
+/// Deep-capture failures (and lock contention) fall back to the plain
+/// (visible-frame) capture with a warning rather than failing the whole
+/// command: truncated output plus a diagnostic beats no output.
 fn capture_with_depth(
     tmux: &dyn TmuxAdapter,
     pane: &PaneInfo,
     lines: usize,
     options: &DeepCaptureOptions,
-) -> Result<(String, bool)> {
-    if wants_deep_capture(pane, lines) {
+) -> Result<(String, DeepCaptureStatus)> {
+    let status = if !pane.alternate_on || pane.pane_dead {
+        DeepCaptureStatus::NotApplicable
+    } else if lines <= pane.pane_height {
+        DeepCaptureStatus::NotNeeded
+    } else {
         match deep_capture(tmux, &pane.pane_id, lines, options) {
-            Ok(Some(output)) => return Ok((output, true)),
-            // Nothing to deepen (the pane already spans a tall-enough
-            // window): the plain capture below is already full-depth.
-            Ok(None) => {}
-            Err(error) => tracing::warn!(
-                pane = %pane.pane_id,
-                %error,
-                "deep capture failed; agent runs on the tmux alternate screen, \
-                 so output is limited to the visible frame"
-            ),
+            Ok(DeepOutcome::Deepened(output)) => return Ok((output, DeepCaptureStatus::Completed)),
+            Ok(DeepOutcome::NothingToDeepen) => DeepCaptureStatus::NotNeeded,
+            Ok(DeepOutcome::Busy) => {
+                tracing::warn!(
+                    pane = %pane.pane_id,
+                    "another capture owns this window's deep-capture lock; \
+                     output is limited to the visible frame"
+                );
+                DeepCaptureStatus::Busy
+            }
+            Err(error) => {
+                tracing::warn!(
+                    pane = %pane.pane_id,
+                    %error,
+                    "deep capture failed; agent runs on the tmux alternate \
+                     screen, so output is limited to the visible frame"
+                );
+                DeepCaptureStatus::Unavailable
+            }
         }
-    }
-    Ok((tmux.capture_pane(&pane.pane_id, lines)?, false))
+    };
+    Ok((tmux.capture_pane(&pane.pane_id, lines)?, status))
 }
 
 /// Deep capture applies only where it can help: an alternate-screen pane
@@ -171,8 +237,16 @@ pub(crate) fn deepen_wait_capture(
         return converged;
     }
     match deep_capture(tmux, &pane.pane_id, lines, &DeepCaptureOptions::default()) {
-        Ok(Some(output)) => output,
-        Ok(None) => converged,
+        Ok(DeepOutcome::Deepened(output)) => output,
+        Ok(DeepOutcome::NothingToDeepen) => converged,
+        Ok(DeepOutcome::Busy) => {
+            tracing::warn!(
+                pane = %pane_id,
+                "another capture owns this window's deep-capture lock; \
+                 output is limited to the visible frame"
+            );
+            converged
+        }
         Err(error) => {
             tracing::warn!(
                 pane = %pane_id,
@@ -190,21 +264,42 @@ pub(crate) fn deepen_wait_capture(
 /// (size, zoom, active pane, and the window-local `window-size` value that
 /// `resize-window` forces to `manual`).
 ///
-/// Returns `Ok(None)` when there is nothing to deepen (the pane already
-/// spans a tall-enough window), so the caller's plain capture is already
-/// full-depth. In a multi-pane layout the window being tall enough is *not*
-/// sufficient — the pane is shorter than the window — so zooming alone (no
-/// resize) is a valid deepening step.
+/// [`DeepOutcome::NothingToDeepen`] means the pane already spans a
+/// tall-enough window, so the caller's plain capture is already full-depth.
+/// In a multi-pane layout the window being tall enough is *not* sufficient —
+/// the pane is shorter than the window — so zooming alone (no resize) is a
+/// valid deepening step.
 ///
-/// Known limit: two concurrent deep captures on the same window race on the
-/// saved geometry; the last restore wins.
+/// Concurrent deep captures of the same window are excluded by a per-window
+/// file lock ([`lock::try_lock_window`]): without it, the second capture
+/// would snapshot the first one's temporary geometry and restore it
+/// permanently. Contention yields [`DeepOutcome::Busy`] immediately — no
+/// waiting.
 fn deep_capture(
     tmux: &dyn TmuxAdapter,
     pane_id: &str,
     lines: usize,
     options: &DeepCaptureOptions,
-) -> Result<Option<String>> {
+) -> Result<DeepOutcome> {
+    // First read only names the window (id + socket) for the lock; the
+    // authoritative geometry snapshot happens under the lock, because this
+    // one may observe another capture's temporary state.
+    let probe = tmux.window_geometry(pane_id)?;
+    let Some(_lock) = lock::try_lock_window(&probe.socket_path, &probe.window_id)? else {
+        return Ok(DeepOutcome::Busy);
+    };
     let geometry = tmux.window_geometry(pane_id)?;
+    if geometry.window_id != probe.window_id || geometry.socket_path != probe.socket_path {
+        // The pane moved to another window between the probe and the lock:
+        // the lock we hold does not cover the window we would mutate, so the
+        // exclusion guarantee is void. Fail closed without touching anything.
+        bail!(
+            "pane moved from window {} to {} while acquiring the deep-capture lock",
+            probe.window_id,
+            geometry.window_id
+        );
+    }
+
     // Exactly the requested lines: a frame taller than the capture window
     // would push the head of a top-anchored transcript (Grok Build pins its
     // input box at the bottom of the enlarged frame) past the last-N-lines
@@ -219,7 +314,7 @@ fn deep_capture(
     if !need_zoom && !need_resize {
         // Already zoomed on this pane in a tall-enough window: the visible
         // frame is the best any geometry change could do.
-        return Ok(None);
+        return Ok(DeepOutcome::NothingToDeepen);
     }
 
     // The pre-change frame is the baseline for repaint detection, captured
@@ -238,6 +333,7 @@ fn deep_capture(
         lines,
         options,
     );
+    // The lock stays held through the full restore attempt below.
     if let Err(error) = restore_window(tmux, pane_id, &geometry, need_zoom, need_resize) {
         tracing::warn!(
             pane = %pane_id,
@@ -245,7 +341,7 @@ fn deep_capture(
             "failed to restore window after deep capture"
         );
     }
-    captured.map(Some)
+    captured.map(DeepOutcome::Deepened)
 }
 
 #[expect(
@@ -450,6 +546,11 @@ mod tests {
         );
         assert!(!capture.alternate_on);
         assert!(!capture.deep_capture);
+        assert_eq!(
+            capture.deep_capture_status,
+            DeepCaptureStatus::NotApplicable
+        );
+        assert_eq!(capture.pane_height, 24);
         assert!(
             fake.ops().is_empty(),
             "normal-screen capture must not touch window geometry, got: {:?}",
@@ -480,6 +581,8 @@ mod tests {
         );
         assert!(capture.alternate_on);
         assert!(capture.deep_capture);
+        assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Completed);
+        assert!(!capture.depth_request_clamped);
         let lines: Vec<&str> = capture.output.lines().collect();
         assert_eq!(
             lines.len(),
@@ -579,11 +682,15 @@ mod tests {
             resolve_managed_pane(&fake, &project, "alpha"),
             "resolve should succeed",
         );
-        let (output, deep) = ok(
+        let (output, status) = ok(
             capture_with_depth(&fake, &pane, 200, &DeepCaptureOptions::fast()),
             "fallback capture should succeed",
         );
-        assert!(!deep, "an unobserved repaint must not claim deep_capture");
+        assert_eq!(
+            status,
+            DeepCaptureStatus::Unavailable,
+            "an unobserved repaint must not claim a completed deep capture"
+        );
         assert_eq!(output, "short\ntranscript");
         let window = test_window_id(&project);
         assert!(
@@ -723,6 +830,10 @@ mod tests {
             "over-cap deep capture should still succeed",
         );
         assert!(capture.deep_capture);
+        assert!(
+            capture.depth_request_clamped,
+            "a request beyond the cap must be reported as clamped"
+        );
         let window = test_window_id(&project);
         assert!(
             fake.ops().iter().any(|op| matches!(
@@ -740,6 +851,139 @@ mod tests {
             )),
             "restore must still return to the original height, got: {:?}",
             fake.ops()
+        );
+    }
+
+    #[test]
+    fn capture_output_reports_busy_when_window_lock_is_held() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        setup_alt_screen_transcript(&fake);
+
+        // Another process deep-captures the same window: hold its lock.
+        let held = ok(
+            lock::try_lock_window(&fake.socket_path(), &test_window_id(&project)),
+            "external lock attempt should not error",
+        );
+        assert!(held.is_some(), "external lock should be acquired");
+
+        let capture = ok(
+            capture_output(&fake, &project, "alpha", 200),
+            "contended capture must fall back, not fail",
+        );
+        assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Busy);
+        assert!(!capture.deep_capture);
+        // Viewport-limited fallback, and no geometry mutation at all.
+        assert_eq!(capture.output.lines().count(), 10);
+        assert!(
+            !fake.ops().iter().any(|op| matches!(
+                op,
+                FakeOp::ToggleZoom { .. }
+                    | FakeOp::ResizeWindow { .. }
+                    | FakeOp::UnzoomWindow { .. }
+                    | FakeOp::UnsetWindowSizeOption { .. }
+            )),
+            "a busy window must not be touched, got: {:?}",
+            fake.ops()
+        );
+    }
+
+    #[test]
+    fn capture_output_shallow_and_dead_statuses() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        setup_alt_screen_transcript(&fake);
+
+        let shallow = ok(
+            capture_output(&fake, &project, "alpha", 5),
+            "shallow capture should succeed",
+        );
+        assert_eq!(shallow.deep_capture_status, DeepCaptureStatus::NotNeeded);
+
+        let fake_dead = crate::test_support::FakeTmux::new();
+        crate::test_support::setup_session_with_dead_panes(&fake_dead, &project, &[0]);
+        fake_dead.set_pane_alternate_on("%0", true);
+        fake_dead.set_pane_content("%0", "frozen");
+        let dead = ok(
+            capture_output(&fake_dead, &project, "alpha", 200),
+            "dead-pane capture should succeed",
+        );
+        assert_eq!(dead.deep_capture_status, DeepCaptureStatus::NotApplicable);
+    }
+
+    #[test]
+    fn deep_capture_status_serializes_snake_case() {
+        for (status, expected) in [
+            (DeepCaptureStatus::NotApplicable, "\"not_applicable\""),
+            (DeepCaptureStatus::NotNeeded, "\"not_needed\""),
+            (DeepCaptureStatus::Completed, "\"completed\""),
+            (DeepCaptureStatus::Busy, "\"busy\""),
+            (DeepCaptureStatus::Unavailable, "\"unavailable\""),
+        ] {
+            let json = ok(serde_json::to_string(&status), "status should serialize");
+            assert_eq!(json, expected);
+        }
+    }
+
+    #[test]
+    fn capture_output_fails_closed_when_pane_moves_window_during_lock() {
+        // The pane moves to another window between the lock probe and the
+        // under-lock geometry read: the held lock does not cover the window
+        // that would be mutated, so deepening must fail closed (fallback,
+        // zero geometry ops) instead of mutating an unlocked window.
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        setup_alt_screen_transcript(&fake);
+        let session = crate::workspace::session_name(&project);
+        fake.add_window(&session, "other");
+        fake.set_pane_relocated_after_geometry_reads("%0", &session, "other", 1);
+
+        let capture = ok(
+            capture_output(&fake, &project, "alpha", 200),
+            "relocated-pane capture must fall back, not fail",
+        );
+        assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Unavailable);
+        assert!(
+            !fake.ops().iter().any(|op| matches!(
+                op,
+                FakeOp::ToggleZoom { .. }
+                    | FakeOp::ResizeWindow { .. }
+                    | FakeOp::UnzoomWindow { .. }
+                    | FakeOp::UnsetWindowSizeOption { .. }
+            )),
+            "no geometry may be touched under a mismatched lock, got: {:?}",
+            fake.ops()
+        );
+    }
+
+    #[test]
+    fn capture_output_reports_clamp_even_when_nothing_to_deepen() {
+        // A pane already zoomed in a ceiling-height window: nothing to
+        // deepen, but a request beyond the ceiling is still unsatisfiable —
+        // the JSON must not read as "fully served".
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        setup_alt_screen_transcript(&fake);
+        let session = crate::workspace::session_name(&project);
+        fake.set_window_height(&session, &project.window_name, DEEP_CAPTURE_MAX_HEIGHT);
+        ok(
+            fake.toggle_pane_zoom("%0"),
+            "zooming the pane should succeed",
+        );
+
+        let capture = ok(
+            capture_output(&fake, &project, "alpha", 2000),
+            "at-ceiling capture should succeed",
+        );
+        assert_eq!(capture.deep_capture_status, DeepCaptureStatus::NotNeeded);
+        assert!(
+            capture.depth_request_clamped,
+            "a request beyond the ceiling must be reported as clamped even \
+             without a geometry change"
         );
     }
 
@@ -795,6 +1039,7 @@ mod tests {
             !capture.deep_capture,
             "deep capture must not steal another pane's zoom"
         );
+        assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Unavailable);
         // Viewport-limited fallback: the pane height caps the output.
         assert_eq!(capture.output.lines().count(), 10);
         assert!(

@@ -353,22 +353,24 @@ impl TmuxAdapter for TmuxClient {
         }
     }
 
-    /// Read the window id, width/height, zoom state, whether the observed
-    /// pane is active, the window's active pane, and the window-local
-    /// `window-size` value.
+    /// Read the window id, server socket path, width/height, zoom state,
+    /// whether the observed pane is active, the window's active pane, and
+    /// the window-local `window-size` value.
     fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
+        // socket_path is the one field that may contain arbitrary characters
+        // (including `|`): keep it LAST so splitn leaves it intact.
         let output = self.output([
             "display-message",
             "-p",
             "-t",
             pane_id,
-            "#{window_id}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}",
+            "#{window_id}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}|#{socket_path}",
         ])?;
         if !output.status.success() {
             return Err(failed_tmux_status(pane_id, &output));
         }
         let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut parts = line.splitn(5, '|');
+        let mut parts = line.splitn(6, '|');
         let window_id = parts.next().context("missing window_id")?.to_string();
         let width: usize = parts
             .next()
@@ -380,6 +382,7 @@ impl TmuxAdapter for TmuxClient {
             .context("missing window_height")?;
         let zoomed = parts.next().context("missing window_zoomed_flag")? == "1";
         let pane_active = parts.next().context("missing pane_active")? == "1";
+        let socket_path = parts.next().context("missing socket_path")?.to_string();
 
         // `display-message` on a window target resolves to its active pane.
         let active_output =
@@ -408,6 +411,7 @@ impl TmuxAdapter for TmuxClient {
 
         Ok(WindowGeometry {
             window_id,
+            socket_path,
             width,
             height,
             zoomed,

@@ -29,6 +29,11 @@ pub(crate) struct WindowGeometry {
     /// address the window, not the observed pane: the pane can vanish
     /// mid-capture while the window survives.
     pub(crate) window_id: String,
+    /// Path of the tmux server socket. Together with [`Self::window_id`] it
+    /// names the window uniquely across servers — the deep-capture lock file
+    /// is derived from both, and lives next to the socket (same 0700
+    /// per-user directory).
+    pub(crate) socket_path: String,
     /// Window width in columns.
     pub(crate) width: usize,
     /// Window height in rows.

@@ -358,19 +358,30 @@ the default log level drops to `error`, so raise `KIRA_MUX_LOG=warn` to see
 fallback warnings in scripted JSON flows — or check the JSON flags instead.
 
 `capture --json` reports the depth context per capture: `alternate_on` (the
-pane runs on the alternate screen) and `deep_capture` (the zoom/resize ran
-and a repaint of the enlarged frame was observed). `alternate_on: true` with
-`deep_capture: false` means the output is capped at the visible frame.
+pane runs on the alternate screen), `pane_height` (the plain-capture depth
+ceiling), `deep_capture` (the zoom/resize ran and a repaint of the enlarged
+frame was observed), `depth_request_clamped` (the request exceeds what deep
+capture can ever deliver for this pane — content beyond the 1000-row
+ceiling is unreachable regardless of the outcome, including on
+`not_needed`), and `deep_capture_status` — one of `not_applicable`
+(normal-screen or dead pane), `not_needed` (no geometry change would deepen
+further: the visible frame already covers the achievable depth),
+`completed`, `busy` (another capture owns the window; retry later), or
+`unavailable` (deepening failed; output is capped at the visible frame).
 
-Known limits: two concurrent deep captures of panes in the same window race
-on the saved geometry — the last restore wins, so avoid parallel deep
-`capture`/`send --wait` calls against agents sharing a window. Repaint
-detection is capture-based, with the same epistemic caveats as wait
-convergence: a spinner frame that changes before the TUI handles the resize
-can be mistaken for the repaint, and a TUI that never stops animating
-returns its latest frame at the ~5 s bound. If the agent process dies after
-wait convergence but during deepening, the (frozen) converged output is
-still returned with exit 0 — the next command surfaces the dead pane.
+Concurrent deep captures of panes in the same window are serialized by a
+per-window file lock (a sidecar next to the tmux server socket, released
+automatically when the process exits): the contending capture does not
+wait — it returns the visible-frame capture with `deep_capture_status:
+"busy"` and a stderr warning.
+
+Known limits: repaint detection is capture-based, with the same epistemic
+caveats as wait convergence: a spinner frame that changes before the TUI
+handles the resize can be mistaken for the repaint, and a TUI that never
+stops animating returns its latest frame at the ~5 s bound. If the agent
+process dies after wait convergence but during deepening, the (frozen)
+converged output is still returned with exit 0 — the next command surfaces
+the dead pane.
 
 ## Layout
 
