@@ -26,11 +26,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
 
     match sub {
         AgentsCommand::List { json, .. } => {
-            if json {
-                output::print_json(&agents_output)?;
-            } else {
-                output::print_agents_table(&agents_output)?;
-            }
+            output::print_agents(&agents_output, json)?;
         }
         AgentsCommand::Capabilities { agent_id, json, .. } => {
             let agent = agents_output
@@ -38,11 +34,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
                 .iter()
                 .find(|a| a.id == agent_id)
                 .ok_or_else(|| KiraMuxError::UnknownAgentId(agent_id.clone()))?;
-            if json {
-                output::print_json(&output::AgentCapabilitiesOutput::from(agent))?;
-            } else {
-                output::print_agent_capabilities(agent)?;
-            }
+            output::print_agent_capabilities(agent, json)?;
         }
         AgentsCommand::Group {
             group_name, json, ..
@@ -55,11 +47,7 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
                 .iter()
                 .filter_map(|id| agents_output.agents.iter().find(|a| &a.id == id))
                 .collect();
-            if json {
-                output::print_json(&output::GroupOutput::new(&group_name, &group_members))?;
-            } else {
-                output::print_group(&group_name, &group_members)?;
-            }
+            output::print_group(&group_name, &group_members, json)?;
         }
     }
     Ok(())
@@ -174,12 +162,7 @@ pub(super) fn cmd_capture(
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
     let capture = crate::agent_io::capture_output(&tmux, &project, agent_id, lines)?;
-    if json {
-        output::print_json(&capture)?;
-    } else {
-        output::print_pane_text(&capture.output)?;
-    }
-    Ok(())
+    output::print_capture(&capture, json)
 }
 
 #[cfg(test)]

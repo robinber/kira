@@ -258,6 +258,63 @@ impl fmt::Display for AgentRunState {
     }
 }
 
+/// JSON payload for `agents capabilities`.
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentCapabilitiesOutput {
+    /// Stable agent ID.
+    pub agent: String,
+    /// Human-friendly label from config.
+    pub label: String,
+    /// Declared capabilities.
+    pub capabilities: Vec<String>,
+    /// Simplified runtime state.
+    pub state: AgentRunState,
+}
+
+impl From<&AgentInfo> for AgentCapabilitiesOutput {
+    fn from(agent: &AgentInfo) -> Self {
+        Self {
+            agent: agent.id.clone(),
+            label: agent.label.clone(),
+            capabilities: agent.capabilities.clone(),
+            state: agent.state,
+        }
+    }
+}
+
+/// One member row in the `agents group` JSON payload.
+#[derive(Debug, Serialize)]
+pub(crate) struct GroupMemberOutput {
+    /// Stable agent ID.
+    pub id: String,
+    /// Simplified runtime state.
+    pub state: AgentRunState,
+}
+
+/// JSON payload for `agents group`.
+#[derive(Debug, Serialize)]
+pub(crate) struct GroupOutput {
+    /// Group name as declared in config.
+    pub group: String,
+    /// Member rows in declared order.
+    pub members: Vec<GroupMemberOutput>,
+}
+
+impl GroupOutput {
+    pub(crate) fn new(group_name: &str, members: &[&AgentInfo]) -> Self {
+        Self {
+            group: group_name.to_string(),
+            members: members
+                .iter()
+                .map(|a| GroupMemberOutput {
+                    id: a.id.clone(),
+                    state: a.state,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Build structured agents output from a resolved project and its workspace
 /// topology.
 pub(crate) fn build_agents_output(

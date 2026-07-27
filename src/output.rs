@@ -6,7 +6,10 @@ use anyhow::Result;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::model::{AgentInfo, AgentRunState, AgentsOutput, ProjectStatus, ProjectSummary};
+use crate::agent_io::PaneCapture;
+use crate::model::{
+    AgentCapabilitiesOutput, AgentInfo, AgentsOutput, GroupOutput, ProjectStatus, ProjectSummary,
+};
 
 /// Stdout's reader closed the pipe (e.g. `kira-mux list | head`).
 ///
@@ -35,8 +38,10 @@ fn write_stdout(f: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<()> 
 }
 
 /// Print any `--json` payload with one shared policy: compact single-line
-/// JSON on stdout.
-pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+/// JSON on stdout. Private on purpose: every command reaches it through
+/// its `print_*` view function, so the human-vs-JSON branch point lives in
+/// this module only.
+fn print_json<T: Serialize>(value: &T) -> Result<()> {
     let payload = serde_json::to_string(value)?;
     write_stdout(|out| {
         writeln!(out, "{payload}")?;
@@ -109,7 +114,15 @@ fn write_status_text(out: &mut dyn Write, status: &ProjectStatus) -> io::Result<
     Ok(())
 }
 
-pub(crate) fn print_agents_table(output: &AgentsOutput) -> Result<()> {
+pub(crate) fn print_agents(output: &AgentsOutput, json: bool) -> Result<()> {
+    if json {
+        print_json(output)
+    } else {
+        print_agents_table(output)
+    }
+}
+
+fn print_agents_table(output: &AgentsOutput) -> Result<()> {
     write_stdout(|out| write_agents_table(out, output))
 }
 
@@ -142,27 +155,12 @@ fn write_agents_table(out: &mut dyn Write, output: &AgentsOutput) -> io::Result<
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct AgentCapabilitiesOutput {
-    pub agent: String,
-    pub label: String,
-    pub capabilities: Vec<String>,
-    pub state: AgentRunState,
-}
-
-impl From<&AgentInfo> for AgentCapabilitiesOutput {
-    fn from(agent: &AgentInfo) -> Self {
-        Self {
-            agent: agent.id.clone(),
-            label: agent.label.clone(),
-            capabilities: agent.capabilities.clone(),
-            state: agent.state,
-        }
+pub(crate) fn print_agent_capabilities(agent: &AgentInfo, json: bool) -> Result<()> {
+    if json {
+        print_json(&AgentCapabilitiesOutput::from(agent))
+    } else {
+        write_stdout(|out| write_agent_capabilities(out, agent))
     }
-}
-
-pub(crate) fn print_agent_capabilities(agent: &AgentInfo) -> Result<()> {
-    write_stdout(|out| write_agent_capabilities(out, agent))
 }
 
 fn write_agent_capabilities(out: &mut dyn Write, agent: &AgentInfo) -> io::Result<()> {
@@ -184,35 +182,21 @@ fn write_agent_capabilities(out: &mut dyn Write, agent: &AgentInfo) -> io::Resul
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct GroupMemberOutput {
-    pub id: String,
-    pub state: AgentRunState,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct GroupOutput {
-    pub group: String,
-    pub members: Vec<GroupMemberOutput>,
-}
-
-impl GroupOutput {
-    pub(crate) fn new(group_name: &str, members: &[&AgentInfo]) -> Self {
-        Self {
-            group: group_name.to_string(),
-            members: members
-                .iter()
-                .map(|a| GroupMemberOutput {
-                    id: a.id.clone(),
-                    state: a.state,
-                })
-                .collect(),
-        }
+pub(crate) fn print_group(group_name: &str, members: &[&AgentInfo], json: bool) -> Result<()> {
+    if json {
+        print_json(&GroupOutput::new(group_name, members))
+    } else {
+        write_stdout(|out| write_group(out, group_name, members))
     }
 }
 
-pub(crate) fn print_group(group_name: &str, members: &[&AgentInfo]) -> Result<()> {
-    write_stdout(|out| write_group(out, group_name, members))
+/// Print a pane capture: the full JSON payload, or just the pane text.
+pub(crate) fn print_capture(capture: &PaneCapture, json: bool) -> Result<()> {
+    if json {
+        print_json(capture)
+    } else {
+        print_pane_text(&capture.output)
+    }
 }
 
 fn write_group(out: &mut dyn Write, group_name: &str, members: &[&AgentInfo]) -> io::Result<()> {
@@ -428,8 +412,6 @@ mod tests {
         }
     }
 
-    // silence unused import warning if CountingWriter unused - use it for partial
-    // write
     #[test]
     fn write_formatted_maps_mid_stream_broken_pipe() {
         let mut out = CountingWriter {
