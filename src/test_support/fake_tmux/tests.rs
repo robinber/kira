@@ -49,6 +49,75 @@ fn respawn_pane_unknown_returns_missing_target() {
 }
 
 #[test]
+fn delivery_ops_reject_vanished_pane() {
+    // Real tmux refuses paste/send to a pane that does not exist; the fake
+    // must too, or submit/wait tests validate impossible states.
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.add_window("s", "w");
+
+    let paste = fake
+        .paste_text("%0", "x")
+        .err_or_panic("delivery_ops_reject_vanished_pane: paste");
+    assert!(matches!(
+        paste.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+    let send_text = fake
+        .send_text("%0", "x")
+        .err_or_panic("delivery_ops_reject_vanished_pane: send_text");
+    assert!(matches!(
+        send_text.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+    let send_keys = fake
+        .send_keys("%0", &["Enter"])
+        .err_or_panic("delivery_ops_reject_vanished_pane: send_keys");
+    assert!(matches!(
+        send_keys.downcast_ref::<TmuxError>(),
+        Some(TmuxError::MissingTarget(_))
+    ));
+    assert!(fake.ops().is_empty());
+}
+
+#[test]
+fn vanished_pane_wins_over_transient_capture_knob() {
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.add_window("s", "w");
+    fake.set_fail_capture(true);
+
+    let error = fake
+        .capture_pane("%0", 50)
+        .err_or_panic("vanished_pane_wins_over_transient_capture_knob: expected Err");
+    assert!(
+        matches!(
+            error.downcast_ref::<TmuxError>(),
+            Some(TmuxError::MissingTarget(_))
+        ),
+        "a vanished pane must classify as MissingTarget, got: {error}"
+    );
+}
+
+#[test]
+fn delivery_ops_reject_stopped_server() {
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.add_window("s", "w");
+    fake.add_pane("s", "w", "%0", false);
+    fake.set_no_server(true);
+
+    let error = fake
+        .paste_text("%0", "x")
+        .err_or_panic("delivery_ops_reject_stopped_server: expected Err");
+    assert!(matches!(
+        error.downcast_ref::<TmuxError>(),
+        Some(TmuxError::NoServer(_))
+    ));
+    assert!(fake.ops().is_empty());
+}
+
+#[test]
 fn kill_session_missing_returns_missing_session() {
     let fake = FakeTmux::new();
     let error = fake

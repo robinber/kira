@@ -298,6 +298,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn paste_text(&self, target_pane: &str, text: &str) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -316,6 +317,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -330,6 +332,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -355,6 +358,15 @@ impl TmuxAdapter for FakeTmux {
         for session in sessions.values_mut() {
             for window in session.windows.values_mut() {
                 if let Some(idx) = window.panes.iter().position(|pane| pane.pane_id == pane_id) {
+                    // Checked after target resolution so a vanished pane
+                    // still classifies as MissingTarget, not as this
+                    // transient failure.
+                    if self.fail_capture_enabled() {
+                        return Err(TmuxError::CommandFailure(
+                            "fake transient capture failure".into(),
+                        )
+                        .into());
+                    }
                     let pane = &mut window.panes[idx];
                     if let Some(next) = pane.queued_contents.pop_front() {
                         pane.content = next;

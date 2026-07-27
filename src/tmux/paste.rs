@@ -206,7 +206,14 @@ mod tests {
 
     #[test]
     fn paste_then_submit_proceeds_when_capture_pane_fails() {
+        // The baseline capture is best-effort: a transient capture failure
+        // on a live pane must not block delivery. (A vanished pane, by
+        // contrast, now fails the paste itself — matching real tmux.)
         let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "w");
+        fake.add_pane("s", "w", "%0", false);
+        fake.set_fail_capture(true);
 
         paste_then_submit_text(&fake, "%0", "hello")
             .or_panic("paste_then_submit_proceeds_when_capture_pane_fails");
@@ -293,6 +300,9 @@ mod tests {
     #[test]
     fn paste_then_submit_with_empty_text_skips_paste_but_sends_enter() {
         let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "w");
+        fake.add_pane("s", "w", "%0", false);
 
         paste_then_submit_text(&fake, "%0", "")
             .or_panic("paste_then_submit_with_empty_text_skips_paste_but_sends_enter");
