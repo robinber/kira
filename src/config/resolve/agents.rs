@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::super::error::ConfigError;
 use super::super::fingerprint::{EnvValue, FingerprintAgentMaterial, classify_env_value};
-use super::super::model::{AgentTemplate, ProjectAgent, ResolutionMode};
+use super::super::model::{AgentOverrides, AgentTemplate, ProjectAgent, ResolutionMode};
 use super::paths::resolve_agent_cwd;
 use super::validate::validate_agent;
 use crate::model::ResolvedAgent;
@@ -56,40 +56,32 @@ pub(super) fn resolve_single_agent(
     root: &Path,
     resolution_mode: ResolutionMode,
 ) -> Result<(ResolvedAgent, FingerprintAgentMaterial)> {
-    let label = agent
-        .label
-        .clone()
-        .or_else(|| template.map(template_label))
+    let merged = match template {
+        Some(template) => agent.overrides().or(&template.overrides()),
+        None => agent.overrides(),
+    };
+    let AgentOverrides {
+        label,
+        mode,
+        command,
+        shell_command,
+        args,
+        cwd,
+        env: unresolved_env,
+        capabilities,
+        prompt_template,
+        submit,
+        text_delivery,
+    } = merged;
+
+    let label = label
+        // A label-less template still names its panes after itself.
+        .or_else(|| template.map(|item| item.name.clone()))
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| agent.id.clone());
-    let mode = agent
-        .mode
-        .or_else(|| template.and_then(|item| item.mode))
-        .unwrap_or_default();
-    let command = agent
-        .command
-        .clone()
-        .or_else(|| template.and_then(|item| item.command.clone()));
-    let shell_command = agent
-        .shell_command
-        .clone()
-        .or_else(|| template.and_then(|item| item.shell_command.clone()));
-    let args = agent
-        .args
-        .clone()
-        .unwrap_or_else(|| template.map(|item| item.args.clone()).unwrap_or_default());
-    let cwd = resolve_agent_cwd(
-        &agent.id,
-        agent
-            .cwd
-            .as_deref()
-            .or_else(|| template.and_then(|item| item.cwd.as_deref())),
-        root,
-        resolution_mode,
-    )?;
-
-    let mut unresolved_env = template.map(|item| item.env.clone()).unwrap_or_default();
-    unresolved_env.extend(agent.env.clone());
+    let mode = mode.unwrap_or_default();
+    let args = args.unwrap_or_default();
+    let cwd = resolve_agent_cwd(&agent.id, cwd.as_deref(), root, resolution_mode)?;
 
     validate_agent(
         &agent.id,
@@ -103,23 +95,6 @@ pub(super) fn resolve_single_agent(
         ResolutionMode::Deferred => unresolved_env.clone(),
         ResolutionMode::Runtime => resolve_env_map(&agent.id, unresolved_env.clone())?,
     };
-
-    let capabilities = match &agent.capabilities {
-        Some(caps) => caps.clone(),
-        None => template
-            .map(|item| item.capabilities.clone())
-            .unwrap_or_default(),
-    };
-    let prompt_template = agent
-        .prompt_template
-        .clone()
-        .or_else(|| template.and_then(|item| item.prompt_template.clone()));
-    let submit = agent
-        .submit
-        .or_else(|| template.and_then(|item| item.submit));
-    let text_delivery = agent
-        .text_delivery
-        .or_else(|| template.and_then(|item| item.text_delivery));
 
     if let Some(ref tmpl) = prompt_template {
         let unknowns = crate::prompt::lint_template(tmpl);
@@ -141,7 +116,7 @@ pub(super) fn resolve_single_agent(
         args,
         cwd,
         env,
-        capabilities,
+        capabilities: capabilities.unwrap_or_default(),
         prompt_template,
         submit,
         text_delivery,
@@ -188,11 +163,4 @@ pub(super) fn build_template_map(
     }
 
     Ok(by_name)
-}
-
-pub(super) fn template_label(template: &AgentTemplate) -> String {
-    template
-        .label
-        .clone()
-        .unwrap_or_else(|| template.name.clone())
 }
