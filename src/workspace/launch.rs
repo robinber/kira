@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{AgentMode, Layout};
 use crate::model::{ResolvedAgent, ResolvedProject};
-use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{PANE_AGENT_COMMAND, PANE_COMMAND_SHELL};
+use crate::tmux::{TmuxAdapter, TmuxError};
 
 /// How long to watch a pane after `respawn-pane` for an immediate exit.
 ///
@@ -192,14 +192,19 @@ fn verify_pane_survived_launch(
     }
 }
 
+/// A pane that vanished after a successful respawn means the process exited
+/// and tmux reaped it, so it counts as dead — the same
+/// `is_target_unavailable` classification `agent_io::wait` uses.
 fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
-    let panes = tmux.list_panes(pane_id)?;
-    let pane = panes
-        .iter()
-        .find(|pane| pane.pane_id == pane_id)
-        .or_else(|| panes.first())
-        .with_context(|| format!("pane {pane_id} missing after launch"))?;
-    Ok(pane.pane_dead)
+    match tmux.list_panes(pane_id) {
+        Ok(panes) => panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .map(|pane| pane.pane_dead)
+            .with_context(|| format!("pane {pane_id} missing after launch")),
+        Err(error) if TmuxError::is_target_unavailable(&error) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +317,40 @@ mod tests {
                 .to_string()
                 .contains("exited immediately after launch"),
             "got: {error}"
+        );
+    }
+
+    #[test]
+    fn pane_is_dead_errors_when_target_missing_from_listing() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", true);
+
+        // A window target is the only way to reach the defensive branch (a
+        // listing that succeeds without the target id): real tmux and
+        // FakeTmux both error for a vanished %id target. The branch must
+        // error rather than read a sibling's liveness.
+        let error = super::pane_is_dead(&fake, "s:agents")
+            .err_or_panic("pane_is_dead_errors_when_target_missing_from_listing: expected Err");
+        assert!(
+            error.to_string().contains("missing after launch"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn pane_is_dead_treats_vanished_pane_as_dead() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+
+        let dead =
+            super::pane_is_dead(&fake, "%9").or_panic("pane_is_dead_treats_vanished_pane_as_dead");
+        assert!(
+            dead,
+            "vanished pane must count as dead, not a transport error"
         );
     }
 
