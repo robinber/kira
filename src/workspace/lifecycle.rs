@@ -153,7 +153,7 @@ fn create(
 
     tmux.create_detached_session(session, &root, &project.window_name, project.agents.len())?;
     let mut guard = TopologyGuard::new(tmux, session);
-    let setup = (|| -> Result<Vec<crate::tmux::PaneInfo>> {
+    let setup = (|| -> Result<Vec<String>> {
         tmux.set_session_option(session, SESSION_PROJECT_ID, &project.id)?;
         tmux.set_session_option(session, SESSION_PROFILE_ID, &project.profile_id)?;
         tmux.set_session_option(session, SESSION_CONFIG_FINGERPRINT, &project.fingerprint)?;
@@ -164,34 +164,49 @@ fn create(
             project.remain_on_exit.as_str(),
         )?;
 
-        // Interim even-vertical after each split stabilises pane-id assignment
-        // so the following set_pane_option(PANE_AGENT_ID) lands on the pane just
-        // created. apply_layout below only runs once all panes exist; removing
-        // the interim select_layout can reorder panes and break agent mapping.
-        let existing = tmux.list_panes(&window_target)?.len();
-        for _ in existing..project.agents.len() {
-            tmux.split_window(&window_target, &root)?;
-            tmux.select_layout(&window_target, "even-vertical")?;
-        }
-
-        let panes = tmux.list_panes(&window_target)?;
-        if panes.len() != project.agents.len() {
+        // Pane ids are collected explicitly — the fresh window's single
+        // seed pane, then each id split-window reports — so agent binding
+        // never depends on listing order (with even-vertical applied, real
+        // tmux lists panes out of creation order). The interim layout only
+        // helps subsequent splits fit; the session height reserves the
+        // actual room.
+        let mut pane_ids: Vec<String> = tmux
+            .list_panes(&window_target)?
+            .into_iter()
+            .map(|pane| pane.pane_id)
+            .collect();
+        if pane_ids.len() != 1 {
             bail!(
-                "expected {} panes after window setup, found {}",
-                project.agents.len(),
-                panes.len()
+                "fresh session window has {} panes, expected the single seed pane",
+                pane_ids.len()
             );
         }
-        for (pane, agent) in panes.iter().zip(project.agents.iter()) {
-            tmux.set_pane_option(&pane.pane_id, PANE_AGENT_ID, &agent.id)?;
+        for _ in pane_ids.len()..project.agents.len() {
+            let pane_id = tmux.split_window(&window_target, &root)?;
+            tmux.select_layout(&window_target, "even-vertical")?;
+            pane_ids.push(pane_id);
+        }
+
+        // Postcondition on final tmux state, not on the constructed list: a
+        // seed window with extra panes or a concurrent split must roll back
+        // rather than commit a partially unmanaged topology.
+        let listed = tmux.list_panes(&window_target)?.len();
+        if pane_ids.len() != project.agents.len() || listed != project.agents.len() {
+            bail!(
+                "expected {} panes after window setup, found {listed}",
+                project.agents.len()
+            );
+        }
+        for (pane_id, agent) in pane_ids.iter().zip(project.agents.iter()) {
+            tmux.set_pane_option(pane_id, PANE_AGENT_ID, &agent.id)?;
         }
 
         apply_layout(tmux, project, &window_target)?;
 
-        Ok(panes)
+        Ok(pane_ids)
     })();
-    let panes = match setup {
-        Ok(panes) => panes,
+    let pane_ids = match setup {
+        Ok(pane_ids) => pane_ids,
         Err(error) => {
             guard.mark_failed(error.to_string());
             return Err(error);
@@ -201,8 +216,8 @@ fn create(
     guard.commit();
 
     let mut any_launch_failed = false;
-    for (pane, agent) in panes.iter().zip(project.agents.iter()) {
-        let launch_result = launch_agent(tmux, pane.pane_id.as_str(), project, agent);
+    for (pane_id, agent) in pane_ids.iter().zip(project.agents.iter()) {
+        let launch_result = launch_agent(tmux, pane_id, project, agent);
         if let Err(error) = launch_result {
             tracing::warn!(
                 project_id = project.id.as_str(),
@@ -383,6 +398,37 @@ mod tests {
             fake.session_exists(&session_name(&project))
                 .or_panic("start_creates_new_workspace_from_absent")
         );
+    }
+
+    #[test]
+    fn create_binds_each_agent_to_the_pane_id_reported_at_creation() {
+        let fake = FakeTmux::new();
+        // Reversed listings defeat any binding that zips list_panes output
+        // with the agent roster — only split-reported ids survive this.
+        fake.set_reverse_pane_listing(true);
+        let mut project = test_project();
+        make_launchable(&mut project);
+        assert!(
+            project.agents.len() >= 2,
+            "binding order is only meaningful with multiple agents"
+        );
+
+        start(&fake, &project, false)
+            .or_panic("create_binds_each_agent_to_the_pane_id_reported_at_creation");
+
+        // FakeTmux allocates %0 for the seed pane and %N per split, in
+        // creation order — each agent must be tagged on exactly the pane
+        // created for it, not wherever a listing happens to place it.
+        for (idx, agent) in project.agents.iter().enumerate() {
+            let pane_id = format!("%{idx}");
+            assert_eq!(
+                fake.get_pane_option(&pane_id, PANE_AGENT_ID)
+                    .or_panic("create_binds_each_agent_to_the_pane_id_reported_at_creation"),
+                Some(agent.id.clone()),
+                "agent '{}' must land on {pane_id}",
+                agent.id
+            );
+        }
     }
 
     #[test]

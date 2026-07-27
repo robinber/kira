@@ -136,7 +136,10 @@ pub(crate) trait TmuxAdapter {
     /// List panes for a session or window target.
     fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>>;
     /// Split a window, creating another pane in `start_directory`.
-    fn split_window(&self, target: &str, start_directory: &str) -> Result<()>;
+    ///
+    /// Returns the created pane's id (`%N`) so callers can bind panes to
+    /// their purpose without relying on listing order.
+    fn split_window(&self, target: &str, start_directory: &str) -> Result<String>;
     /// Apply a named tmux layout to a window.
     fn select_layout(&self, target: &str, layout: &str) -> Result<()>;
     /// Restart a pane with cwd, env overrides, and command argv.

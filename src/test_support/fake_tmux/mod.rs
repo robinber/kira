@@ -51,6 +51,9 @@ pub(crate) struct FakeTmux {
     /// `MissingSession`, simulating a vanish between existence check and kill.
     vanish_before_kill: AtomicBool,
     no_server: AtomicBool,
+    /// When set, `list_panes` returns panes in reversed order so tests can
+    /// prove callers never depend on listing order for pane identity.
+    reverse_pane_listing: AtomicBool,
     /// Countdown of `capture_pane` calls before the fake server stops
     /// (flipping `no_server`), simulating tmux server loss mid-wait.
     server_stops_after_captures: Mutex<Option<usize>>,
@@ -222,6 +225,7 @@ impl FakeTmux {
             vanish_before_attach: AtomicBool::new(false),
             vanish_before_kill: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
+            reverse_pane_listing: AtomicBool::new(false),
             server_stops_after_captures: Mutex::new(None),
             relocate_after_geometry_reads: Mutex::new(None),
         }
@@ -295,6 +299,16 @@ impl FakeTmux {
 
     pub(crate) fn set_no_server(&self, no_server: bool) {
         self.no_server.store(no_server, Ordering::Relaxed);
+    }
+
+    /// Reverse `list_panes` ordering so callers that depend on listing
+    /// order for pane identity fail loudly in tests.
+    pub(crate) fn set_reverse_pane_listing(&self, reverse: bool) {
+        self.reverse_pane_listing.store(reverse, Ordering::Relaxed);
+    }
+
+    pub(super) fn reverse_pane_listing_enabled(&self) -> bool {
+        self.reverse_pane_listing.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_fail_paste(&self, fail: bool) {

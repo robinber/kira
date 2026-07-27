@@ -143,7 +143,9 @@ impl TmuxAdapter for TmuxClient {
         window_name: &str,
         pane_count: usize,
     ) -> Result<()> {
-        let height = (pane_count * 2).max(24).to_string();
+        // Three rows per pane: with the interim even-vertical layout during
+        // setup, 2×N runs out of vertical space around the 9th split.
+        let height = (pane_count * 3).max(24).to_string();
         self.run([
             "new-session",
             "-d",
@@ -182,11 +184,37 @@ impl TmuxAdapter for TmuxClient {
     }
 
     /// Split the target window, creating another pane in `start_directory`.
-    fn split_window(&self, target: &str, start_directory: &str) -> Result<()> {
-        self.run_on_target(
+    ///
+    /// `-P -F '#{pane_id}'` prints the created pane's id, which is returned
+    /// so callers never have to re-derive it from listing order.
+    fn split_window(&self, target: &str, start_directory: &str) -> Result<String> {
+        let output = self.output([
+            "split-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
             target,
-            ["split-window", "-d", "-t", target, "-c", start_directory],
-        )
+            "-c",
+            start_directory,
+        ])?;
+        if !output.status.success() {
+            // Same classifier as run_on_target: no-server and missing
+            // targets must stay typed.
+            return Err(failed_tmux_status(target, &output));
+        }
+        let pane_id = stdout_lines(&output).into_iter().next().unwrap_or_default();
+        let well_formed = pane_id
+            .strip_prefix('%')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+        if !well_formed {
+            return Err(TmuxError::CommandFailure(format!(
+                "split-window did not report a pane id for target {target}: {pane_id:?}"
+            ))
+            .into());
+        }
+        Ok(pane_id)
     }
 
     /// Apply a tmux layout preset to the target window.
