@@ -8,7 +8,38 @@ use anyhow::Result;
 use crate::error::{KiraMuxError, WorkspaceDriftReason};
 use crate::inspector::{self, WorkspaceTopology};
 use crate::model::{ResolvedAgent, ResolvedProject};
-use crate::tmux::{PaneInfo, TmuxAdapter};
+use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
+
+/// Map a vanished-target failure (killed pane/window/session or stopped
+/// server) to the caller's typed meaning; other errors pass through. The
+/// single `is_target_unavailable` seam every pane-addressed op shares.
+pub(super) fn or_unavailable<T>(
+    result: Result<T>,
+    on_unavailable: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match result {
+        Err(error) if TmuxError::is_target_unavailable(&error) => on_unavailable(),
+        other => other,
+    }
+}
+
+/// Send/capture-side classification, shared by every pane-addressed op: a
+/// target that vanished mid-operation is the typed
+/// [`KiraMuxError::DeadPane`] (exit 6), not an untyped transport failure.
+pub(super) fn or_dead_pane<T>(agent_id: &str, result: Result<T>) -> Result<T> {
+    or_unavailable(result, || {
+        Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
+    })
+}
+
+/// `list_panes` then find by id — the shared list-then-find idiom for
+/// re-reading one pane's state.
+pub(super) fn find_pane(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<Option<PaneInfo>> {
+    Ok(tmux
+        .list_panes(pane_id)?
+        .into_iter()
+        .find(|pane| pane.pane_id == pane_id))
+}
 
 /// Resolve the live managed pane for `agent_id` under the **same topology
 /// contract** as [`inspector::inspect`].
@@ -89,7 +120,7 @@ mod tests {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
         crate::test_support::setup_healthy_session(&fake, &project);
-        fake.set_workspace_snapshot_error(crate::tmux::TmuxError::MissingSession("gone".into()));
+        fake.set_workspace_snapshot_error(TmuxError::MissingSession("gone".into()));
 
         let err = err(
             resolve_managed_pane(&fake, &project, "alpha"),

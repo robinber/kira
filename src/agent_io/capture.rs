@@ -14,13 +14,10 @@
 use anyhow::Result;
 use serde::Serialize;
 
-// Re-export for callers and tests that historically imported through capture.
-pub(crate) use super::deep_capture::deepen_wait_capture;
 use super::deep_capture::{
-    DEEP_CAPTURE_MAX_HEIGHT, DeepCaptureOptions, DeepCaptureStatus, DeepOutcome, deep_capture,
+    DEEP_CAPTURE_MAX_HEIGHT, DeepCaptureOptions, DeepCaptureStatus, deep_capture_with_status,
 };
-use super::resolve::resolve_managed_pane;
-use super::send::or_dead_pane;
+use super::resolve::{or_dead_pane, resolve_managed_pane};
 use crate::model::ResolvedProject;
 use crate::tmux::{PaneInfo, TmuxAdapter};
 
@@ -110,26 +107,9 @@ fn capture_with_depth(
     } else if lines <= pane.pane_height {
         DeepCaptureStatus::NotNeeded
     } else {
-        match deep_capture(tmux, &pane.pane_id, lines, options) {
-            Ok(DeepOutcome::Deepened(output)) => return Ok((output, DeepCaptureStatus::Completed)),
-            Ok(DeepOutcome::NothingToDeepen) => DeepCaptureStatus::NotNeeded,
-            Ok(DeepOutcome::Busy) => {
-                tracing::warn!(
-                    pane = %pane.pane_id,
-                    "another capture owns this window's deep-capture lock; \
-                     output is limited to the visible frame"
-                );
-                DeepCaptureStatus::Busy
-            }
-            Err(error) => {
-                tracing::warn!(
-                    pane = %pane.pane_id,
-                    %error,
-                    "deep capture failed; agent runs on the tmux alternate \
-                     screen, so output is limited to the visible frame"
-                );
-                DeepCaptureStatus::Unavailable
-            }
+        match deep_capture_with_status(tmux, &pane.pane_id, lines, options) {
+            (Some(output), status) => return Ok((output, status)),
+            (None, status) => status,
         }
     };
     Ok((tmux.capture_pane(&pane.pane_id, lines)?, status))

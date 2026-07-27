@@ -8,13 +8,13 @@ use std::time::Duration;
 use anyhow::Result;
 
 use super::policy::{SubmitBehavior, infer_submit_behavior, needs_send_keys_for_text};
-use super::resolve::resolve_managed_pane;
+use super::resolve::{or_dead_pane, resolve_managed_pane};
 use crate::error::KiraMuxError;
 use crate::inspector::WorkspaceTopology;
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
+use crate::tmux::{PaneInfo, TmuxAdapter};
 
 /// Delay before the second Enter for double-enter agents. A frame delta
 /// cannot attest that the TUI consumed the first Enter (spinners repaint
@@ -143,19 +143,6 @@ fn capture_before_submit(
     capture_lines: usize,
 ) -> Result<String> {
     or_dead_pane(agent_id, tmux.capture_pane(pane_id, capture_lines))
-}
-
-/// Send/capture-side classification, shared by every pane-addressed op: a
-/// target that vanished mid-operation (killed pane/window/session or stopped
-/// server) is the typed [`KiraMuxError::DeadPane`] (exit 6), not an untyped
-/// transport failure.
-pub(super) fn or_dead_pane<T>(agent_id: &str, result: Result<T>) -> Result<T> {
-    match result {
-        Err(error) if TmuxError::is_target_unavailable(&error) => {
-            Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
-        }
-        other => other,
-    }
 }
 
 /// Compute the final prompt text for `agent` without mutating tmux.
