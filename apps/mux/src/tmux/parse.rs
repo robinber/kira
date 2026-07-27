@@ -15,7 +15,7 @@ pub(super) fn stdout_lines(output: &Output) -> Vec<String> {
 }
 
 pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
-    let mut parts = line.splitn(3, '|');
+    let mut parts = line.splitn(5, '|');
     let pane_id = parts.next().context("missing pane_id")?.to_string();
     let pane_dead = parts.next().context("missing pane_dead")? == "1";
     let pane_dead_status = parts.next().and_then(|value| {
@@ -25,11 +25,20 @@ pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
             value.parse().ok()
         }
     });
+    // Lenient like pane_dead_status: absent or malformed depth fields must
+    // not fail liveness checks (alt=false / height=0 only disables deepening).
+    let alternate_on = parts.next().is_some_and(|value| value == "1");
+    let pane_height = parts
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
 
     Ok(PaneInfo {
         pane_id,
         pane_dead,
         pane_dead_status,
+        alternate_on,
+        pane_height,
     })
 }
 
@@ -175,12 +184,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_pane_line_treats_status_remainder_as_opaque() {
-        let pane = parse_pane_line("%5|1|137|extra")
-            .or_panic("parse_pane_line_treats_status_remainder_as_opaque");
+    fn parse_pane_line_reads_alternate_screen_and_height() {
+        let pane = parse_pane_line("%5|0||1|42")
+            .or_panic("parse_pane_line_reads_alternate_screen_and_height");
+
+        assert!(pane.alternate_on);
+        assert_eq!(pane.pane_height, 42);
+    }
+
+    #[test]
+    fn parse_pane_line_defaults_missing_depth_fields() {
+        // Older/truncated lines: liveness parsing must not fail, and the
+        // defaults simply disable deep capture.
+        let pane =
+            parse_pane_line("%5|1|137").or_panic("parse_pane_line_defaults_missing_depth_fields");
 
         assert!(pane.pane_dead);
-        assert_eq!(pane.pane_dead_status, None);
+        assert_eq!(pane.pane_dead_status, Some(137));
+        assert!(!pane.alternate_on);
+        assert_eq!(pane.pane_height, 0);
+    }
+
+    #[test]
+    fn parse_pane_line_ignores_malformed_depth_fields() {
+        let pane = parse_pane_line("%5|1|137|extra|junk")
+            .or_panic("parse_pane_line_ignores_malformed_depth_fields");
+
+        assert!(pane.pane_dead);
+        assert_eq!(pane.pane_dead_status, Some(137));
+        assert!(!pane.alternate_on);
+        assert_eq!(pane.pane_height, 0);
     }
 
     #[test]

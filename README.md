@@ -331,6 +331,47 @@ short; a model that stays visually silent past the 30 s submission-only
 window is reported done with only the echo captured; and an idle monotonic
 counter (clock, watcher) never converges and reaches the hard timeout.
 
+### Capture depth and alternate-screen TUIs
+
+Some agent TUIs (Claude Code, Grok Build) run on the tmux **alternate
+screen** and keep their transcript internally: tmux accumulates no history
+for those panes, so a plain `capture-pane` can never return more than the
+visible frame, no matter what `--lines` asks for. Others (Codex) write to the
+normal screen and scroll into real tmux history.
+
+When `capture` or the final `send --wait` capture targets an alternate-screen
+pane and asks for more lines than the pane is tall, kira performs a **deep
+capture**: it zooms the pane, temporarily grows the window (up to the
+requested lines, capped at 1000 rows), lets the TUI repaint its transcript
+into the taller frame, captures it, then restores the window exactly as
+found — size, zoom, active pane, layout, and the window-local `window-size`
+value. In a multi-pane layout whose window is already tall enough, the zoom
+alone provides the depth and no resize happens. An attached client sees a
+resize flicker while this runs — usually well under a second, bounded at
+~5 s when the TUI never repaints. `send --wait` deepens only the final
+capture, after convergence: the wait polls themselves never touch geometry.
+
+If deep capture cannot run (for example the window is zoomed on another
+pane), or the TUI never repaints the enlarged frame, kira falls back to the
+visible-frame capture and logs a warning on stderr. Note that with `--json`
+the default log level drops to `error`, so raise `KIRA_MUX_LOG=warn` to see
+fallback warnings in scripted JSON flows — or check the JSON flags instead.
+
+`capture --json` reports the depth context per capture: `alternate_on` (the
+pane runs on the alternate screen) and `deep_capture` (the zoom/resize ran
+and a repaint of the enlarged frame was observed). `alternate_on: true` with
+`deep_capture: false` means the output is capped at the visible frame.
+
+Known limits: two concurrent deep captures of panes in the same window race
+on the saved geometry — the last restore wins, so avoid parallel deep
+`capture`/`send --wait` calls against agents sharing a window. Repaint
+detection is capture-based, with the same epistemic caveats as wait
+convergence: a spinner frame that changes before the TUI handles the resize
+can be mistaken for the repaint, and a TUI that never stops animating
+returns its latest frame at the ~5 s bound. If the agent process dies after
+wait convergence but during deepening, the (frozen) converged output is
+still returned with exit 0 — the next command surfaces the dead pane.
+
 ## Layout
 
 ```text

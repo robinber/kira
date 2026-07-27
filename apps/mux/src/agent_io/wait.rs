@@ -15,6 +15,13 @@
 //! a reply that pauses longer than the active quiet window is cut short, and
 //! a model that stays visually silent past the submission-only window is
 //! reported done with only the submission echo captured.
+//!
+//! Alternate-screen TUIs add a depth limit: their panes accumulate no tmux
+//! history, so every frame observed here is capped at the visible pane
+//! height. That is fine for convergence (frames still change and settle),
+//! but the converged capture returned to the caller can miss the head of a
+//! long reply — `send --wait` deepens that final capture via
+//! [`super::capture::deepen_wait_capture`] after this loop succeeds.
 
 use std::collections::VecDeque;
 #[cfg(test)]

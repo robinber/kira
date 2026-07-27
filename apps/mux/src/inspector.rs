@@ -286,6 +286,8 @@ mod tests {
                             pane_id: format!("%{index}"),
                             pane_dead: *pane_dead,
                             pane_dead_status: pane_dead.then_some(1),
+                            alternate_on: false,
+                            pane_height: 24,
                         },
                         agent_id: agent_id.map(str::to_string),
                     })

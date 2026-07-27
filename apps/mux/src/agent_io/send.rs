@@ -145,11 +145,11 @@ fn capture_before_submit(
     or_dead_pane(agent_id, tmux.capture_pane(pane_id, capture_lines))
 }
 
-/// Send-side classification, shared by every delivery op: a target that
-/// vanished mid-operation (killed pane/window/session or stopped server) is
-/// the typed [`KiraMuxError::DeadPane`] (exit 6), not an untyped transport
-/// failure.
-fn or_dead_pane<T>(agent_id: &str, result: Result<T>) -> Result<T> {
+/// Send/capture-side classification, shared by every pane-addressed op: a
+/// target that vanished mid-operation (killed pane/window/session or stopped
+/// server) is the typed [`KiraMuxError::DeadPane`] (exit 6), not an untyped
+/// transport failure.
+pub(super) fn or_dead_pane<T>(agent_id: &str, result: Result<T>) -> Result<T> {
     match result {
         Err(error) if TmuxError::is_target_unavailable(&error) => {
             Err(KiraMuxError::DeadPane(agent_id.to_string()).into())
