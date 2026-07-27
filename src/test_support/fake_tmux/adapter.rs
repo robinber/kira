@@ -298,6 +298,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn paste_text(&self, target_pane: &str, text: &str) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -316,6 +317,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_keys(&self, target_pane: &str, keys: &[&str]) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -330,6 +332,7 @@ impl TmuxAdapter for FakeTmux {
     }
 
     fn send_text(&self, target_pane: &str, text: &str) -> Result<()> {
+        self.ensure_deliverable(target_pane)?;
         if let Some(error) = self.delivery_failure(target_pane) {
             return Err(error);
         }
@@ -350,6 +353,9 @@ impl TmuxAdapter for FakeTmux {
     fn capture_pane(&self, pane_id: &str, history_limit: usize) -> Result<String> {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        if self.fail_capture_enabled() {
+            return Err(TmuxError::CommandFailure("fake transient capture failure".into()).into());
         }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         for session in sessions.values_mut() {

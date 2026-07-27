@@ -51,6 +51,10 @@ pub(crate) struct FakeTmux {
     /// `MissingSession`, simulating a vanish between existence check and kill.
     vanish_before_kill: AtomicBool,
     no_server: AtomicBool,
+    /// When set, `capture_pane` fails with a generic `CommandFailure` while
+    /// the pane stays live — a transient capture failure, unlike the typed
+    /// vanished-target errors.
+    fail_capture: AtomicBool,
     /// When set, `list_panes` returns panes in reversed order so tests can
     /// prove callers never depend on listing order for pane identity.
     reverse_pane_listing: AtomicBool,
@@ -225,6 +229,7 @@ impl FakeTmux {
             vanish_before_attach: AtomicBool::new(false),
             vanish_before_kill: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
+            fail_capture: AtomicBool::new(false),
             reverse_pane_listing: AtomicBool::new(false),
             server_stops_after_captures: Mutex::new(None),
             relocate_after_geometry_reads: Mutex::new(None),
@@ -307,6 +312,16 @@ impl FakeTmux {
         self.reverse_pane_listing.store(reverse, Ordering::Relaxed);
     }
 
+    /// Make `capture_pane` fail transiently (generic `CommandFailure`,
+    /// pane stays live), for best-effort-capture tests.
+    pub(crate) fn set_fail_capture(&self, fail: bool) {
+        self.fail_capture.store(fail, Ordering::Relaxed);
+    }
+
+    pub(super) fn fail_capture_enabled(&self) -> bool {
+        self.fail_capture.load(Ordering::Relaxed)
+    }
+
     pub(super) fn reverse_pane_listing_enabled(&self) -> bool {
         self.reverse_pane_listing.load(Ordering::Relaxed)
     }
@@ -357,6 +372,20 @@ impl FakeTmux {
                 *remaining = Some(count);
             }
         }
+    }
+
+    /// Guard every pane-addressed delivery op the way the real client's
+    /// `run_on_target` does: a stopped server or unknown pane id is a typed
+    /// error, never a silent success.
+    pub(super) fn ensure_deliverable(&self, target_pane: &str) -> Result<()> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        if Self::find_pane(&sessions, target_pane).is_none() {
+            return Err(TmuxError::MissingTarget(target_pane.to_string()).into());
+        }
+        Ok(())
     }
 
     fn delivery_failure(&self, target_pane: &str) -> Option<anyhow::Error> {
