@@ -16,10 +16,10 @@ use crate::prompt::PromptContext;
 use crate::tmux::metadata::PANE_AGENT_COMMAND;
 use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError};
 
-/// Delay between typing literal text and submitting it, so the TUI has
-/// rendered the input before the Enter arrives.
-const SEND_TEXT_SETTLE: Duration = Duration::from_millis(100);
-/// Delay before the second Enter for double-enter agents.
+/// Delay before the second Enter for double-enter agents. A frame delta
+/// cannot attest that the TUI consumed the first Enter (spinners repaint
+/// regardless), so this spacing stays a fixed delay rather than a
+/// lookalike readiness check.
 const DOUBLE_ENTER_DELAY: Duration = Duration::from_millis(200);
 /// Default lines of pane history observed by `send --wait`.
 pub(crate) const DEFAULT_WAIT_CAPTURE_LINES: usize = 200;
@@ -217,9 +217,7 @@ fn paste_and_submit_inner(
 ) -> Result<()> {
     let pane_command = tmux.get_pane_option(&pane.pane_id, PANE_AGENT_COMMAND)?;
     if !final_prompt.is_empty() && needs_send_keys_for_text(agent, pane_command.as_deref()) {
-        tmux.send_text(&pane.pane_id, final_prompt)?;
-        std::thread::sleep(SEND_TEXT_SETTLE);
-        tmux.send_keys(&pane.pane_id, &["Enter"])?;
+        crate::tmux::send_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     } else {
         crate::tmux::paste_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     }

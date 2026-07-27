@@ -17,4 +17,6 @@ pub(crate) use adapter::{
 };
 pub(crate) use client::TmuxClient;
 pub(crate) use error::TmuxError;
-pub(crate) use paste::paste_then_submit_text;
+pub(crate) use paste::{
+    normalize_search_text, paste_then_submit_text, prompt_fragments, send_then_submit_text,
+};
