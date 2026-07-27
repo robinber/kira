@@ -7,6 +7,9 @@ rust-version = "1.97.0"
 license = "MIT"
 publish = false
 
+# Explicit root workspace so an ancestor Cargo.toml cannot absorb this package.
+[workspace]
+
 [lints.rust]
 unsafe_code = "deny"
 elided_lifetimes_in_paths = "deny"
@@ -98,10 +101,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tempfile = "3"
-
-[[bin]]
-name = "kira-mux"
-path = "src/main.rs"
 
 [profile.release]
 opt-level = 3
