@@ -197,8 +197,8 @@ pub(crate) enum CommandKind {
         /// the hard timeout.
         ///
         /// For alternate-screen TUIs (Claude Code, Grok Build) the final
-        /// capture deepens automatically via a temporary window resize when
-        /// the request exceeds the pane height — one resize after
+        /// capture deepens automatically via a temporary zoom/resize when
+        /// the request exceeds the pane height — one geometry change after
         /// convergence, never during the wait polls. See `capture --help`.
         #[arg(long, requires = "wait", value_parser = parse_wait_capture_lines)]
         lines: Option<usize>,

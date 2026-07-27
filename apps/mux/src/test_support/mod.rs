@@ -1031,6 +1031,20 @@ impl TmuxAdapter for FakeTmux {
                     };
                     if remove_now {
                         window.panes.remove(idx);
+                        // Mirror tmux: removing the zoomed pane auto-unzooms
+                        // the window, and a removed active pane hands the
+                        // active slot to a survivor.
+                        if window
+                            .zoomed_pane
+                            .as_ref()
+                            .is_some_and(|zoom| zoom.pane_id == pane_id)
+                        {
+                            window.zoomed_pane = None;
+                        }
+                        if window.active_pane.as_deref() == Some(pane_id) {
+                            window.active_pane =
+                                window.panes.first().map(|pane| pane.pane_id.clone());
+                        }
                     }
                     self.note_capture_served();
                     return Ok(content);
@@ -1107,16 +1121,23 @@ impl TmuxAdapter for FakeTmux {
                 {
                     pane.height = zoom.prior_height;
                 }
-            } else if target.starts_with('%') {
-                // Zoom: the pane spans the window and becomes active.
+            } else {
+                // Zoom: a `%` target zooms that pane; a window target
+                // resolves to the active pane (tmux semantics). The zoomed
+                // pane spans the window and becomes active.
+                let pane_id = if target.starts_with('%') {
+                    target.to_string()
+                } else {
+                    window.active_pane_id()
+                };
                 let window_height = window.height;
-                if let Some(pane) = window.panes.iter_mut().find(|pane| pane.pane_id == target) {
+                if let Some(pane) = window.panes.iter_mut().find(|pane| pane.pane_id == pane_id) {
                     window.zoomed_pane = Some(FakeZoom {
-                        pane_id: target.to_string(),
+                        pane_id: pane_id.clone(),
                         prior_height: pane.height,
                     });
                     pane.height = window_height;
-                    window.active_pane = Some(target.to_string());
+                    window.active_pane = Some(pane_id);
                 }
             }
         });
@@ -1143,6 +1164,20 @@ impl TmuxAdapter for FakeTmux {
             target: target.to_string(),
         });
         Ok(())
+    }
+
+    fn window_zoomed(&self, target: &str) -> Result<bool> {
+        if self.no_server.load(Ordering::Relaxed) {
+            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+        }
+        let mut zoomed = false;
+        let found = self.with_window_mut(target, |window| {
+            zoomed = window.zoomed_pane.is_some();
+        });
+        if !found {
+            return Err(TmuxError::MissingTarget(target.to_string()).into());
+        }
+        Ok(zoomed)
     }
 
     fn select_pane(&self, pane_id: &str) -> Result<()> {

@@ -271,6 +271,11 @@ fn resize_and_capture(
     // failure: reporting the baseline as deepened would silently truncate.
     // (A transcript that genuinely fits the old frame also lands here; the
     // fallback plain capture returns the same content, so nothing is lost.)
+    //
+    // Residual limits, same epistemic class as wait convergence: a spinner
+    // tick that lands before the SIGWINCH repaint and then holds for a poll
+    // reads as the repaint, and a TUI that animates until the bound returns
+    // its latest (repainted but non-quiescent) frame as deepened.
     let started = Instant::now();
     let mut last: Option<String> = None;
     loop {
@@ -318,9 +323,16 @@ fn restore_window(
         note(tmux.resize_window(&geometry.window_id, geometry.width, geometry.height));
     }
     if zoom_toggled {
-        // A window target resolves to the active pane — the zoomed pane —
-        // so unzoom works even if the captured pane is gone.
-        note(tmux.toggle_pane_zoom(&geometry.window_id));
+        // Check the *current* zoom state instead of assuming our zoom is
+        // still in effect: tmux auto-unzooms when the zoomed pane's process
+        // is removed, and a blind toggle would then zoom the surviving
+        // active pane. When zoomed, a window target resolves to the zoomed
+        // pane, so unzoom works even if the captured pane is gone.
+        match tmux.window_zoomed(&geometry.window_id) {
+            Ok(true) => note(tmux.toggle_pane_zoom(&geometry.window_id)),
+            Ok(false) => {}
+            Err(error) => note(Err(error)),
+        }
     }
     if resized {
         // `resize-window` forced the window-local value to `manual`; put
@@ -658,6 +670,7 @@ mod tests {
         crate::test_support::setup_healthy_session(&fake, &project);
         setup_alt_screen_transcript(&fake);
         // Baseline capture survives; the pane is gone by the settle polls.
+        // Its removal auto-unzooms the window (tmux semantics).
         fake.set_pane_removed_after_captures("%0", 2);
 
         let error = err(
@@ -679,6 +692,57 @@ mod tests {
                 FakeOp::UnsetWindowSizeOption { target } if *target == window
             )),
             "restore must address the surviving window, got: {:?}",
+            fake.ops()
+        );
+        // The removal already unzoomed the window: a blind restore toggle
+        // would zoom the surviving pane. Only the initial zoom may appear.
+        let session = crate::workspace::session_name(&project);
+        assert!(
+            !ok(
+                fake.window_zoomed(&format!("{session}:{}", project.window_name)),
+                "window state should be readable",
+            ),
+            "restore must not re-zoom a window that tmux already unzoomed"
+        );
+        assert_eq!(
+            fake.ops()
+                .iter()
+                .filter(|op| matches!(op, FakeOp::ToggleZoom { .. }))
+                .count(),
+            1,
+            "only the initial zoom may toggle, got: {:?}",
+            fake.ops()
+        );
+    }
+
+    #[test]
+    fn deep_capture_clamps_request_to_max_height() {
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        setup_alt_screen_transcript(&fake);
+
+        let capture = ok(
+            capture_output(&fake, &project, "alpha", 2000),
+            "over-cap deep capture should still succeed",
+        );
+        assert!(capture.deep_capture);
+        let window = test_window_id(&project);
+        assert!(
+            fake.ops().iter().any(|op| matches!(
+                op,
+                FakeOp::ResizeWindow { target, height, .. }
+                    if *target == window && *height == DEEP_CAPTURE_MAX_HEIGHT
+            )),
+            "a request beyond the cap must resize to exactly the cap, got: {:?}",
+            fake.ops()
+        );
+        assert!(
+            fake.ops().iter().any(|op| matches!(
+                op,
+                FakeOp::ResizeWindow { target, height: 24, .. } if *target == window
+            )),
+            "restore must still return to the original height, got: {:?}",
             fake.ops()
         );
     }

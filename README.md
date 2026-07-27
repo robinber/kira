@@ -362,9 +362,15 @@ pane runs on the alternate screen) and `deep_capture` (the zoom/resize ran
 and a repaint of the enlarged frame was observed). `alternate_on: true` with
 `deep_capture: false` means the output is capped at the visible frame.
 
-Known limit: two concurrent deep captures of panes in the same window race
-on the saved geometry — the last restore wins. Avoid parallel deep
-`capture`/`send --wait` calls against agents sharing a window.
+Known limits: two concurrent deep captures of panes in the same window race
+on the saved geometry — the last restore wins, so avoid parallel deep
+`capture`/`send --wait` calls against agents sharing a window. Repaint
+detection is capture-based, with the same epistemic caveats as wait
+convergence: a spinner frame that changes before the TUI handles the resize
+can be mistaken for the repaint, and a TUI that never stops animating
+returns its latest frame at the ~5 s bound. If the agent process dies after
+wait convergence but during deepening, the (frozen) converged output is
+still returned with exit 0 — the next command surfaces the dead pane.
 
 ## Layout
 

@@ -438,6 +438,21 @@ impl TmuxAdapter for TmuxClient {
         self.run_on_target(target, ["resize-pane", "-Z", "-t", target])
     }
 
+    /// Read the current zoom state of the target's window.
+    fn window_zoomed(&self, target: &str) -> Result<bool> {
+        let output = self.output([
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{window_zoomed_flag}",
+        ])?;
+        if !output.status.success() {
+            return Err(failed_tmux_status(target, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim() == "1")
+    }
+
     /// Drop the window-local `window-size` override left behind by
     /// `resize-window`.
     fn unset_window_size_option(&self, target: &str) -> Result<()> {
