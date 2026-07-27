@@ -26,8 +26,8 @@ Before editing:
 Do not drive drive-by refactors of unrelated code just to satisfy a number.
 
 Pressure zones today often include: `inspector.rs`, `config/resolve/` (esp. tests
-in `mod.rs`), `tmux/client.rs`, `test_support/fake_tmux.rs`, `config/fingerprint.rs`,
-`workspace/lifecycle.rs`.
+in `mod.rs`), `tmux/client`, `test_support/fake_tmux/`, `config/fingerprint.rs`,
+`workspace/lifecycle.rs`, `agent_io/deep_capture.rs`, `tests/cli/`.
 
 ## Duplication gates
 
