@@ -254,6 +254,10 @@ pub(crate) fn inspect(
             Some(TmuxError::NoServer(_) | TmuxError::MissingSession(_)) => {
                 return Ok(WorkspaceTopology::Absent);
             }
+            // Coarse by necessity: the client already softens list-panes
+            // MissingTarget into `window: None`, so an escaping
+            // MissingTarget comes from the session-scoped metadata read and
+            // window absence is the closest drift reason available.
             Some(TmuxError::MissingTarget(_)) => {
                 return Ok(WorkspaceTopology::Drifted {
                     reason: WorkspaceDriftReason::ManagedWindowMissing,

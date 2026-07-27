@@ -82,6 +82,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_vanished_session_race_maps_to_session_absent() {
+        // The session vanishing between the existence check and the metadata
+        // read must give send/capture the typed exit-5 SessionAbsent, not a
+        // generic transport error (issue #83 classification in inspect()).
+        let fake = crate::test_support::FakeTmux::new();
+        let project = crate::test_support::test_project();
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.set_workspace_snapshot_error(crate::tmux::TmuxError::MissingSession("gone".into()));
+
+        let err = err(
+            resolve_managed_pane(&fake, &project, "alpha"),
+            "resolve_managed_pane should classify the race as absence",
+        );
+        assert!(matches!(
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::SessionAbsent)
+        ));
+    }
+
+    #[test]
     fn resolve_pane_absent_session() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();

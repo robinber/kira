@@ -133,7 +133,9 @@ fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+    use crate::test_support::{
+        FakeTmux, TestResultExt, setup_healthy_session, setup_session_with_dead_panes, test_project,
+    };
     use crate::tmux::TmuxError;
 
     #[test]
@@ -155,6 +157,57 @@ mod tests {
         let state = summarize_project(&fake, &project).or_panic("summarize_healthy");
 
         assert_eq!(state, ProjectState::Running);
+    }
+
+    #[test]
+    fn summarize_dead_pane_is_degraded() {
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_session_with_dead_panes(&fake, &project, &[0]);
+
+        let state = summarize_project(&fake, &project).or_panic("summarize_degraded");
+
+        assert_eq!(state, ProjectState::Degraded);
+    }
+
+    #[test]
+    fn summarize_untagged_session_is_drifted() {
+        // A session that exists but carries no kira metadata is drift, not
+        // an error — the old snapshot-path test pinned this and the shared
+        // classifier must keep it.
+        let fake = FakeTmux::new();
+        let project = test_project();
+        let session = crate::workspace::session_name(&project);
+        fake.add_session(&session);
+        fake.add_window(&session, &project.window_name);
+        fake.add_pane(&session, &project.window_name, "%0", false);
+
+        let state = summarize_project(&fake, &project).or_panic("summarize_untagged");
+
+        assert_eq!(state, ProjectState::Drifted);
+    }
+
+    #[test]
+    fn vanished_server_race_classifies_as_stopped_for_list_and_status() {
+        // NoServer surfacing as a snapshot *error* (not the Ok(None) path)
+        // must classify like absence on both sides.
+        let fake = FakeTmux::new();
+        let project = test_project();
+        setup_healthy_session(&fake, &project);
+
+        fake.set_workspace_snapshot_error(TmuxError::NoServer("no server".into()));
+        assert_eq!(
+            summarize_project(&fake, &project).or_panic("list side"),
+            ProjectState::Stopped
+        );
+
+        fake.set_workspace_snapshot_error(TmuxError::NoServer("no server".into()));
+        assert_eq!(
+            project_status(&fake, &project)
+                .or_panic("status side")
+                .state,
+            ProjectState::Stopped
+        );
     }
 
     #[test]
