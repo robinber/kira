@@ -128,8 +128,11 @@ pub(crate) fn load_projects(
 #[derive(Debug, Deserialize)]
 struct ProjectIdentity {
     id: String,
+    /// Any TOML type is tolerated so a mistyped `root` cannot poison the
+    /// identity (the full parse reports the real error); only a string
+    /// participates in contextual matching.
     #[serde(default)]
-    root: Option<String>,
+    root: Option<toml::Value>,
 }
 
 /// One projects-dir file as seen by the shared discovery pass.
@@ -164,7 +167,11 @@ pub(super) fn discover_projects(paths: &AppPaths) -> Result<Vec<DiscoveredProjec
                 records.push(DiscoveredProject::Identified {
                     path,
                     id: identity.id,
-                    root: identity.root,
+                    root: identity
+                        .root
+                        .as_ref()
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_string),
                 });
             }
             Err(error) => records.push(DiscoveredProject::Broken { path, error }),
@@ -676,6 +683,59 @@ command = "echo"
         assert!(
             matches!(explicit_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
             "got: {explicit_err}"
+        );
+
+        let unrelated_err = err(
+            find_project_raw(&paths, "unrelated"),
+            "unrelated explicit lookup: duplicates abort discovery globally",
+        );
+        assert!(
+            matches!(unrelated_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {unrelated_err}"
+        );
+
+        let contextual_err = err(
+            target::find_project_path(&paths, config_home.path()),
+            "contextual entry: expected duplicate error",
+        );
+        assert!(
+            matches!(contextual_err, ConfigError::DuplicateProjectId { ref id, .. } if id == "dup"),
+            "got: {contextual_err}"
+        );
+    }
+
+    #[test]
+    fn mistyped_root_does_not_poison_the_declared_identity() {
+        // `root = 42` must not knock the file out of discovery: its id
+        // still counts for duplicate detection, and explicit lookup
+        // surfaces the real parse error instead of UnknownProjectId.
+        let config_home = ok(tempfile::tempdir(), "config home");
+        let projects = config_home.path().join("kira-mux/projects");
+        ok(fs::create_dir_all(&projects), "projects dir");
+
+        ok(
+            fs::write(
+                projects.join("bad-root.toml"),
+                r#"
+id = "wanted"
+root = 42
+
+[[agents]]
+id = "alpha"
+command = "echo"
+"#,
+            ),
+            "write bad root",
+        );
+
+        let paths = AppPaths::new(config_home.path().to_path_buf());
+        let error = err(
+            find_project_raw(&paths, "wanted"),
+            "expected the full-parse error",
+        );
+        assert!(
+            !matches!(error, ConfigError::UnknownProjectId(_)),
+            "declared id must stay discoverable, got: {error}"
         );
     }
 
