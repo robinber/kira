@@ -243,11 +243,6 @@ impl TmuxAdapter for TmuxClient {
         self.run_on_target(target, ["set-option", "-q", "-t", target, name, value])
     }
 
-    /// Read a session-scoped tmux option.
-    fn get_session_option(&self, target: &str, name: &str) -> Result<Option<String>> {
-        self.read_option(target, ["show-options", "-q", "-v", "-t", target, name])
-    }
-
     /// Set a window-scoped tmux option.
     fn set_window_option(&self, target: &str, name: &str, value: &str) -> Result<()> {
         self.run_on_target(

@@ -155,8 +155,6 @@ pub(crate) trait TmuxAdapter {
     fn kill_session(&self, session_name: &str) -> Result<()>;
     /// Set a session-scoped user option.
     fn set_session_option(&self, target: &str, name: &str, value: &str) -> Result<()>;
-    /// Read a session-scoped user option.
-    fn get_session_option(&self, target: &str, name: &str) -> Result<Option<String>>;
     /// Set a window-scoped user option.
     fn set_window_option(&self, target: &str, name: &str, value: &str) -> Result<()>;
     /// Set a pane-scoped user option.

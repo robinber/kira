@@ -66,7 +66,7 @@ pub(crate) fn attach(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Resul
         return Err(KiraMuxError::SessionAbsent.into());
     }
 
-    ensure_session_owned(tmux, project, &session)?;
+    inspector::ensure_session_owned(tmux, project)?;
     attach_to_session(tmux, &session)
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
         return Ok(());
     }
 
-    ensure_session_owned(tmux, project, &session)?;
+    inspector::ensure_session_owned(tmux, project)?;
     if let Err(error) = tmux.kill_session(&session) {
         // The session may have died between the existence check and the
         // kill; the goal is reached either way.
@@ -350,28 +350,6 @@ fn validate_launch_paths<'a>(
                 .into(),
             );
         }
-    }
-
-    Ok(())
-}
-
-fn ensure_session_owned(
-    tmux: &dyn TmuxAdapter,
-    project: &ResolvedProject,
-    session: &str,
-) -> Result<()> {
-    let stored_project_id = tmux.get_session_option(session, SESSION_PROJECT_ID)?;
-    let stored_profile_id = tmux.get_session_option(session, SESSION_PROFILE_ID)?;
-    if let Some(reason) = inspector::classify_session_ownership(
-        project,
-        stored_project_id.as_deref(),
-        stored_profile_id.as_deref(),
-    ) {
-        return Err(KiraMuxError::Drifted {
-            project_id: project.id.clone(),
-            reason,
-        }
-        .into());
     }
 
     Ok(())

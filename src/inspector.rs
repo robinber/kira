@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 
-use crate::error::WorkspaceDriftReason;
+use crate::error::{KiraMuxError, WorkspaceDriftReason};
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
 use crate::tmux::{
@@ -159,6 +159,37 @@ pub(crate) fn classify_session_ownership(
     } else {
         None
     }
+}
+
+/// Confirm a live session is owned by `project` (project id + profile only).
+///
+/// Uses the bulk [`TmuxAdapter::workspace_snapshot`] path — the same session
+/// metadata source as [`inspect`] / `list` — so ownership cannot disagree with
+/// topology classification. Fingerprint drift is intentionally ignored so
+/// `kill` can still clean up a session after config changes.
+///
+/// When the session vanishes between an existence check and this call, returns
+/// [`TmuxError::MissingSession`] (same surface as the former per-option reads).
+pub(crate) fn ensure_session_owned(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+) -> Result<()> {
+    let session = session_name(project);
+    let Some(snapshot) = tmux.workspace_snapshot(&session, &project.window_name)? else {
+        return Err(TmuxError::MissingSession(session).into());
+    };
+    if let Some(reason) = classify_session_ownership(
+        project,
+        snapshot.project_id.as_deref(),
+        snapshot.profile_id.as_deref(),
+    ) {
+        return Err(KiraMuxError::Drifted {
+            project_id: project.id.clone(),
+            reason,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn classify_window_shape(
