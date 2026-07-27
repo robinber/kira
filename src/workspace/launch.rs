@@ -197,7 +197,6 @@ fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
     let pane = panes
         .iter()
         .find(|pane| pane.pane_id == pane_id)
-        .or_else(|| panes.first())
         .with_context(|| format!("pane {pane_id} missing after launch"))?;
     Ok(pane.pane_dead)
 }
@@ -311,6 +310,23 @@ mod tests {
             error
                 .to_string()
                 .contains("exited immediately after launch"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn pane_is_dead_errors_when_target_missing_from_listing() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", true);
+
+        // A window target makes list_panes succeed without containing the
+        // target id, simulating a vanished pane with surviving siblings.
+        let error = super::pane_is_dead(&fake, "s:agents")
+            .err_or_panic("pane_is_dead_errors_when_target_missing_from_listing: expected Err");
+        assert!(
+            error.to_string().contains("missing after launch"),
             "got: {error}"
         );
     }
