@@ -85,4 +85,4 @@ Short form:
 - `src/agent_io/` — send / capture / wait / policy
 - `src/model/` — resolved project + status types
 - `src/prompt/`, `output.rs`, `error.rs`, `paths.rs`, `logging.rs`
-- `tests/cli.rs` — real-tmux integration harness
+- `tests/cli/` — real-tmux integration harness (`main`, `harness`, scenario modules)

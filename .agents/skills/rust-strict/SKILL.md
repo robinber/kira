@@ -189,7 +189,7 @@ Details: `references/api-design.md`, `references/docs.md`.
 ## Tests
 
 - Unit tests next to modules; FakeTmux + helpers in `test_support` (`#[cfg(test)]`).
-- Real-tmux integration: `tests/cli.rs` (CI “tmux integration” job).
+- Real-tmux integration: `tests/cli/` (CI “tmux integration” job).
 - Prefer deterministic setup (`setup_healthy_session`, etc.) over real tmux unless writing an explicit integration harness.
 - Prefer coordination over new `sleep`s in tests; production send/paste still uses short settles — do not add more without need.
 - State exact filters: e.g. `cargo test -p kira-mux --lib inspector:: --all-features`.

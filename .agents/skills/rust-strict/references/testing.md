@@ -5,8 +5,8 @@
 - Unit tests live in `#[cfg(test)]` modules next to production code.
 - Shared fixtures: `src/test_support/` (`assert`, `fake_tmux`, `fixtures` —
   FakeTmux, `test_project`, `setup_healthy_session`, `or_panic` helpers).
-- Real-tmux integration: `tests/cli.rs` (isolated socket + XDG home
-  per test; CI job “tmux integration”).
+- Real-tmux integration: `tests/cli/` (`main` + `harness` + scenario modules;
+  isolated socket + XDG home per test; CI job “tmux integration”).
 - Binary exit-code tests live in `src/main.rs`.
 
 ## Policy
