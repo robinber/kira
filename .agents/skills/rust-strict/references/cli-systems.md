@@ -32,4 +32,4 @@ codes when changing variants: scripts rely on **2 / 3 / 4 / 5 / 6 / 7**
 
 - Unit-test pure handlers and exit mapping without spawning the process.
 - Prefer library-level tests with FakeTmux for logic; use
-  `apps/mux/tests/cli.rs` for real-tmux fidelity and exit-code e2e.
+  `tests/cli.rs` for real-tmux fidelity and exit-code e2e.

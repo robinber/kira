@@ -21,4 +21,4 @@ deny:
 check: fmt-check clippy test doc deny
 
 mux:
-    cargo run -p kira-mux --bin kira-mux
+    cargo run --bin kira-mux

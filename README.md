@@ -38,7 +38,7 @@ Kira does the opposite:
 ```bash
 git clone https://github.com/robinber/kira
 cd kira
-cargo install --path apps/mux
+cargo install --path .
 ```
 
 **First run**
@@ -386,7 +386,8 @@ the dead pane.
 ## Layout
 
 ```text
-apps/mux/       kira-mux CLI (config, tmux, workspace, agent I/O)
+src/            kira-mux CLI (config, tmux, workspace, agent I/O)
+tests/          real-tmux integration harness
 examples/       sample project configs
 .agents/        agent coding contracts (rust-strict)
 ```
@@ -395,11 +396,11 @@ examples/       sample project configs
 
 Quality floor is intentional and strict:
 
-- workspace lints: `unsafe` denied, `unwrap` / `expect` / `todo` denied, pedantic on
+- package lints: `unsafe` denied, `unwrap` / `expect` / `todo` denied, pedantic on
 - `cargo +nightly fmt`, clippy `-D warnings`, rustdoc `-D warnings`
 - `cargo deny` for advisories, licenses, and sources
 - integration tests drive the compiled binary against real tmux servers
-  (`apps/mux/tests/cli.rs`, needs `tmux` on `PATH`; each test uses an
+  (`tests/cli.rs`, needs `tmux` on `PATH`; each test uses an
   isolated socket, so your own tmux sessions are never touched)
 - CI on push and pull requests (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 
