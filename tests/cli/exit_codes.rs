@@ -32,6 +32,30 @@ fn unknown_agent_and_unknown_project_exit_2() {
 }
 
 #[test]
+fn unset_home_exits_2() {
+    let bed = TestBed::new();
+    bed.write_project(CAT_AGENT);
+
+    // No HOME and no XDG_CONFIG_HOME: config-home resolution has no anchor.
+    // This is a stable environment misconfiguration, not an unexpected I/O
+    // failure — the contract is exit 2, same as config `~` resolution.
+    let mut command = bed.kira_command(&["list"]);
+    command.env_remove("HOME").env_remove("XDG_CONFIG_HOME");
+    let list = run(&mut command);
+    assert_eq!(
+        exit_code(&list),
+        2,
+        "unset HOME must exit 2, stderr: {:?}",
+        stderr_of(&list)
+    );
+    assert!(
+        stderr_of(&list).contains("HOME is not set"),
+        "stderr wording must be preserved, got: {:?}",
+        stderr_of(&list)
+    );
+}
+
+#[test]
 fn missing_tmux_binary_exits_3() {
     let bed = TestBed::new();
     bed.write_project(CAT_AGENT);

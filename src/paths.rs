@@ -3,7 +3,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+
+use crate::config::ConfigError;
 
 /// XDG-derived filesystem locations used by kira-mux.
 #[derive(Debug, Clone)]
@@ -70,9 +72,13 @@ fn xdg_home(var_name: &str, fallback_suffix: &str) -> Result<PathBuf> {
     }
 }
 
+/// Unset or empty `HOME` is a stable environment misconfiguration, not an
+/// unexpected I/O failure: surface the typed
+/// [`ConfigError::HomeDirUnavailable`] so every command exits 2, matching the
+/// config-side `~` resolution path.
 pub(crate) fn home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| anyhow!("HOME is not set"))
+        .ok_or_else(|| ConfigError::HomeDirUnavailable.into())
 }
