@@ -400,7 +400,7 @@ Quality floor is intentional and strict:
 - `cargo +nightly fmt`, clippy `-D warnings`, rustdoc `-D warnings`
 - `cargo deny` for advisories, licenses, and sources
 - integration tests drive the compiled binary against real tmux servers
-  (`tests/cli.rs`, needs `tmux` on `PATH`; each test uses an
+  (`tests/cli/`, needs `tmux` on `PATH`; each test uses an
   isolated socket, so your own tmux sessions are never touched)
 - CI on push and pull requests (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 

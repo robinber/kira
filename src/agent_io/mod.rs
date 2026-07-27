@@ -5,6 +5,7 @@
 //! `policy` picks submit / text-delivery when config does not override.
 
 mod capture;
+mod deep_capture;
 mod lock;
 mod policy;
 mod resolve;
