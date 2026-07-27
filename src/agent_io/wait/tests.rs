@@ -224,6 +224,34 @@ fn delayed_answer_after_prompt_echo_is_not_returned_early() {
 }
 
 #[test]
+fn send_then_wait_converges_via_declared_delivery_response() {
+    // Composition proof for the injectable fake response (issue #91): a
+    // real fake delivery — no capture queue — must carry the declared
+    // reply frame through the submission verifier to convergence.
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    fake.set_delivery_response("the agent replied with a complete answer");
+
+    let seed = super::super::send::send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "do the thing",
+        true,
+        super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_then_wait_converges_via_declared_delivery_response: send");
+    let converged = wait_on_pane(&fake, "alpha", &seed, &fast_options())
+        .or_panic("send_then_wait_converges_via_declared_delivery_response: wait");
+
+    assert!(
+        converged.contains("the agent replied with a complete answer"),
+        "declared reply frame must survive convergence, got: {converged}"
+    );
+}
+
+#[test]
 fn one_frame_response_waits_for_the_submission_only_window() {
     let fake = crate::test_support::FakeTmux::new();
     let project = crate::test_support::test_project();

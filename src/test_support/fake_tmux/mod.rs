@@ -322,9 +322,11 @@ impl FakeTmux {
         self.fail_capture.store(fail, Ordering::Relaxed);
     }
 
-    /// Declare the frame the fake "agent" renders below every delivered
-    /// text. Tests whose assertions depend on visible agent output (wait
-    /// convergence, submit verification) must state that frame here.
+    /// Declare the single frame the fake "agent" renders below every
+    /// delivered text (delivery is one atomic append). Tests whose
+    /// assertions depend on visible agent output at delivery time state
+    /// that frame here; multi-frame streams (production evidence over
+    /// several polls) stay on [`FakeTmux::queue_pane_contents`].
     pub(crate) fn set_delivery_response(&self, response: &str) {
         *ok(
             self.delivery_response.lock(),
