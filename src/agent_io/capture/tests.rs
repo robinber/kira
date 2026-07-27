@@ -1,6 +1,6 @@
 //! Unit tests for plain and deep pane capture.
 
-use super::super::deep_capture::{DeepCaptureOptions, deep_capture};
+use super::super::deep_capture::{DeepCaptureOptions, deep_capture, deepen_wait_capture};
 use super::super::lock;
 use super::super::resolve::resolve_managed_pane;
 use super::*;

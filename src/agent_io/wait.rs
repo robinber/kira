@@ -21,7 +21,7 @@
 //! height. That is fine for convergence (frames still change and settle),
 //! but the converged capture returned to the caller can miss the head of a
 //! long reply — `send --wait` deepens that final capture via
-//! [`super::capture::deepen_wait_capture`] after this loop succeeds.
+//! [`super::deep_capture::deepen_wait_capture`] after this loop succeeds.
 
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
+use super::resolve::{find_pane, or_unavailable};
 use super::send::WaitSeed;
 use crate::error::KiraMuxError;
-use crate::tmux::{TmuxAdapter, TmuxError, normalize_search_text, prompt_fragments};
+use crate::tmux::{TmuxAdapter, normalize_search_text, prompt_fragments};
 
 const RECENT_FRAME_LIMIT: usize = 8;
 
@@ -427,12 +428,9 @@ fn capture_or_died(
     pane_id: &str,
     capture_lines: usize,
 ) -> Result<String> {
-    match tmux.capture_pane(pane_id, capture_lines) {
-        Err(error) if TmuxError::is_target_unavailable(&error) => {
-            Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into())
-        }
-        other => other,
-    }
+    or_unavailable(tmux.capture_pane(pane_id, capture_lines), || {
+        Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into())
+    })
 }
 
 /// A vanished pane (killed window / missing target), a lost session, or a
@@ -440,14 +438,10 @@ fn capture_or_died(
 /// typed exit 6 rather than an untyped transport failure — the same
 /// `is_target_unavailable` classification the send path uses.
 fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
-    match tmux.list_panes(pane_id) {
-        Ok(panes) => Ok(panes
-            .iter()
-            .find(|pane| pane.pane_id == pane_id)
-            .is_none_or(|pane| pane.pane_dead)),
-        Err(error) if TmuxError::is_target_unavailable(&error) => Ok(true),
-        Err(error) => Err(error),
-    }
+    or_unavailable(
+        find_pane(tmux, pane_id).map(|pane| pane.is_none_or(|pane| pane.pane_dead)),
+        || Ok(true),
+    )
 }
 
 #[cfg(test)]

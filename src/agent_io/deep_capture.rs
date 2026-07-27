@@ -93,8 +93,8 @@ pub(crate) fn deepen_wait_capture(
     lines: usize,
     converged: String,
 ) -> String {
-    let pane = match tmux.list_panes(pane_id) {
-        Ok(panes) => panes.into_iter().find(|pane| pane.pane_id == pane_id),
+    let pane = match super::resolve::find_pane(tmux, pane_id) {
+        Ok(pane) => pane,
         Err(error) => {
             // Still fail-open, but never silently: the converged capture may
             // be depth-capped and the caller deserves the diagnostic.
@@ -111,25 +111,40 @@ pub(crate) fn deepen_wait_capture(
     if !wants_deep_capture(&pane, lines) {
         return converged;
     }
-    match deep_capture(tmux, &pane.pane_id, lines, &DeepCaptureOptions::default()) {
-        Ok(DeepOutcome::Deepened(output)) => output,
-        Ok(DeepOutcome::NothingToDeepen) => converged,
+    match deep_capture_with_status(tmux, &pane.pane_id, lines, &DeepCaptureOptions::default()) {
+        (Some(output), _) => output,
+        (None, _) => converged,
+    }
+}
+
+/// Run a deep capture and fold its outcome into `(deepened output, status)`,
+/// owning the shared lock-contention and failure diagnostics so both the
+/// capture command and the wait path report them identically.
+pub(super) fn deep_capture_with_status(
+    tmux: &dyn TmuxAdapter,
+    pane_id: &str,
+    lines: usize,
+    options: &DeepCaptureOptions,
+) -> (Option<String>, DeepCaptureStatus) {
+    match deep_capture(tmux, pane_id, lines, options) {
+        Ok(DeepOutcome::Deepened(output)) => (Some(output), DeepCaptureStatus::Completed),
+        Ok(DeepOutcome::NothingToDeepen) => (None, DeepCaptureStatus::NotNeeded),
         Ok(DeepOutcome::Busy) => {
             tracing::warn!(
                 pane = %pane_id,
                 "another capture owns this window's deep-capture lock; \
                  output is limited to the visible frame"
             );
-            converged
+            (None, DeepCaptureStatus::Busy)
         }
         Err(error) => {
             tracing::warn!(
                 pane = %pane_id,
                 %error,
-                "deep capture after wait failed; output is limited to the \
-                 visible frame (agent runs on the tmux alternate screen)"
+                "deep capture failed; agent runs on the tmux alternate \
+                 screen, so output is limited to the visible frame"
             );
-            converged
+            (None, DeepCaptureStatus::Unavailable)
         }
     }
 }
