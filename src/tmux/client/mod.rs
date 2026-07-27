@@ -143,7 +143,9 @@ impl TmuxAdapter for TmuxClient {
         window_name: &str,
         pane_count: usize,
     ) -> Result<()> {
-        let height = (pane_count * 2).max(24).to_string();
+        // Three rows per pane: with the interim even-vertical layout during
+        // setup, 2×N runs out of vertical space around the 9th split.
+        let height = (pane_count * 3).max(24).to_string();
         self.run([
             "new-session",
             "-d",
@@ -203,7 +205,10 @@ impl TmuxAdapter for TmuxClient {
             return Err(failed_tmux_status(target, &output));
         }
         let pane_id = stdout_lines(&output).into_iter().next().unwrap_or_default();
-        if !pane_id.starts_with('%') {
+        let well_formed = pane_id
+            .strip_prefix('%')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+        if !well_formed {
             return Err(TmuxError::CommandFailure(format!(
                 "split-window did not report a pane id for target {target}: {pane_id:?}"
             ))

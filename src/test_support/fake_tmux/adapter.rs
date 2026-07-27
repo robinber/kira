@@ -108,11 +108,11 @@ impl TmuxAdapter for FakeTmux {
             return Err(TmuxError::MissingSession(target.to_string()).into());
         };
 
-        if let Some(window_name) = window_name {
+        let mut panes = if let Some(window_name) = window_name {
             let Some(window) = session.windows.get(window_name) else {
                 return Err(TmuxError::MissingTarget(target.to_string()).into());
             };
-            Ok(window.panes.iter().map(FakePane::info).collect())
+            window.panes.iter().map(FakePane::info).collect()
         } else {
             let mut all = Vec::new();
             for window in session.windows.values() {
@@ -120,8 +120,12 @@ impl TmuxAdapter for FakeTmux {
                     all.push(p.info());
                 }
             }
-            Ok(all)
+            all
+        };
+        if self.reverse_pane_listing_enabled() {
+            panes.reverse();
         }
+        Ok(panes)
     }
 
     fn split_window(&self, target: &str, _start_directory: &str) -> Result<String> {

@@ -165,27 +165,36 @@ fn create(
         )?;
 
         // Pane ids are collected explicitly — the fresh window's single
-        // seed pane from the listing, then each id split-window reports —
-        // so agent binding never depends on listing order. The interim
-        // even-vertical keeps the window from running out of vertical space
-        // for the next split; apply_layout below sets the final layout once
-        // all panes exist.
+        // seed pane, then each id split-window reports — so agent binding
+        // never depends on listing order (with even-vertical applied, real
+        // tmux lists panes out of creation order). The interim layout only
+        // helps subsequent splits fit; the session height reserves the
+        // actual room.
         let mut pane_ids: Vec<String> = tmux
             .list_panes(&window_target)?
             .into_iter()
             .map(|pane| pane.pane_id)
             .collect();
+        if pane_ids.len() != 1 {
+            bail!(
+                "fresh session window has {} panes, expected the single seed pane",
+                pane_ids.len()
+            );
+        }
         for _ in pane_ids.len()..project.agents.len() {
             let pane_id = tmux.split_window(&window_target, &root)?;
             tmux.select_layout(&window_target, "even-vertical")?;
             pane_ids.push(pane_id);
         }
 
-        if pane_ids.len() != project.agents.len() {
+        // Postcondition on final tmux state, not on the constructed list: a
+        // seed window with extra panes or a concurrent split must roll back
+        // rather than commit a partially unmanaged topology.
+        let listed = tmux.list_panes(&window_target)?.len();
+        if pane_ids.len() != project.agents.len() || listed != project.agents.len() {
             bail!(
-                "expected {} panes after window setup, found {}",
-                project.agents.len(),
-                pane_ids.len()
+                "expected {} panes after window setup, found {listed}",
+                project.agents.len()
             );
         }
         for (pane_id, agent) in pane_ids.iter().zip(project.agents.iter()) {
@@ -394,6 +403,9 @@ mod tests {
     #[test]
     fn create_binds_each_agent_to_the_pane_id_reported_at_creation() {
         let fake = FakeTmux::new();
+        // Reversed listings defeat any binding that zips list_panes output
+        // with the agent roster — only split-reported ids survive this.
+        fake.set_reverse_pane_listing(true);
         let mut project = test_project();
         make_launchable(&mut project);
         assert!(
