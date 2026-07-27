@@ -2,15 +2,15 @@
 name: rust-strict
 description: >-
   Use when changing, reviewing, or verifying Rust in this repo (kira-mux):
-  Cargo workspace policy, clippy/rustfmt/rustdoc/tests, errors, config/tmux
+  Cargo package policy, clippy/rustfmt/rustdoc/tests, errors, config/tmux
   code, or release-quality checks.
 ---
 
 # Rust Strict
 
-Strict workflow for the **kira-mux** workspace: a single CLI crate that manages
+Strict workflow for the **kira-mux** package: a single CLI crate that manages
 local tmux multi-agent workspaces. Prefer the smallest change that matches
-existing patterns in `apps/mux`.
+existing patterns in `src/`.
 
 Load order: `AGENTS.md` → this skill → code next to the module you edit.
 
@@ -19,14 +19,14 @@ Load order: `AGENTS.md` → this skill → code next to the module you edit.
 | Fact | Value |
 |---|---|
 | Product | local tmux multi-agent CLI (`kira-mux`) |
-| Layout | Cargo workspace, one member: `apps/mux` |
+| Layout | single package at repo root (`src/`, `tests/`) |
 | Edition / MSRV | `2024` / `1.97.0` (`rust-toolchain.toml`) |
 | Nightly | **only** `cargo +nightly fmt` |
 | Errors | typed domain errors; `anyhow` at I/O / glue / binary edges |
 | Visibility | almost everything `pub(crate)`; thin public surface from `lib.rs` |
 | Secrets | never in logs, fingerprints, or process argv (env files for pane env) |
 
-### Module map (`apps/mux/src/`)
+### Module map (`src/`)
 
 | Path | Role |
 |---|---|
@@ -52,15 +52,14 @@ Before editing, reviewing, or claiming verification:
 1. Read `AGENTS.md` and this skill.
 2. Anchor on policy files (below); do not invent toolchain or lint policy from memory.
 3. Name the package/target/feature set you will touch (`kira-mux` / lib, bin, tests).
-4. Classify: implementation, review, docs, deps/supply-chain, workspace policy, or release verification.
+4. Classify: implementation, review, docs, deps/supply-chain, package policy, or release verification.
 5. Pick the **narrowest** command that can fail for the change; record what it does not cover.
 
 ## Anchor files
 
 | File | Contract |
 |---|---|
-| `Cargo.toml` | workspace package, members, `[workspace.lints]`, deps |
-| `apps/mux/Cargo.toml` | package inherits `[lints] workspace = true` |
+| `Cargo.toml` | package `kira-mux`, `[lints.*]`, deps |
 | `rust-toolchain.toml` | pinned stable `1.97.0` |
 | `.rustfmt.toml` | edition 2024; run with `+nightly` |
 | `clippy.toml` | MSRV, thresholds, `doc-valid-idents` |
@@ -101,7 +100,7 @@ Details: `references/drift-control.md`.
 
 ## Verification
 
-Impact-scoped by default. Full static baseline (release / workspace policy / deps / broad API):
+Impact-scoped by default. Full static baseline (release / package policy / deps / broad API):
 
 ```bash
 cargo +nightly fmt --all --check
@@ -125,22 +124,21 @@ Rules:
 - Only claim a command passed if you ran it and checked output.
 - Report exact package, target, feature set, and intentional gaps.
 - Do not treat a narrow filter as full suite proof.
-- This workspace has a single member; still prefer explicit `-p kira-mux` when focusing.
+- Prefer explicit `-p kira-mux` when focusing.
 
 ## Lint policy
 
-Source of truth: root `Cargo.toml` `[workspace.lints]` + `clippy.toml`.
+Source of truth: root `Cargo.toml` `[lints.*]` + `clippy.toml`.
 
 Already enforced here (do not weaken):
 
-- `unsafe_code = deny`, `missing_docs = deny` (workspace)
+- `unsafe_code = deny`, `missing_docs = deny` (package)
 - clippy: `unwrap_used`, `expect_used`, `todo`, `unimplemented`, `dbg_macro` = **deny**
-- groups: `correctness`/`suspicious` deny; `pedantic` and others **warn** at workspace level
+- groups: `correctness`/`suspicious` deny; `pedantic` and others **warn** at package level
 - CI: `RUSTFLAGS=-D warnings`, `RUSTDOCFLAGS=-D warnings`
 
 Notes:
 
-- New members must use `[lints] workspace = true`.
 - Prefer fixing root causes over suppressions.
 - Repo already runs pedantic at **warn**; do not propose global pedantic deny without a funded cleanup.
 - `cargo lint-pedantic` exists for optional pedantic-as-deny checks.
@@ -189,7 +187,7 @@ Details: `references/api-design.md`, `references/docs.md`.
 ## Tests
 
 - Unit tests next to modules; FakeTmux + helpers in `test_support` (`#[cfg(test)]`).
-- Real-tmux integration: `apps/mux/tests/cli.rs` (CI “tmux integration” job).
+- Real-tmux integration: `tests/cli.rs` (CI “tmux integration” job).
 - Prefer deterministic setup (`setup_healthy_session`, etc.) over real tmux unless writing an explicit integration harness.
 - Prefer coordination over new `sleep`s in tests; production send/paste still uses short settles — do not add more without need.
 - State exact filters: e.g. `cargo test -p kira-mux --lib inspector:: --all-features`.
@@ -199,7 +197,7 @@ Details: `references/testing.md`.
 
 ## Dependencies
 
-- Prefer workspace deps; keep the graph lean.
+- Prefer deps declared in root `Cargo.toml`; keep the graph lean.
 - `Cargo.toml` / `Cargo.lock` / `deny.toml` edits are supply-chain changes → run deny after.
 - Do not re-enable unused feature flags (e.g. random clap/`tracing-subscriber` features) without a call site.
 - Do not relax `deny.toml` without rationale.
@@ -222,7 +220,7 @@ Load only what the task needs:
 |---|---|
 | `references/workflow.md` | anchor pass, CI, verification scope |
 | `references/testing.md` | unit / FakeTmux / report discipline |
-| `references/lints.md` | workspace lint structure, suppressions |
+| `references/lints.md` | package lint structure, suppressions |
 | `references/docs.md` | rustdoc / public items |
 | `references/api-design.md` | types, constructors, surface size |
 | `references/errors.md` | Result boundaries, panic policy |

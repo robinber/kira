@@ -23,18 +23,18 @@ Keep the product small. Prefer a clear CLI over new subsystems.
    module map and error/exit details over duplicating them here.
 3. Code next to the module you edit.
 
-## Workspace facts
+## Package facts
 
-- Cargo workspace, `resolver = "3"`, edition `2024`, Rust `1.97.0`.
-- Single member: `apps/mux` (`kira-mux`).
-- Lint policy lives in root `Cargo.toml` `[workspace.lints]` — do not weaken it.
+- Single package at repo root: `kira-mux` (`src/`, `tests/`).
+- Edition `2024`, Rust `1.97.0` (`rust-toolchain.toml`).
+- Lint policy lives in root `Cargo.toml` `[lints.*]` — do not weaken it.
 - Nightly only for `cargo +nightly fmt`; otherwise use the pinned stable toolchain.
 
 ## Working rules
 
 - Make the smallest change that satisfies the request.
 - Self-check: would a senior engineer call this overcomplicated? If yes, simplify.
-- **Enforced** in non-test code (workspace + clippy deny): `unsafe`, `unwrap`,
+- **Enforced** in non-test code (package + clippy deny): `unsafe`, `unwrap`,
   `expect`, `todo!`, `unimplemented!`, `dbg!`.
 - **Repository policy** (not a separate `panic` lint): avoid `panic!` in
   non-test code; prefer typed errors.
@@ -44,7 +44,7 @@ Keep the product small. Prefer a clear CLI over new subsystems.
 
 ## Exit codes
 
-Stable mapping in `apps/mux/src/main.rs` (also documented in the README):
+Stable mapping in `src/main.rs` (also documented in the README):
 
 | Code | Meaning |
 |---|---|

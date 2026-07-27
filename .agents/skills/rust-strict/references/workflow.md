@@ -5,7 +5,7 @@
 Before editing, read the effective contract from disk:
 
 1. `AGENTS.md` — product scope and default commands
-2. `Cargo.toml` / `apps/mux/Cargo.toml` — members, lints, deps
+2. `Cargo.toml` — package, lints, deps
 3. `rust-toolchain.toml` — stable `1.97.0`; nightly only for rustfmt
 4. `.rustfmt.toml`, `clippy.toml`, `.cargo/config.toml`, `deny.toml`
 5. `.github/workflows/ci.yml` and `justfile`
@@ -35,9 +35,9 @@ applicable.
 
 1. Focused: `cargo check -p kira-mux`, `cargo test -p kira-mux --lib <filter>`
 2. Package: `--all-targets --all-features` on `kira-mux`
-3. Workspace / release: full baseline above
+3. Package / release: full baseline above
 
-Widen when the change touches workspace policy, deps, lint/toolchain, or
+Widen when the change touches package policy, deps, lint/toolchain, or
 cross-module contracts (inspect ↔ send, fingerprint ↔ resolve).
 
 ## Reporting

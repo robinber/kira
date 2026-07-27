@@ -4,8 +4,7 @@
 
 | Layer | Location |
 |---|---|
-| Workspace | root `Cargo.toml` `[workspace.lints]` |
-| Crate inherit | `apps/mux/Cargo.toml` → `[lints] workspace = true` |
+| Package lints | root `Cargo.toml` `[lints.rust|rustdoc|clippy]` |
 | Clippy knobs | `clippy.toml` (MSRV, thresholds, `doc-valid-idents`) |
 | CI | `RUSTFLAGS=-D warnings`, `RUSTDOCFLAGS=-D warnings` |
 
@@ -18,7 +17,7 @@
 plus `correctness` / `suspicious` groups at deny.
 
 **Clippy (warn, including pedantic):** complexity/perf/style/pedantic and many
-individual pedantic-style lints listed in the workspace manifest. CI `-D warnings`
+individual pedantic-style lints listed in the package manifest. CI `-D warnings`
 makes those warnings fail CI when enabled via `RUSTFLAGS`.
 
 ## Suppressions
@@ -30,7 +29,7 @@ makes those warnings fail CI when enabled via `RUSTFLAGS`.
 
 ## Ratchet
 
-Tighten deliberately at workspace level. Trial stricter lints narrowly before
-raising workspace deny. Runtime first; tests second.
+Tighten deliberately at package level. Trial stricter lints narrowly before
+raising package deny. Runtime first; tests second.
 
 Optional local check: `cargo lint-pedantic` (pedantic as deny) — not required by CI.
