@@ -73,6 +73,15 @@ mod tests {
     use super::exit_code_for_error;
 
     #[test]
+    fn bare_config_error_maps_to_exit_code_2() {
+        // `AppPaths::from_env` surfaces `ConfigError` without the
+        // `KiraMuxError::ConfigValidation` wrapper; the bare downcast must
+        // still map to exit 2 (e.g. unset HOME).
+        let err = anyhow::Error::new(kira_mux::config::ConfigError::HomeDirUnavailable);
+        assert_eq!(exit_code_for_error(&err), ExitCode::from(2));
+    }
+
+    #[test]
     fn degraded_maps_to_exit_code_6() {
         let err = anyhow::Error::new(KiraMuxError::Degraded("demo".into()));
         assert_eq!(exit_code_for_error(&err), ExitCode::from(6));
