@@ -93,7 +93,7 @@ Before non-trivial runtime edits:
 | `#[allow]` / `#[expect]` | Smallest scope + `reason = "..."`; no silent broadening |
 
 Current large files (approx., total LOC): `tests/cli.rs` (~1.1k), `config/resolve.rs`,
-`test_support`, `tmux/client.rs`, `inspector.rs`, `workspace/lifecycle.rs`,
+`test_support/fake_tmux.rs`, `tmux/client.rs`, `inspector.rs`, `workspace/lifecycle.rs`,
 `config/load.rs`, `agent_io/send.rs` — treat as pressure zones (many are test-heavy).
 
 Details: `references/drift-control.md`.
