@@ -7,6 +7,6 @@ pub(crate) mod status;
 
 pub(crate) use project::{ResolvedAgent, ResolvedProject};
 pub(crate) use status::{
-    AgentInfo, AgentRunState, AgentState, AgentStatus, AgentsOutput, PaneLiveness, ProjectState,
-    ProjectStatus, ProjectSummary, build_agents_output,
+    AgentCapabilitiesOutput, AgentInfo, AgentRunState, AgentState, AgentStatus, AgentsOutput,
+    GroupOutput, PaneLiveness, ProjectState, ProjectStatus, ProjectSummary, build_agents_output,
 };
