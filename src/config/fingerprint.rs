@@ -6,6 +6,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::model::{AgentMode, Layout, RemainOnExit};
+use crate::model::{ResolvedAgent, ResolvedProject};
 
 /// Sanitized fingerprint material for one agent.
 ///
@@ -32,6 +33,49 @@ pub(crate) struct FingerprintAgentMaterial {
     pub args: Vec<String>,
     pub cwd: String,
     pub env: BTreeMap<String, EnvFingerprint>,
+}
+
+impl FingerprintAgentMaterial {
+    /// Build material from a resolved agent plus its **unresolved** env map
+    /// (fingerprints hash `$VAR` references by name, never host values).
+    ///
+    /// Exhaustive destructuring, no `..` rest pattern: adding a
+    /// [`ResolvedAgent`] field is a compile error here until the field gets
+    /// an explicit include/exclude decision.
+    pub(crate) fn from_agent(
+        agent: &ResolvedAgent,
+        unresolved_env: &BTreeMap<String, String>,
+    ) -> Self {
+        let ResolvedAgent {
+            id,
+            // Cosmetic display name; no pane-topology impact.
+            label: _,
+            mode,
+            command,
+            shell_command,
+            args,
+            cwd,
+            // Hashed from `unresolved_env` so references stay by-name.
+            env: _,
+            // Send-time metadata; no pane-topology impact.
+            capabilities: _,
+            prompt_template: _,
+            submit: _,
+            text_delivery: _,
+        } = agent;
+        Self {
+            id: id.clone(),
+            mode: *mode,
+            command: command.clone(),
+            shell_command: shell_command.clone(),
+            args: args.clone(),
+            cwd: cwd.display().to_string(),
+            env: unresolved_env
+                .iter()
+                .map(|(key, value)| (key.clone(), env_fingerprint(value)))
+                .collect(),
+        }
+    }
 }
 
 /// How a single env entry is represented in the fingerprint.
@@ -77,6 +121,55 @@ pub(crate) struct FingerprintInput<'a> {
     pub default_shell: &'a str,
     pub remain_on_exit: RemainOnExit,
     pub agents: &'a [FingerprintAgentMaterial],
+}
+
+impl<'a> FingerprintInput<'a> {
+    /// Build fingerprint input from the resolved project (its `fingerprint`
+    /// field still unset) plus the pre-sanitized per-agent material.
+    ///
+    /// Exhaustive destructuring, no `..` rest pattern: adding a
+    /// [`ResolvedProject`] field is a compile error here until the field
+    /// gets an explicit include/exclude decision.
+    pub(crate) fn from_project(
+        project: &'a ResolvedProject,
+        agents: &'a [FingerprintAgentMaterial],
+    ) -> Self {
+        let ResolvedProject {
+            id,
+            profile_id,
+            // Display-only name; no topology impact.
+            name: _,
+            root,
+            layout,
+            main_pane_ratio,
+            window_name,
+            // Session identity is the *lookup key* for drift comparison,
+            // not hashed content — changing the prefix addresses a
+            // different session rather than drifting the old one.
+            session_prefix: _,
+            default_shell,
+            remain_on_exit,
+            // Transport binary choice; does not change pane topology.
+            tmux_bin: _,
+            // Hashed via the sanitized per-agent material instead.
+            agents: _,
+            // The output being computed.
+            fingerprint: _,
+            // Send-time grouping; no topology impact.
+            groups: _,
+        } = project;
+        Self {
+            project_id: id,
+            profile_id,
+            root,
+            layout: *layout,
+            main_pane_ratio: *main_pane_ratio,
+            window_name,
+            default_shell,
+            remain_on_exit: *remain_on_exit,
+            agents,
+        }
+    }
 }
 
 pub(crate) fn compute_fingerprint(input: FingerprintInput<'_>) -> String {
