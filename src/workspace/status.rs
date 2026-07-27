@@ -5,10 +5,11 @@ use anyhow::Result;
 use crate::config::ResolutionMode;
 use crate::inspector::{self, InspectedWorkspace, SharedTopology, WorkspaceTopology};
 use crate::model::{
-    AgentState, AgentStatus, ProjectState, ProjectStatus, ProjectSummary, ResolvedProject,
+    AgentState, AgentStatus, PaneLiveness, ProjectState, ProjectStatus, ProjectSummary,
+    ResolvedProject,
 };
 use crate::paths::AppPaths;
-use crate::tmux::{PaneInfo, TmuxAdapter, TmuxClient, TmuxError, WorkspaceSnapshot};
+use crate::tmux::{TmuxAdapter, TmuxClient, TmuxError, WorkspaceSnapshot};
 use crate::workspace::session_name;
 
 pub(crate) fn project_status(
@@ -150,13 +151,9 @@ fn live_agent_statuses(workspace: &InspectedWorkspace) -> Vec<AgentStatus> {
         .iter()
         .map(|managed| AgentStatus {
             id: managed.agent.id.clone(),
-            state: agent_state_from_pane(&managed.pane),
+            state: PaneLiveness::from_pane(&managed.pane).into(),
             label: Some(managed.agent.label.clone()),
-            command: managed
-                .agent
-                .command
-                .clone()
-                .or_else(|| managed.agent.shell_command.clone()),
+            command: managed.agent.display_command(),
             pane_id: Some(managed.pane.pane_id.clone()),
         })
         .collect()
@@ -170,34 +167,17 @@ fn offline_agent_statuses(project: &ResolvedProject, state: AgentState) -> Vec<A
             id: agent.id.clone(),
             state,
             label: Some(agent.label.clone()),
-            command: agent
-                .command
-                .clone()
-                .or_else(|| agent.shell_command.clone()),
+            command: agent.display_command(),
             pane_id: None,
         })
         .collect()
-}
-
-/// Map tmux pane liveness to agent state.
-///
-/// Alive ⇒ [`AgentState::Running`] even if the tool is mid-setup. Kira does
-/// not parse pane contents for readiness (operator-managed; see README).
-fn agent_state_from_pane(pane: &PaneInfo) -> AgentState {
-    if !pane.pane_dead {
-        AgentState::Running
-    } else if pane.pane_dead_status == Some(0) {
-        AgentState::ExitedClean
-    } else {
-        AgentState::ExitedFailed
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
-    use crate::tmux::{WorkspacePaneSnapshot, WorkspaceWindowSnapshot};
+    use crate::tmux::{PaneInfo, WorkspacePaneSnapshot, WorkspaceWindowSnapshot};
 
     #[test]
     fn classified_summary_error_maps_missing_target_to_drifted() {

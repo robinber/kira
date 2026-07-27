@@ -1,7 +1,7 @@
 //! Prompt template context built from project identity and live topology.
 
 use crate::inspector::WorkspaceTopology;
-use crate::model::ResolvedProject;
+use crate::model::{AgentRunState, ResolvedProject, build_agents_output};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptContext {
@@ -32,17 +32,15 @@ pub(crate) fn extract_agent_state(
     project: &ResolvedProject,
 ) -> (String, String) {
     match topology {
-        WorkspaceTopology::Healthy(ws) | WorkspaceTopology::Degraded(ws) => {
+        WorkspaceTopology::Healthy(_) | WorkspaceTopology::Degraded(_) => {
+            // Project from the same view `agents list` serves, so the
+            // vocabulary injected into prompts cannot drift from the CLI's.
+            let output = build_agents_output(project, topology);
             let mut active: Vec<String> = Vec::new();
-            let mut states: Vec<String> = Vec::with_capacity(project.agents.len());
+            let mut states: Vec<String> = Vec::with_capacity(output.agents.len());
 
-            for agent in &project.agents {
-                let alive = ws
-                    .panes
-                    .iter()
-                    .any(|p| p.agent.id == agent.id && !p.pane.pane_dead);
-
-                if alive {
+            for agent in &output.agents {
+                if agent.state == AgentRunState::Running {
                     if agent.capabilities.is_empty() {
                         active.push(agent.id.clone());
                     } else {
@@ -50,18 +48,12 @@ pub(crate) fn extract_agent_state(
                     }
                 }
 
-                let groups = project.groups_for(&agent.id);
-                let group_str = if groups.is_empty() {
+                let group_str = if agent.groups.is_empty() {
                     String::new()
                 } else {
-                    format!(" [{}]", groups.join(", "))
+                    format!(" [{}]", agent.groups.join(", "))
                 };
-                states.push(format!(
-                    "{}:{}{}",
-                    agent.id,
-                    if alive { "running" } else { "dead" },
-                    group_str
-                ));
+                states.push(format!("{}:{}{}", agent.id, agent.state, group_str));
             }
 
             (active.join(", "), states.join(", "))
