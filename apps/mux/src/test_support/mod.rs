@@ -249,6 +249,9 @@ pub(crate) enum FakeOp {
     UnsetWindowSizeOption {
         target: String,
     },
+    UnzoomWindow {
+        target: String,
+    },
     SelectPane {
         pane_id: String,
     },
@@ -567,6 +570,15 @@ impl FakeTmux {
             .get(session)
             .and_then(|session| session.windows.get(window))
             .and_then(|window| window.size_option.clone())
+    }
+
+    /// Read the zoom state of a window for assertions.
+    pub(crate) fn window_is_zoomed(&self, session: &str, window: &str) -> bool {
+        let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        sessions
+            .get(session)
+            .and_then(|session| session.windows.get(window))
+            .is_some_and(|window| window.zoomed_pane.is_some())
     }
 
     /// Read the active pane id of a window for assertions.
@@ -1166,18 +1178,30 @@ impl TmuxAdapter for FakeTmux {
         Ok(())
     }
 
-    fn window_zoomed(&self, target: &str) -> Result<bool> {
+    fn unzoom_window(&self, target: &str) -> Result<()> {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }
-        let mut zoomed = false;
+        // Atomic under the sessions mutex, mirroring the single server-side
+        // `if-shell` conditional: unzoom only when currently zoomed, never
+        // zoom.
         let found = self.with_window_mut(target, |window| {
-            zoomed = window.zoomed_pane.is_some();
+            if let Some(zoom) = window.zoomed_pane.take()
+                && let Some(pane) = window
+                    .panes
+                    .iter_mut()
+                    .find(|pane| pane.pane_id == zoom.pane_id)
+            {
+                pane.height = zoom.prior_height;
+            }
         });
         if !found {
             return Err(TmuxError::MissingTarget(target.to_string()).into());
         }
-        Ok(zoomed)
+        ok(self.ops.lock(), "fake tmux ops mutex poisoned").push(FakeOp::UnzoomWindow {
+            target: target.to_string(),
+        });
+        Ok(())
     }
 
     fn select_pane(&self, pane_id: &str) -> Result<()> {

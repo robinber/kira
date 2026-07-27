@@ -323,16 +323,13 @@ fn restore_window(
         note(tmux.resize_window(&geometry.window_id, geometry.width, geometry.height));
     }
     if zoom_toggled {
-        // Check the *current* zoom state instead of assuming our zoom is
-        // still in effect: tmux auto-unzooms when the zoomed pane's process
-        // is removed, and a blind toggle would then zoom the surviving
-        // active pane. When zoomed, a window target resolves to the zoomed
-        // pane, so unzoom works even if the captured pane is gone.
-        match tmux.window_zoomed(&geometry.window_id) {
-            Ok(true) => note(tmux.toggle_pane_zoom(&geometry.window_id)),
-            Ok(false) => {}
-            Err(error) => note(Err(error)),
-        }
+        // Conditional-and-atomic: tmux auto-unzooms when the zoomed pane's
+        // process is removed, so restoration must not assume its own zoom is
+        // still in effect — and a client-side check-then-toggle would race
+        // the same removal. `unzoom_window` folds both into one server-side
+        // command; when zoomed, a window target resolves to the zoomed pane,
+        // so it works even if the captured pane is gone.
+        note(tmux.unzoom_window(&geometry.window_id));
     }
     if resized {
         // `resize-window` forced the window-local value to `manual`; put
@@ -511,7 +508,7 @@ mod tests {
                     width: 200,
                     height: 24,
                 },
-                FakeOp::ToggleZoom {
+                FakeOp::UnzoomWindow {
                     target: window.clone(),
                 },
                 FakeOp::UnsetWindowSizeOption { target: window },
@@ -556,9 +553,11 @@ mod tests {
         assert!(
             fake.ops()
                 .iter()
-                .filter(|op| matches!(op, FakeOp::ToggleZoom { .. }))
-                .count()
-                == 2,
+                .any(|op| matches!(op, FakeOp::ToggleZoom { .. }))
+                && fake
+                    .ops()
+                    .iter()
+                    .any(|op| matches!(op, FakeOp::UnzoomWindow { .. })),
             "zoom-only deepening must still zoom and unzoom, got: {:?}",
             fake.ops()
         );
@@ -694,14 +693,11 @@ mod tests {
             "restore must address the surviving window, got: {:?}",
             fake.ops()
         );
-        // The removal already unzoomed the window: a blind restore toggle
-        // would zoom the surviving pane. Only the initial zoom may appear.
+        // The removal already unzoomed the window: restoration's conditional
+        // unzoom must be a no-op, never a re-zoom of the surviving pane.
         let session = crate::workspace::session_name(&project);
         assert!(
-            !ok(
-                fake.window_zoomed(&format!("{session}:{}", project.window_name)),
-                "window state should be readable",
-            ),
+            !fake.window_is_zoomed(&session, &project.window_name),
             "restore must not re-zoom a window that tmux already unzoomed"
         );
         assert_eq!(

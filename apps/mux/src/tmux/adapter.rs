@@ -177,10 +177,12 @@ pub(crate) trait TmuxAdapter {
     /// a window target resolves to the window's active pane, which is the
     /// zoomed pane when unzooming.
     fn toggle_pane_zoom(&self, target: &str) -> Result<()>;
-    /// Whether the target's window is currently zoomed. Restoration checks
-    /// this instead of assuming its own zoom is still in effect: tmux
-    /// auto-unzooms when the zoomed pane's process is removed.
-    fn window_zoomed(&self, target: &str) -> Result<bool>;
+    /// Unzoom the target's window only if it is currently zoomed, as one
+    /// atomic server-side conditional. Restoration must not assume its own
+    /// zoom is still in effect (tmux auto-unzooms when the zoomed pane's
+    /// process is removed), and a client-side check-then-toggle would race
+    /// the same removal — hence a single conditional command.
+    fn unzoom_window(&self, target: &str) -> Result<()>;
     /// Remove the window-local `window-size` override so the window follows
     /// clients (or the session default size) again.
     fn unset_window_size_option(&self, target: &str) -> Result<()>;

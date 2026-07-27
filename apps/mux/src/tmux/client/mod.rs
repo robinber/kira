@@ -438,19 +438,23 @@ impl TmuxAdapter for TmuxClient {
         self.run_on_target(target, ["resize-pane", "-Z", "-t", target])
     }
 
-    /// Read the current zoom state of the target's window.
-    fn window_zoomed(&self, target: &str) -> Result<bool> {
-        let output = self.output([
-            "display-message",
-            "-p",
-            "-t",
+    /// Unzoom only when zoomed, atomically: `if-shell -F` evaluates the
+    /// format and runs the command inside the single-threaded tmux server,
+    /// so pane removal (which auto-unzooms) cannot slip between the check
+    /// and the toggle and turn it into a re-zoom of a surviving pane.
+    fn unzoom_window(&self, target: &str) -> Result<()> {
+        let unzoom = format!("resize-pane -Z -t '{target}'");
+        self.run_on_target(
             target,
-            "#{window_zoomed_flag}",
-        ])?;
-        if !output.status.success() {
-            return Err(failed_tmux_status(target, &output));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim() == "1")
+            [
+                "if-shell",
+                "-F",
+                "-t",
+                target,
+                "#{window_zoomed_flag}",
+                &unzoom,
+            ],
+        )
     }
 
     /// Drop the window-local `window-size` override left behind by
