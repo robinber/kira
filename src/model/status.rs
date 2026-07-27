@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::inspector::{InspectedWorkspace, WorkspaceTopology};
 use crate::model::ResolvedProject;
+use crate::tmux::PaneInfo;
 
 /// Lifecycle state of a managed tmux workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -43,6 +44,55 @@ impl fmt::Display for ProjectState {
     }
 }
 
+/// Liveness of a pane process, classified once from tmux facts.
+///
+/// Single source of truth for "is this agent's pane alive": every
+/// user-facing vocabulary ([`AgentState`], [`AgentRunState`], the prompt
+/// context) projects from it, so liveness semantics cannot drift between
+/// the `status`, `agents`, and prompt views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneLiveness {
+    /// The pane process is alive. This is **not** application readiness:
+    /// setup UIs, trust prompts, and logins still count as running — kira
+    /// never parses pane contents here.
+    Running,
+    /// The pane exited with status 0.
+    ExitedClean,
+    /// The pane exited with a non-zero status.
+    ExitedFailed,
+}
+
+impl PaneLiveness {
+    pub(crate) fn from_pane(pane: &PaneInfo) -> Self {
+        if !pane.pane_dead {
+            Self::Running
+        } else if pane.pane_dead_status == Some(0) {
+            Self::ExitedClean
+        } else {
+            Self::ExitedFailed
+        }
+    }
+}
+
+impl From<PaneLiveness> for AgentState {
+    fn from(liveness: PaneLiveness) -> Self {
+        match liveness {
+            PaneLiveness::Running => Self::Running,
+            PaneLiveness::ExitedClean => Self::ExitedClean,
+            PaneLiveness::ExitedFailed => Self::ExitedFailed,
+        }
+    }
+}
+
+impl From<PaneLiveness> for AgentRunState {
+    fn from(liveness: PaneLiveness) -> Self {
+        match liveness {
+            PaneLiveness::Running => Self::Running,
+            PaneLiveness::ExitedClean | PaneLiveness::ExitedFailed => Self::Dead,
+        }
+    }
+}
+
 /// Runtime state of a single agent pane inside a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +116,9 @@ pub(crate) enum AgentState {
 
 impl fmt::Display for AgentState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Deliberately diverges from the serde snake_case names: text output
+        // is for humans ("exited (0)"), JSON is the stable script contract
+        // (exited_clean / exited_failed / missing_pane, pinned in README).
         f.write_str(match self {
             Self::Running => "running",
             Self::ExitedClean => "exited (0)",
@@ -211,10 +264,10 @@ pub(crate) fn build_agents_output(
                 workspace.and_then(|ws| ws.panes.iter().find(|mp| mp.agent.id == agent.id));
 
             let (state, pane_id) = match matched_pane {
-                Some(mp) if !mp.pane.pane_dead => {
-                    (AgentRunState::Running, Some(mp.pane.pane_id.clone()))
-                }
-                Some(mp) => (AgentRunState::Dead, Some(mp.pane.pane_id.clone())),
+                Some(mp) => (
+                    PaneLiveness::from_pane(&mp.pane).into(),
+                    Some(mp.pane.pane_id.clone()),
+                ),
                 // Defensive: inspect() classifies a workspace with a missing
                 // managed pane as Drifted, so a live workspace always pairs
                 // every agent — this arm is unreachable via inspect().
@@ -222,11 +275,7 @@ pub(crate) fn build_agents_output(
                 None => (AgentRunState::Absent, None),
             };
 
-            let command = agent
-                .command
-                .clone()
-                .or_else(|| agent.shell_command.clone())
-                .unwrap_or_default();
+            let command = agent.display_command().unwrap_or_default();
 
             AgentInfo {
                 id: agent.id.clone(),

@@ -79,6 +79,15 @@ pub(crate) struct ResolvedAgent {
     pub text_delivery: Option<TextDelivery>,
 }
 
+impl ResolvedAgent {
+    /// Launch command shown to humans: the direct command, else the shell
+    /// command. Every view (`status`, `agents`, JSON) uses this one
+    /// fallback so display semantics cannot drift.
+    pub(crate) fn display_command(&self) -> Option<String> {
+        self.command.clone().or_else(|| self.shell_command.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
