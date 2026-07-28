@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::config::{AgentMode, Layout};
 use crate::model::{ResolvedAgent, ResolvedProject};
@@ -112,7 +112,10 @@ fn agent_command_basename(agent: &ResolvedAgent) -> Option<String> {
     }
 }
 
-pub(super) fn launch_agent(
+/// Respawn the pane with the agent's command and tag its metadata. No
+/// health verification here — callers batch that over one shared window
+/// via [`verify_panes_survived_launch`].
+pub(super) fn respawn_agent(
     tmux: &dyn TmuxAdapter,
     pane_id: &str,
     project: &ResolvedProject,
@@ -163,30 +166,40 @@ pub(super) fn launch_agent(
     if let Some(basename) = agent_command_basename(agent) {
         tmux.set_pane_option(pane_id, PANE_AGENT_COMMAND, &basename)?;
     }
-
-    verify_pane_survived_launch(tmux, pane_id, &agent.id)?;
     Ok(())
 }
 
-/// Poll `pane_dead` for a bounded window after launch.
+/// Poll every target's `pane_dead` over one shared bounded window.
 ///
-/// Success means the process was still alive at the end of the window — not
-/// that the agent is "ready" for prompts. Immediate exits (missing binary,
-/// `exit 1`, crash on start) surface as launch failures so callers can map
-/// them to the degraded exit code.
-fn verify_pane_survived_launch(
+/// Success for a pane means its process was still alive at the end of the
+/// window — not that the agent is "ready" for prompts. Immediate exits
+/// (missing binary, `exit 1`, crash on start) come back as per-agent
+/// failures so callers can map them to the degraded exit code. The window
+/// is shared because the checks are independent: `start` latency stays
+/// flat in agent count instead of paying the window per agent.
+pub(super) fn verify_panes_survived_launch<'a>(
     tmux: &dyn TmuxAdapter,
-    pane_id: &str,
-    agent_id: &str,
-) -> Result<()> {
+    targets: &[(&'a str, &'a ResolvedAgent)],
+) -> Vec<(&'a ResolvedAgent, anyhow::Error)> {
+    let mut pending: Vec<(&str, &ResolvedAgent)> = targets.to_vec();
+    let mut failures = Vec::new();
     let deadline = Instant::now() + POST_LAUNCH_HEALTH_WINDOW;
     loop {
-        if pane_is_dead(tmux, pane_id)? {
-            bail!("agent '{agent_id}' exited immediately after launch");
+        let mut still_alive = Vec::with_capacity(pending.len());
+        for (pane_id, agent) in pending {
+            match pane_is_dead(tmux, pane_id) {
+                Ok(false) => still_alive.push((pane_id, agent)),
+                Ok(true) => failures.push((
+                    agent,
+                    anyhow::anyhow!("agent '{}' exited immediately after launch", agent.id),
+                )),
+                Err(error) => failures.push((agent, error)),
+            }
         }
+        pending = still_alive;
         let now = Instant::now();
-        if now >= deadline {
-            return Ok(());
+        if pending.is_empty() || now >= deadline {
+            return failures;
         }
         std::thread::sleep(POST_LAUNCH_HEALTH_POLL.min(deadline - now));
     }
@@ -280,7 +293,7 @@ mod tests {
         let project = minimal_project();
         let agent = &project.agents[0];
 
-        super::launch_agent(&fake, "%0", &project, agent)
+        super::respawn_agent(&fake, "%0", &project, agent)
             .or_panic("launch_agent_respawns_with_command_and_args");
 
         let ops = fake.ops();
@@ -310,14 +323,66 @@ mod tests {
         let project = minimal_project();
         let agent = &project.agents[0];
 
-        let error = super::launch_agent(&fake, "%0", &project, agent)
-            .err_or_panic("launch_agent_fails_when_process_exits_immediately: expected Err");
+        super::respawn_agent(&fake, "%0", &project, agent)
+            .or_panic("launch_agent_fails_when_process_exits_immediately: respawn");
+        let failures = super::verify_panes_survived_launch(&fake, &[("%0", agent)]);
+        assert_eq!(failures.len(), 1, "the dead pane must fail verification");
         assert!(
-            error
+            failures[0]
+                .1
                 .to_string()
                 .contains("exited immediately after launch"),
-            "got: {error}"
+            "got: {}",
+            failures[0].1
         );
+    }
+
+    #[test]
+    fn health_window_is_shared_across_live_panes() {
+        // Discriminates batching from the old serial verify: two live
+        // panes must cost one window, not one per pane.
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.add_pane("s", "agents", "%1", false);
+        let project = test_project();
+
+        let started = std::time::Instant::now();
+        let failures = super::verify_panes_survived_launch(
+            &fake,
+            &[("%0", &project.agents[0]), ("%1", &project.agents[1])],
+        );
+        let elapsed = started.elapsed();
+
+        assert!(failures.is_empty(), "live panes must pass verification");
+        assert!(
+            elapsed >= super::POST_LAUNCH_HEALTH_WINDOW,
+            "the full window must elapse for live panes, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < super::POST_LAUNCH_HEALTH_WINDOW + std::time::Duration::from_millis(250),
+            "two live panes must share one window, not pay one each, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn shared_health_window_reports_only_the_dead_panes() {
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.add_pane("s", "agents", "%1", true);
+        let mut project = test_project();
+        project.agents[1].id = "beta".to_string();
+
+        let failures = super::verify_panes_survived_launch(
+            &fake,
+            &[("%0", &project.agents[0]), ("%1", &project.agents[1])],
+        );
+
+        assert_eq!(failures.len(), 1, "only the dead pane fails");
+        assert_eq!(failures[0].0.id, "beta");
     }
 
     #[test]

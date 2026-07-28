@@ -4,7 +4,7 @@
 
 use anyhow::{Result, bail};
 
-use super::launch::{TopologyGuard, apply_layout, launch_agent};
+use super::launch::{TopologyGuard, apply_layout, respawn_agent, verify_panes_survived_launch};
 use super::{session_name, window_target};
 use crate::config::ConfigError;
 use crate::error::KiraMuxError;
@@ -237,17 +237,31 @@ fn launch_all<'a>(
     targets: impl IntoIterator<Item = (&'a str, &'a ResolvedAgent)>,
 ) -> StartOutcome {
     let mut any_launch_failed = false;
+    let mut respawned = Vec::new();
     for (pane_id, agent) in targets {
-        if let Err(error) = launch_agent(tmux, pane_id, project, agent) {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                agent_id = agent.id.as_str(),
-                op,
-                %error,
-                "agent launch failed, workspace degraded"
-            );
-            any_launch_failed = true;
+        match respawn_agent(tmux, pane_id, project, agent) {
+            Ok(()) => respawned.push((pane_id, agent)),
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project.id.as_str(),
+                    agent_id = agent.id.as_str(),
+                    op,
+                    %error,
+                    "agent launch failed, workspace degraded"
+                );
+                any_launch_failed = true;
+            }
         }
+    }
+    for (agent, error) in verify_panes_survived_launch(tmux, &respawned) {
+        tracing::warn!(
+            project_id = project.id.as_str(),
+            agent_id = agent.id.as_str(),
+            op,
+            %error,
+            "agent launch failed, workspace degraded"
+        );
+        any_launch_failed = true;
     }
     if any_launch_failed {
         StartOutcome::Degraded

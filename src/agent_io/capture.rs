@@ -61,12 +61,10 @@ pub(crate) fn capture_output(
     project: &ResolvedProject,
     agent_id: &str,
     lines: usize,
+    options: &DeepCaptureOptions,
 ) -> Result<PaneCapture> {
     let (pane, _agent, _topology) = resolve_managed_pane(tmux, project, agent_id)?;
-    let (output, status) = or_dead_pane(
-        agent_id,
-        capture_with_depth(tmux, &pane, lines, &DeepCaptureOptions::default()),
-    )?;
+    let (output, status) = or_dead_pane(agent_id, capture_with_depth(tmux, &pane, lines, options))?;
 
     Ok(PaneCapture {
         project_id: project.id.clone(),

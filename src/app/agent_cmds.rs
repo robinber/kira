@@ -102,6 +102,7 @@ pub(super) fn cmd_send(
             &seed.delivered.pane_id,
             capture_lines,
             converged,
+            &crate::agent_io::DeepCaptureOptions::default(),
         )
     });
     finish_wait(wait_result)
@@ -161,7 +162,13 @@ pub(super) fn cmd_capture(
     json: bool,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
-    let capture = crate::agent_io::capture_output(&tmux, &project, agent_id, lines)?;
+    let capture = crate::agent_io::capture_output(
+        &tmux,
+        &project,
+        agent_id,
+        lines,
+        &crate::agent_io::DeepCaptureOptions::default(),
+    )?;
     output::print_capture(&capture, json)
 }
 
