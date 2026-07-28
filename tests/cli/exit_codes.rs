@@ -260,7 +260,7 @@ fn send_wait_hard_timeout_exits_7_with_partial_capture_on_stderr() {
     let script = bed.project_root.path().join("chatty-agent");
     write_file(
         &script,
-        "#!/bin/sh\nIFS= read -r line\ni=0\nwhile :; do\n  i=$((i + 1))\n  printf 'still working %s\\n' \"$i\"\n  sleep 0.3\ndone\n",
+        "#!/bin/sh\nIFS= read -r line\ni=0\nwhile :; do\n  i=$((i + 1))\n  printf 'still working %s\\n' \"$i\"\n  sleep 1\ndone\n",
     );
     make_executable(&script);
     bed.write_project(&format!(
@@ -285,5 +285,10 @@ fn send_wait_hard_timeout_exits_7_with_partial_capture_on_stderr() {
         stderr_of(&waited).contains("still working"),
         "the timeout must surface the last capture on stderr, got: {:?}",
         stderr_of(&waited)
+    );
+    assert!(
+        stdout_of(&waited).is_empty(),
+        "stdout is reserved for confirmed-stable output, got: {:?}",
+        stdout_of(&waited)
     );
 }

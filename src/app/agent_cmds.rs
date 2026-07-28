@@ -92,7 +92,7 @@ pub(super) fn cmd_send(
         &tmux,
         agent_id,
         &seed,
-        &crate::agent_io::WaitOptions::from_env(),
+        &crate::agent_io::WaitOptions::from_env()?,
     )
     // Alternate-screen TUIs cap the converged capture at the visible frame;
     // deepen it best-effort so long replies come back whole.

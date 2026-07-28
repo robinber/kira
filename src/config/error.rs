@@ -182,6 +182,10 @@ pub enum ConfigError {
     /// A config mixed top-level fields with `[profiles]`.
     #[error("project config mixes top-level workspace fields with [profiles]")]
     MixedConfigShape,
+    /// `KIRA_MUX_WAIT_PROFILE` was set to something other than a known
+    /// profile name.
+    #[error("unknown KIRA_MUX_WAIT_PROFILE value `{0}` (supported: \"fast\")")]
+    UnknownWaitProfile(String),
     /// A `[profiles]` table was present but empty.
     #[error("[profiles] is present but empty")]
     EmptyProfiles,
