@@ -108,13 +108,11 @@ pub(crate) struct WorkspaceSnapshot {
 /// session race is re-checked at the lifecycle boundary after a failed
 /// interactive command, not by inventing stderr from a status-only exit.
 pub(crate) trait TmuxAdapter {
-    /// Whether a session currently exists on the server.
-    ///
-    /// Missing sessions return `Ok(false)`. No server and other hard failures
-    /// return typed [`crate::tmux::TmuxError`] values.
-    /// Check whether a session exists. A stopped server reports
-    /// `Ok(false)` — no server means no sessions — so callers never
-    /// hand-classify `NoServer` around this method.
+    /// Whether a session currently exists on the server. Missing sessions
+    /// and a stopped server both report `Ok(false)` — no server means no
+    /// sessions — so callers never hand-classify `NoServer` around this
+    /// method. Other hard failures return typed
+    /// [`crate::tmux::TmuxError`] values.
     fn session_exists(&self, session_name: &str) -> Result<bool>;
     /// Bulk read of session ownership plus managed window/pane metadata.
     ///

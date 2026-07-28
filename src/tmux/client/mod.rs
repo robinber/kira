@@ -44,12 +44,13 @@ pub(crate) struct TmuxClient {
 }
 
 impl TmuxAdapter for TmuxClient {
-    /// Check whether a tmux session currently exists.
+    /// Check whether a tmux session currently exists. A stopped server
+    /// reports `Ok(false)`.
     ///
     /// # Errors
     ///
-    /// Returns an error when tmux cannot be started, no server is running, or
-    /// `has-session` fails for a reason other than a missing session.
+    /// Returns an error when tmux cannot be started or `has-session`
+    /// fails for a reason other than a missing session or stopped server.
     fn session_exists(&self, session_name: &str) -> Result<bool> {
         let output = self.output(["has-session", "-t", session_name])?;
         if output.status.success() {

@@ -132,6 +132,21 @@ fn vanished_pane_wins_over_transient_capture_knob() {
 }
 
 #[test]
+fn stopped_server_reports_no_sessions() {
+    let fake = FakeTmux::new();
+    fake.add_session("s");
+    fake.set_no_server(true);
+
+    let exists = fake
+        .session_exists("s")
+        .or_panic("stopped_server_reports_no_sessions");
+    assert!(
+        !exists,
+        "a stopped server must report absence, not an error"
+    );
+}
+
+#[test]
 fn delivery_ops_reject_stopped_server() {
     let fake = FakeTmux::new();
     fake.add_session("s");
