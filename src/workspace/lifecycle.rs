@@ -375,6 +375,7 @@ mod tests {
     use crate::config::AgentMode;
     use crate::error::WorkspaceDriftReason;
     use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+    use crate::tmux::metadata::PANE_AGENT_COMMAND;
     use crate::workspace::session_name;
 
     fn make_launchable(project: &mut ResolvedProject) {
@@ -561,8 +562,8 @@ mod tests {
         let session = session_name(&project);
 
         fake.add_session(&session);
-        fake.set_session_opt(&session, "@kira_mux_config_fingerprint", "wrong");
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
+        fake.set_session_opt(&session, SESSION_CONFIG_FINGERPRINT, "wrong");
+        fake.set_session_opt(&session, SESSION_PROJECT_ID, &project.id);
 
         let err = start(&fake, &project, false)
             .err_or_panic("start_refuses_drifted_session: expected Err");
@@ -660,8 +661,8 @@ mod tests {
         let session = session_name(&project);
 
         fake.add_session(&session);
-        fake.set_session_opt(&session, "@kira_mux_config_fingerprint", "wrong");
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
+        fake.set_session_opt(&session, SESSION_CONFIG_FINGERPRINT, "wrong");
+        fake.set_session_opt(&session, SESSION_PROJECT_ID, &project.id);
 
         let err = restart(&fake, &project, None)
             .err_or_panic("restart_drifted_session_fails: expected Err");
@@ -823,7 +824,7 @@ mod tests {
         assert_eq!(outcome, StartOutcome::Healthy);
 
         let val = fake
-            .get_pane_option("%0", "@kira_mux_agent_command")
+            .get_pane_option("%0", PANE_AGENT_COMMAND)
             .or_panic("launch_sets_command_metadata");
         assert_eq!(val.as_deref(), Some("echo"));
     }
@@ -838,7 +839,7 @@ mod tests {
         start(&fake, &project, false).or_panic("launch_sets_path_basename");
 
         let val = fake
-            .get_pane_option("%0", "@kira_mux_agent_command")
+            .get_pane_option("%0", PANE_AGENT_COMMAND)
             .or_panic("launch_sets_path_basename");
         assert_eq!(val.as_deref(), Some("codex"));
     }
@@ -855,7 +856,7 @@ mod tests {
         start(&fake, &project, false).or_panic("launch_sets_shell_sentinel");
 
         let val = fake
-            .get_pane_option("%0", "@kira_mux_agent_command")
+            .get_pane_option("%0", PANE_AGENT_COMMAND)
             .or_panic("launch_sets_shell_sentinel");
         assert_eq!(val.as_deref(), Some("__shell__"));
     }

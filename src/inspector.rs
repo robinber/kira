@@ -498,12 +498,15 @@ mod tests {
             ),
         );
 
-        assert!(matches!(
-            result,
-            SharedTopology::Drifted {
-                reason: WorkspaceDriftReason::UnknownManagedAgentId(_)
-            }
-        ));
+        assert!(
+            matches!(
+                result,
+                SharedTopology::Drifted {
+                    reason: WorkspaceDriftReason::UnknownManagedAgentId(ref id)
+                } if id == "unknown"
+            ),
+            "the drift reason must carry the offending id"
+        );
     }
 
     #[test]
@@ -514,12 +517,15 @@ mod tests {
             &snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]),
         );
 
-        assert!(matches!(
-            result,
-            SharedTopology::Drifted {
-                reason: WorkspaceDriftReason::DuplicateManagedAgentId(_)
-            }
-        ));
+        assert!(
+            matches!(
+                result,
+                SharedTopology::Drifted {
+                    reason: WorkspaceDriftReason::DuplicateManagedAgentId(ref id)
+                } if id == "alpha"
+            ),
+            "the drift reason must carry the duplicated id"
+        );
     }
 
     #[test]

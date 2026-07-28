@@ -338,7 +338,7 @@ mod tests {
             &session,
             &project.window_name,
             0,
-            "@kira_mux_agent_command",
+            PANE_AGENT_COMMAND,
             "codex",
         );
 
