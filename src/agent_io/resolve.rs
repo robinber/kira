@@ -101,22 +101,8 @@ pub(super) fn resolve_managed_pane<'a>(
 mod tests {
     use super::*;
     use crate::test_support::{err, ok};
-    use crate::tmux::metadata::{WINDOW_ROLE, WINDOW_ROLE_AGENTS};
+    use crate::tmux::metadata::{PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT};
     use crate::workspace::session_name;
-
-    fn tag_session_metadata(
-        fake: &crate::test_support::FakeTmux,
-        project: &ResolvedProject,
-        session: &str,
-    ) {
-        fake.set_session_opt(
-            session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(session, "@kira_mux_profile_id", &project.profile_id);
-    }
 
     #[test]
     fn resolve_vanished_session_race_maps_to_session_absent() {
@@ -196,37 +182,12 @@ mod tests {
 
     #[test]
     fn resolve_pane_fails_on_fingerprint_mismatch() {
+        // The one drift passthrough kept at this layer: the taxonomy itself
+        // is pinned by the classifier table in inspector.rs.
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(&session, "@kira_mux_config_fingerprint", "wrong");
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "beta",
-        );
+        crate::test_support::setup_healthy_session(&fake, &project);
+        fake.set_session_opt(&session_name(&project), SESSION_CONFIG_FINGERPRINT, "wrong");
 
         let err = err(
             resolve_managed_pane(&fake, &project, "alpha"),
@@ -245,118 +206,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_pane_fails_on_drifted_session_with_renamed_window() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-        fake.add_window(&session, "renamed-window");
-        fake.add_pane(&session, "renamed-window", "%0", false);
-        fake.set_pane_opt(&session, "renamed-window", 0, "@kira_mux_agent_id", "alpha");
-        fake.add_pane(&session, "renamed-window", "%1", false);
-        fake.set_pane_opt(&session, "renamed-window", 1, "@kira_mux_agent_id", "beta");
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail for a drifted session",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::ManagedWindowMissing,
-                    ..
-                })
-            ),
-            "expected Drifted/ManagedWindowMissing, got: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_pane_duplicate_agent_id_fails() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail when agent IDs are duplicated",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::DuplicateManagedAgentId(id),
-                    ..
-                }) if id == "alpha"
-            ),
-            "expected Drifted/DuplicateManagedAgentId, got: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_pane_no_metadata_fails() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.add_pane(&session, &project.window_name, "%1", false);
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail when pane metadata is missing",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::PaneMetadataMissing,
-                    ..
-                })
-            ),
-            "expected Drifted/PaneMetadataMissing, got: {err}"
-        );
-    }
-
-    #[test]
     fn resolve_pane_ignores_unmanaged_window_panes() {
         let fake = crate::test_support::FakeTmux::new();
         let project = crate::test_support::test_project();
@@ -366,7 +215,7 @@ mod tests {
 
         fake.add_window(&session, "other-window");
         fake.add_pane(&session, "other-window", "%99", false);
-        fake.set_pane_opt(&session, "other-window", 0, "@kira_mux_agent_id", "alpha");
+        fake.set_pane_opt(&session, "other-window", 0, PANE_AGENT_ID, "alpha");
 
         let (pane, agent, _topology) = ok(
             resolve_managed_pane(&fake, &project, "alpha"),
@@ -374,98 +223,6 @@ mod tests {
         );
         assert_eq!(pane.pane_id, "%0");
         assert_eq!(agent.id, "alpha");
-    }
-
-    #[test]
-    fn resolve_pane_fails_on_wrong_window_role() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            "@kira_mux_window_role",
-            "wrong",
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail on the wrong window role",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::WindowMetadataMismatch,
-                    ..
-                })
-            ),
-            "expected Drifted/WindowMetadataMismatch, got: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_pane_fails_when_managed_window_missing() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail when the managed window is missing",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::ManagedWindowMissing,
-                    ..
-                })
-            ),
-            "expected Drifted/ManagedWindowMissing, got: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_pane_fails_on_empty_window_role() {
-        let fake = crate::test_support::FakeTmux::new();
-        let project = crate::test_support::test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        tag_session_metadata(&fake, &project, &session);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(&session, &project.window_name, "@kira_mux_window_role", "");
-
-        let err = err(
-            resolve_managed_pane(&fake, &project, "alpha"),
-            "resolve_managed_pane should fail on an empty window role",
-        );
-        assert!(
-            matches!(
-                err.downcast_ref::<KiraMuxError>(),
-                Some(KiraMuxError::Drifted {
-                    reason: WorkspaceDriftReason::WindowMetadataMismatch,
-                    ..
-                })
-            ),
-            "expected Drifted/WindowMetadataMismatch for empty role, got: {err}"
-        );
     }
 
     #[test]

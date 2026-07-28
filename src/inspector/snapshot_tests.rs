@@ -1,7 +1,7 @@
 use super::{WorkspaceTopology, inspect};
 use crate::error::WorkspaceDriftReason;
 use crate::model::ResolvedProject;
-use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+use crate::test_support::{FakeTmux, TestResultExt, test_project};
 use crate::tmux::TmuxError;
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
@@ -51,82 +51,6 @@ fn session_metadata_drift_precedes_missing_managed_window() {
     fake.set_session_opt(&session_name(&project), SESSION_CONFIG_FINGERPRINT, "wrong");
 
     assert_drift(&fake, &project, &WorkspaceDriftReason::FingerprintMismatch);
-}
-
-#[test]
-fn inspect_reports_project_metadata_mismatch() {
-    let fake = FakeTmux::new();
-    let project = test_project();
-    setup_healthy_session(&fake, &project);
-    fake.set_session_opt(&session_name(&project), SESSION_PROJECT_ID, "other-project");
-
-    assert_drift(
-        &fake,
-        &project,
-        &WorkspaceDriftReason::ProjectMetadataMismatch,
-    );
-}
-
-#[test]
-fn inspect_reports_profile_metadata_mismatch() {
-    let fake = FakeTmux::new();
-    let project = test_project();
-    setup_healthy_session(&fake, &project);
-    fake.set_session_opt(&session_name(&project), SESSION_PROFILE_ID, "other-profile");
-
-    assert_drift(
-        &fake,
-        &project,
-        &WorkspaceDriftReason::ProfileMetadataMismatch,
-    );
-}
-
-#[test]
-fn inspect_reports_window_metadata_mismatch() {
-    let fake = FakeTmux::new();
-    let project = test_project();
-    setup_healthy_session(&fake, &project);
-    fake.set_window_opt(
-        &session_name(&project),
-        &project.window_name,
-        WINDOW_ROLE,
-        "other-role",
-    );
-
-    assert_drift(
-        &fake,
-        &project,
-        &WorkspaceDriftReason::WindowMetadataMismatch,
-    );
-}
-
-#[test]
-fn inspect_reports_missing_pane_metadata() {
-    let fake = FakeTmux::new();
-    let project = test_project();
-    add_session_metadata(&fake, &project);
-    let session = session_name(&project);
-    fake.add_window(&session, &project.window_name);
-    fake.set_window_opt(
-        &session,
-        &project.window_name,
-        WINDOW_ROLE,
-        WINDOW_ROLE_AGENTS,
-    );
-    for (index, agent) in project.agents.iter().enumerate() {
-        fake.add_pane(&session, &project.window_name, &format!("%{index}"), false);
-        if index > 0 {
-            fake.set_pane_opt(
-                &session,
-                &project.window_name,
-                index,
-                PANE_AGENT_ID,
-                &agent.id,
-            );
-        }
-    }
-
-    assert_drift(&fake, &project, &WorkspaceDriftReason::PaneMetadataMissing);
 }
 
 #[test]
