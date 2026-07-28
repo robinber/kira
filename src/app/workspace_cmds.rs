@@ -8,6 +8,7 @@ use super::load_project_context;
 use crate::cli::ProjectTarget;
 use crate::config::ResolutionMode;
 use crate::error::KiraMuxError;
+use crate::tmux::TmuxAdapter;
 use crate::{interaction, output, workspace};
 
 pub(crate) fn cmd_start(
@@ -58,7 +59,7 @@ pub(crate) fn cmd_kill(
     yes: bool,
 ) -> Result<()> {
     let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
-    if !crate::inspector::session_exists(&tmux, &workspace::session_name(&project))? {
+    if !tmux.session_exists(&workspace::session_name(&project))? {
         eprintln!("session for project {} is already stopped", project.id);
         return Ok(());
     }

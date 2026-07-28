@@ -51,17 +51,10 @@ fn real_server() -> Option<RealServer> {
         SOCKET_SEQ.fetch_add(1, Ordering::Relaxed)
     );
     let client = TmuxClient::with_socket(TMUX_BIN, &socket);
+    // A fresh socket reports "no sessions" (the binary works); only a
+    // spawn failure means tmux is unusable.
     match client.session_exists("probe") {
-        // A fresh socket answers "no server": the binary works.
         Ok(_) => Some(RealServer { client, socket }),
-        Err(error)
-            if matches!(
-                error.downcast_ref::<TmuxError>(),
-                Some(TmuxError::NoServer(_))
-            ) =>
-        {
-            Some(RealServer { client, socket })
-        }
         Err(_) => None,
     }
 }

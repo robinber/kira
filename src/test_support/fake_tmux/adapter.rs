@@ -16,7 +16,8 @@ use crate::tmux::{
 impl TmuxAdapter for FakeTmux {
     fn session_exists(&self, session_name: &str) -> Result<bool> {
         if self.no_server.load(Ordering::Relaxed) {
-            return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
+            // Contract: no server means no sessions.
+            return Ok(false);
         }
         let sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         Ok(sessions.contains_key(session_name))

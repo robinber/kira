@@ -295,21 +295,6 @@ pub(crate) fn inspect(
     }
 }
 
-pub(crate) fn session_exists(tmux: &dyn TmuxAdapter, session: &str) -> Result<bool> {
-    match tmux.session_exists(session) {
-        Ok(exists) => Ok(exists),
-        Err(error)
-            if matches!(
-                error.downcast_ref::<TmuxError>(),
-                Some(TmuxError::NoServer(_))
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
-}
-
 #[cfg(test)]
 mod snapshot_tests;
 

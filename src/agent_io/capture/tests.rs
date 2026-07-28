@@ -101,7 +101,7 @@ fn capture_output_normal_screen_never_resizes() {
         "capture_output should succeed on a normal-screen pane",
     );
     assert!(!capture.alternate_on);
-    assert!(!capture.deep_capture);
+    assert!(!capture.deep_capture.completed());
     assert_eq!(
         capture.deep_capture_status,
         DeepCaptureStatus::NotApplicable
@@ -136,7 +136,7 @@ fn capture_output_deepens_alternate_screen_pane_and_restores_window() {
         "deep capture should succeed",
     );
     assert!(capture.alternate_on);
-    assert!(capture.deep_capture);
+    assert!(capture.deep_capture.completed());
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Completed);
     assert!(!capture.depth_request_clamped);
     let lines: Vec<&str> = capture.output.lines().collect();
@@ -191,7 +191,7 @@ fn capture_output_zooms_without_resize_when_window_already_tall() {
         capture_output(&fake, &project, "alpha", 40, &DeepCaptureOptions::fast()),
         "zoom-only deepening should succeed",
     );
-    assert!(capture.deep_capture);
+    assert!(capture.deep_capture.completed());
     let lines: Vec<&str> = capture.output.lines().collect();
     assert_eq!(
         lines.len(),
@@ -272,7 +272,7 @@ fn capture_output_preserves_existing_window_size_policy() {
         capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "deep capture should succeed",
     );
-    assert!(capture.deep_capture);
+    assert!(capture.deep_capture.completed());
     assert_eq!(
         fake.window_size_option(&session, &project.window_name)
             .as_deref(),
@@ -309,7 +309,7 @@ fn capture_output_restores_original_active_pane() {
         capture_output(&fake, &project, "beta", 200, &DeepCaptureOptions::fast()),
         "deep capture of the inactive pane should succeed",
     );
-    assert!(capture.deep_capture);
+    assert!(capture.deep_capture.completed());
     let session = crate::workspace::session_name(&project);
     assert_eq!(
         fake.active_pane(&session, &project.window_name).as_deref(),
@@ -385,7 +385,7 @@ fn deep_capture_clamps_request_to_max_height() {
         capture_output(&fake, &project, "alpha", 2000, &DeepCaptureOptions::fast()),
         "over-cap deep capture should still succeed",
     );
-    assert!(capture.deep_capture);
+    assert!(capture.deep_capture.completed());
     assert!(
         capture.depth_request_clamped,
         "a request beyond the cap must be reported as clamped"
@@ -429,7 +429,7 @@ fn capture_output_reports_busy_when_window_lock_is_held() {
         "contended capture must fall back, not fail",
     );
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Busy);
-    assert!(!capture.deep_capture);
+    assert!(!capture.deep_capture.completed());
     // Viewport-limited fallback, and no geometry mutation at all.
     assert_eq!(capture.output.lines().count(), 10);
     assert!(
@@ -561,7 +561,7 @@ fn capture_output_alt_screen_shallow_request_stays_plain() {
         capture_output(&fake, &project, "alpha", 5, &DeepCaptureOptions::fast()),
         "shallow capture should succeed",
     );
-    assert!(!capture.deep_capture);
+    assert!(!capture.deep_capture.completed());
     assert!(fake.ops().is_empty());
     assert_eq!(capture.output.lines().count(), 5);
 }
@@ -578,7 +578,7 @@ fn capture_output_dead_alt_screen_pane_stays_plain() {
         capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "capture of dead alt-screen pane should succeed",
     );
-    assert!(!capture.deep_capture);
+    assert!(!capture.deep_capture.completed());
     assert!(fake.ops().is_empty());
 }
 
@@ -598,7 +598,7 @@ fn capture_output_falls_back_when_window_zoomed_on_another_pane() {
         "capture should fall back, not fail",
     );
     assert!(
-        !capture.deep_capture,
+        !capture.deep_capture.completed(),
         "deep capture must not steal another pane's zoom"
     );
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Unavailable);

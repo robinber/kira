@@ -62,7 +62,7 @@ pub(crate) fn attach(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Resul
         "attaching workspace"
     );
 
-    if !inspector::session_exists(tmux, &session)? {
+    if !tmux.session_exists(&session)? {
         return Err(KiraMuxError::SessionAbsent.into());
     }
 
@@ -106,7 +106,7 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
         "killing workspace"
     );
 
-    if !inspector::session_exists(tmux, &session)? {
+    if !tmux.session_exists(&session)? {
         return Ok(());
     }
 
@@ -114,7 +114,7 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
     if let Err(error) = tmux.kill_session(&session) {
         // The session may have died between the existence check and the
         // kill; the goal is reached either way.
-        if inspector::session_exists(tmux, &session)? {
+        if tmux.session_exists(&session)? {
             return Err(error);
         }
     }
@@ -133,7 +133,7 @@ fn attach_to_session(tmux: &dyn TmuxAdapter, session: &str) -> Result<()> {
             // Interactive attach/switch only report a status code. If the
             // session vanished between ownership check and attach, surface the
             // stable SessionAbsent outcome instead of a generic exit 1.
-            if !inspector::session_exists(tmux, session)? {
+            if !tmux.session_exists(session)? {
                 return Err(KiraMuxError::SessionAbsent.into());
             }
             Err(error)
