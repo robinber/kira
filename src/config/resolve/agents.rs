@@ -167,16 +167,9 @@ pub(super) fn build_template_map(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::env;
-    use std::path::Path;
-
     use super::*;
-    use crate::config::error::ConfigError;
-    use crate::config::fingerprint::{
-        FingerprintAgentMaterial, FingerprintInput, compute_fingerprint,
-    };
-    use crate::config::model::{AgentTemplate, Layout, ProjectAgent, ResolutionMode};
+    use crate::config::fingerprint::{FingerprintInput, compute_fingerprint};
+    use crate::config::model::Layout;
     use crate::test_support::TestResultExt;
 
     #[test]

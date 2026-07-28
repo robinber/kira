@@ -82,7 +82,7 @@ fn resolve_workspace_defaults(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{GlobalConfig, ProjectAgent, ProjectFile, ResolutionMode};
+    use crate::config::model::{GlobalConfig, ProjectAgent, ProjectFile};
     use crate::test_support::TestResultExt;
 
     /// The one orchestration-level test: `resolve_project` wires validation,

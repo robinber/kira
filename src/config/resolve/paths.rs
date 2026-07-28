@@ -193,11 +193,7 @@ pub(super) fn home_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
-    use crate::config::error::ConfigError;
-    use crate::config::model::ResolutionMode;
     use crate::test_support::{TestOptionExt, TestResultExt};
 
     #[test]

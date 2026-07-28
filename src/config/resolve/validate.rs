@@ -125,8 +125,6 @@ pub(super) fn validate_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::error::ConfigError;
-    use crate::config::model::AgentMode;
     use crate::test_support::TestResultExt;
 
     #[test]
