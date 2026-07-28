@@ -190,3 +190,214 @@ pub(super) fn check_symlink_escape(path: &Path, project_root: &Path) -> Option<P
 pub(super) fn home_dir() -> Result<PathBuf> {
     crate::paths::home_dir().map_err(|_source| ConfigError::HomeDirUnavailable)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{TestOptionExt, TestResultExt};
+
+    #[test]
+    fn project_root_identity_survives_directory_deletion() {
+        let base = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("failed to create tempdir: {error}"),
+        };
+        let root = base.path().join("workdir");
+        if let Err(error) = std::fs::create_dir(&root) {
+            panic!("failed to create workdir: {error}");
+        }
+        let configured = root.display().to_string();
+
+        let before = normalize_project_root(&configured, ResolutionMode::Deferred)
+            .or_panic("project_root_identity_survives_directory_deletion");
+        if let Err(error) = std::fs::remove_dir(&root) {
+            panic!("failed to remove workdir: {error}");
+        }
+        let after = normalize_project_root(&configured, ResolutionMode::Deferred)
+            .or_panic("project_root_identity_survives_directory_deletion");
+
+        assert_eq!(
+            before, after,
+            "resolved root (and thus the derived session name) must be \
+             identical before and after the directory disappears"
+        );
+    }
+
+    #[test]
+    fn project_root_rejects_relative_paths() {
+        for root in [".", "relative", "../sibling", "tmp/project"] {
+            let error = normalize_project_root(root, ResolutionMode::Deferred)
+                .err_or_panic("project_root_rejects_relative_paths: expected Err");
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::RelativeProjectRoot(got) if got == root
+                ),
+                "expected RelativeProjectRoot for {root:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_project_root_is_accepted_by_stability_gate() {
+        let base = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("failed to create tempdir: {error}"),
+        };
+        let configured = base.path().display().to_string();
+        assert!(
+            Path::new(&configured).is_absolute(),
+            "temp paths must be absolute for this test"
+        );
+
+        require_stable_project_root(&configured)
+            .or_panic("absolute_project_root_is_accepted_by_stability_gate");
+    }
+
+    #[test]
+    fn home_relative_project_root_is_accepted() {
+        // HOME may be unset in some environments; expand_path would fail then.
+        // We only assert the stability gate accepts the form.
+        require_stable_project_root("~/projects/demo")
+            .or_panic("home_relative_project_root_is_accepted");
+        require_stable_project_root("~").or_panic("home_relative_project_root_is_accepted");
+    }
+
+    #[test]
+    fn deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd() {
+        let base = tempfile::tempdir()
+            .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
+        let missing_root = base.path().join("missing-root");
+        let root = normalize_project_root(
+            &missing_root.display().to_string(),
+            ResolutionMode::Deferred,
+        )
+        .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
+
+        let cwd = resolve_agent_cwd("alpha", Some("subdir"), &root, ResolutionMode::Deferred)
+            .or_panic("deferred_resolution_tolerates_missing_root_and_explicit_agent_cwd");
+
+        assert_eq!(cwd, missing_root.join("subdir"));
+    }
+
+    #[test]
+    fn runtime_resolution_rejects_missing_project_root() {
+        let base = tempfile::tempdir().or_panic("runtime_resolution_rejects_missing_project_root");
+        let missing_root = base.path().join("missing-root");
+
+        let error =
+            normalize_project_root(&missing_root.display().to_string(), ResolutionMode::Runtime)
+                .err_or_panic("runtime_resolution_rejects_missing_project_root: expected Err");
+
+        assert!(matches!(error, ConfigError::ProjectRootNotFound(path) if path == missing_root));
+    }
+
+    #[cfg(unix)]
+    mod symlink_escape_tests {
+        use std::os::unix::fs::symlink;
+
+        use super::*;
+
+        fn setup_project_root_with_subdir() -> tempfile::TempDir {
+            let temp = tempfile::tempdir().or_panic("setup_project_root_with_subdir");
+            std::fs::create_dir(temp.path().join("subdir"))
+                .or_panic("setup_project_root_with_subdir");
+            temp
+        }
+
+        #[test]
+        fn check_symlink_escape_fallback_on_broken_symlink() {
+            let temp = setup_project_root_with_subdir();
+            let link = temp.path().join("broken_link");
+            symlink("/nonexistent/escape/target", &link)
+                .or_panic("check_symlink_escape_fallback_on_broken_symlink");
+            let result = check_symlink_escape(&link, temp.path());
+            assert!(
+                result.is_some(),
+                "expected escape detection via read_link fallback"
+            );
+            let escaped = result.or_panic("check_symlink_escape_fallback_on_broken_symlink");
+            assert!(escaped.starts_with("/nonexistent"));
+        }
+
+        #[test]
+        fn check_symlink_escape_detects_relative_escape() {
+            let temp = setup_project_root_with_subdir();
+            let link = temp.path().join("subdir/escape_link");
+            symlink("../../..", &link).or_panic("check_symlink_escape_detects_relative_escape");
+            let result = check_symlink_escape(&link, temp.path());
+            assert!(result.is_some(), "expected relative escape detection");
+        }
+
+        #[test]
+        fn check_symlink_escape_nested_relative_escape() {
+            let temp = setup_project_root_with_subdir();
+            let subdir = temp.path().join("subdir");
+            std::fs::create_dir(subdir.join("nested"))
+                .or_panic("check_symlink_escape_nested_relative_escape");
+            let link = subdir.join("nested/deep_escape");
+            symlink("../../../..", &link).or_panic("check_symlink_escape_nested_relative_escape");
+            let result = check_symlink_escape(&link, temp.path());
+            assert!(
+                result.is_some(),
+                "expected nested relative escape detection"
+            );
+        }
+
+        #[test]
+        fn check_symlink_escape_detects_absolute_escape() {
+            let temp = setup_project_root_with_subdir();
+            let escape_target =
+                tempfile::tempdir().or_panic("check_symlink_escape_detects_absolute_escape");
+            let link = temp.path().join("link");
+            symlink(escape_target.path(), &link)
+                .or_panic("check_symlink_escape_detects_absolute_escape");
+            let result = check_symlink_escape(&link, temp.path());
+            assert!(result.is_some(), "expected escape detection");
+            let escaped = result.or_panic("check_symlink_escape_detects_absolute_escape");
+            assert!(
+                !escaped.starts_with(temp.path()),
+                "escaped path should be outside project root"
+            );
+        }
+
+        #[test]
+        fn check_symlink_escape_returns_none_when_canonical_inside_root() {
+            let temp = tempfile::tempdir()
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            std::fs::create_dir_all(temp.path().join("a/b"))
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            let link = temp.path().join("a/b/link");
+            symlink("..", &link)
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            let project_root = temp
+                .path()
+                .canonicalize()
+                .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
+            assert!(check_symlink_escape(&link, &project_root).is_none());
+        }
+
+        #[test]
+        fn project_root_identity_survives_broken_configured_symlink() {
+            let temp = tempfile::tempdir()
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            let target = temp.path().join("target");
+            let link = temp.path().join("project-link");
+            std::fs::create_dir(&target)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            symlink(&target, &link)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            let configured = link.display().to_string();
+
+            let before = normalize_project_root(&configured, ResolutionMode::Deferred)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            std::fs::remove_dir(&target)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+            let after = normalize_project_root(&configured, ResolutionMode::Deferred)
+                .or_panic("project_root_identity_survives_broken_configured_symlink");
+
+            assert_eq!(before, after);
+            assert_eq!(after, link);
+        }
+    }
+}
