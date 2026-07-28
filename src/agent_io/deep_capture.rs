@@ -92,6 +92,7 @@ pub(crate) fn deepen_wait_capture(
     pane_id: &str,
     lines: usize,
     converged: String,
+    options: &DeepCaptureOptions,
 ) -> String {
     let pane = match super::resolve::find_pane(tmux, pane_id) {
         Ok(pane) => pane,
@@ -111,7 +112,7 @@ pub(crate) fn deepen_wait_capture(
     if !wants_deep_capture(&pane, lines) {
         return converged;
     }
-    match deep_capture_with_status(tmux, &pane.pane_id, lines, &DeepCaptureOptions::default()) {
+    match deep_capture_with_status(tmux, &pane.pane_id, lines, options) {
         (Some(output), _) => output,
         (None, _) => converged,
     }

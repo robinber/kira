@@ -16,7 +16,7 @@ fn capture_output_returns_content() {
     fake.set_pane_content("%0", "some output here");
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 30),
+        capture_output(&fake, &project, "alpha", 30, &DeepCaptureOptions::fast()),
         "capture_output should succeed for a healthy pane",
     );
     assert_eq!(capture.agent_id, "alpha");
@@ -34,7 +34,7 @@ fn capture_output_dead_pane_allowed() {
     fake.set_pane_content("%0", "dead pane output");
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 30),
+        capture_output(&fake, &project, "alpha", 30, &DeepCaptureOptions::fast()),
         "capture_output should succeed for a dead pane",
     );
     assert!(capture.pane_dead);
@@ -46,7 +46,7 @@ fn capture_output_absent_session_fails() {
     let fake = crate::test_support::FakeTmux::new();
     let project = crate::test_support::test_project();
     let err = err(
-        capture_output(&fake, &project, "alpha", 30),
+        capture_output(&fake, &project, "alpha", 30, &DeepCaptureOptions::fast()),
         "capture_output should fail when the session is absent",
     );
     assert!(matches!(
@@ -68,7 +68,7 @@ fn capture_output_respects_line_limit() {
     fake.set_pane_content("%0", &content);
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 5),
+        capture_output(&fake, &project, "alpha", 5, &DeepCaptureOptions::fast()),
         "capture_output should succeed with a line limit",
     );
     let lines: Vec<&str> = capture.output.lines().collect();
@@ -97,7 +97,7 @@ fn capture_output_normal_screen_never_resizes() {
     fake.set_pane_content("%0", "plain history");
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "capture_output should succeed on a normal-screen pane",
     );
     assert!(!capture.alternate_on);
@@ -132,7 +132,7 @@ fn capture_output_deepens_alternate_screen_pane_and_restores_window() {
     setup_alt_screen_transcript(&fake);
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "deep capture should succeed",
     );
     assert!(capture.alternate_on);
@@ -188,7 +188,7 @@ fn capture_output_zooms_without_resize_when_window_already_tall() {
     fake.set_window_height(&session, &project.window_name, 80);
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 40),
+        capture_output(&fake, &project, "alpha", 40, &DeepCaptureOptions::fast()),
         "zoom-only deepening should succeed",
     );
     assert!(capture.deep_capture);
@@ -269,7 +269,7 @@ fn capture_output_preserves_existing_window_size_policy() {
     fake.set_window_size_option(&session, &project.window_name, "latest");
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "deep capture should succeed",
     );
     assert!(capture.deep_capture);
@@ -306,7 +306,7 @@ fn capture_output_restores_original_active_pane() {
     fake.set_pane_content("%1", &content);
 
     let capture = ok(
-        capture_output(&fake, &project, "beta", 200),
+        capture_output(&fake, &project, "beta", 200, &DeepCaptureOptions::fast()),
         "deep capture of the inactive pane should succeed",
     );
     assert!(capture.deep_capture);
@@ -382,7 +382,7 @@ fn deep_capture_clamps_request_to_max_height() {
     setup_alt_screen_transcript(&fake);
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 2000),
+        capture_output(&fake, &project, "alpha", 2000, &DeepCaptureOptions::fast()),
         "over-cap deep capture should still succeed",
     );
     assert!(capture.deep_capture);
@@ -425,7 +425,7 @@ fn capture_output_reports_busy_when_window_lock_is_held() {
     assert!(held.is_some(), "external lock should be acquired");
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "contended capture must fall back, not fail",
     );
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Busy);
@@ -453,7 +453,7 @@ fn capture_output_shallow_and_dead_statuses() {
     setup_alt_screen_transcript(&fake);
 
     let shallow = ok(
-        capture_output(&fake, &project, "alpha", 5),
+        capture_output(&fake, &project, "alpha", 5, &DeepCaptureOptions::fast()),
         "shallow capture should succeed",
     );
     assert_eq!(shallow.deep_capture_status, DeepCaptureStatus::NotNeeded);
@@ -463,7 +463,13 @@ fn capture_output_shallow_and_dead_statuses() {
     fake_dead.set_pane_alternate_on("%0", true);
     fake_dead.set_pane_content("%0", "frozen");
     let dead = ok(
-        capture_output(&fake_dead, &project, "alpha", 200),
+        capture_output(
+            &fake_dead,
+            &project,
+            "alpha",
+            200,
+            &DeepCaptureOptions::fast(),
+        ),
         "dead-pane capture should succeed",
     );
     assert_eq!(dead.deep_capture_status, DeepCaptureStatus::NotApplicable);
@@ -498,7 +504,7 @@ fn capture_output_fails_closed_when_pane_moves_window_during_lock() {
     fake.set_pane_relocated_after_geometry_reads("%0", &session, "other", 1);
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "relocated-pane capture must fall back, not fail",
     );
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::Unavailable);
@@ -532,7 +538,7 @@ fn capture_output_reports_clamp_even_when_nothing_to_deepen() {
     );
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 2000),
+        capture_output(&fake, &project, "alpha", 2000, &DeepCaptureOptions::fast()),
         "at-ceiling capture should succeed",
     );
     assert_eq!(capture.deep_capture_status, DeepCaptureStatus::NotNeeded);
@@ -552,7 +558,7 @@ fn capture_output_alt_screen_shallow_request_stays_plain() {
 
     // Requested depth fits in the visible frame: nothing to deepen.
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 5),
+        capture_output(&fake, &project, "alpha", 5, &DeepCaptureOptions::fast()),
         "shallow capture should succeed",
     );
     assert!(!capture.deep_capture);
@@ -569,7 +575,7 @@ fn capture_output_dead_alt_screen_pane_stays_plain() {
 
     // A dead pane cannot repaint after a resize: skip the whole dance.
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "capture of dead alt-screen pane should succeed",
     );
     assert!(!capture.deep_capture);
@@ -588,7 +594,7 @@ fn capture_output_falls_back_when_window_zoomed_on_another_pane() {
     );
 
     let capture = ok(
-        capture_output(&fake, &project, "alpha", 200),
+        capture_output(&fake, &project, "alpha", 200, &DeepCaptureOptions::fast()),
         "capture should fall back, not fail",
     );
     assert!(
@@ -615,7 +621,13 @@ fn deepen_wait_capture_recovers_full_transcript() {
     crate::test_support::setup_healthy_session(&fake, &project);
     setup_alt_screen_transcript(&fake);
 
-    let deepened = deepen_wait_capture(&fake, "%0", 200, "viewport tail\n".to_string());
+    let deepened = deepen_wait_capture(
+        &fake,
+        "%0",
+        200,
+        "viewport tail\n".to_string(),
+        &DeepCaptureOptions::fast(),
+    );
     assert_eq!(
         deepened.lines().count(),
         100,
@@ -631,7 +643,13 @@ fn deepen_wait_capture_returns_converged_on_normal_screen() {
     fake.set_pane_content("%0", "history is fine");
 
     let converged = "converged output\n".to_string();
-    let deepened = deepen_wait_capture(&fake, "%0", 200, converged.clone());
+    let deepened = deepen_wait_capture(
+        &fake,
+        "%0",
+        200,
+        converged.clone(),
+        &DeepCaptureOptions::fast(),
+    );
     assert_eq!(deepened, converged);
     assert!(fake.ops().is_empty());
 }
@@ -641,7 +659,13 @@ fn deepen_wait_capture_survives_vanished_pane() {
     let fake = crate::test_support::FakeTmux::new();
 
     let converged = "converged output\n".to_string();
-    let deepened = deepen_wait_capture(&fake, "%9", 200, converged.clone());
+    let deepened = deepen_wait_capture(
+        &fake,
+        "%9",
+        200,
+        converged.clone(),
+        &DeepCaptureOptions::fast(),
+    );
     assert_eq!(
         deepened, converged,
         "a vanished pane must not turn a successful wait into a failure"
