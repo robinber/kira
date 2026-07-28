@@ -12,4 +12,6 @@ mod fixtures;
 
 pub(crate) use assert::{TestOptionExt, TestResultExt, err, ok, some};
 pub(crate) use fake_tmux::{FakeOp, FakeTmux};
-pub(crate) use fixtures::{setup_healthy_session, setup_session_with_dead_panes, test_project};
+pub(crate) use fixtures::{
+    setup_healthy_session, setup_session_with_dead_panes, test_agent, test_project,
+};

@@ -74,8 +74,7 @@ mod tests {
     use crate::tmux::PaneInfo;
 
     fn make_agent(id: &str, capabilities: Vec<String>) -> ResolvedAgent {
-        let mut agent = crate::test_support::test_project().agents.remove(0);
-        agent.id = id.to_string();
+        let mut agent = crate::test_support::test_agent(id);
         agent.label = id.to_string();
         agent.capabilities = capabilities;
         agent

@@ -227,29 +227,13 @@ mod tests {
 
     #[test]
     fn resolve_pane_deterministic_with_many_agents() {
-        use std::collections::BTreeMap;
-        use std::path::PathBuf;
-
-        use crate::config::AgentMode;
-
         let fake = crate::test_support::FakeTmux::new();
         let mut project = crate::test_support::test_project();
 
         for i in 2..5 {
-            project.agents.push(ResolvedAgent {
-                id: format!("agent-{i}"),
-                label: format!("Agent {i}"),
-                mode: AgentMode::Direct,
-                command: Some("echo".to_string()),
-                shell_command: None,
-                args: vec![],
-                cwd: PathBuf::from("/tmp/test-project"),
-                env: BTreeMap::new(),
-                capabilities: vec![],
-                prompt_template: None,
-                submit: None,
-                text_delivery: None,
-            });
+            project
+                .agents
+                .push(crate::test_support::test_agent(&format!("agent-{i}")));
         }
 
         crate::test_support::setup_healthy_session(&fake, &project);

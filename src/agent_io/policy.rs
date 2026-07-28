@@ -88,9 +88,6 @@ pub(super) fn needs_send_keys_for_text(agent: &ResolvedAgent, pane_command: Opti
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
     use super::*;
 
     fn test_agent(mode: AgentMode, command: Option<&str>) -> ResolvedAgent {
@@ -98,20 +95,10 @@ mod tests {
     }
 
     fn test_agent_with_id(id: &str, mode: AgentMode, command: Option<&str>) -> ResolvedAgent {
-        ResolvedAgent {
-            id: id.to_string(),
-            label: "Test".to_string(),
-            mode,
-            command: command.map(String::from),
-            shell_command: None,
-            args: vec![],
-            cwd: PathBuf::from("/tmp"),
-            env: BTreeMap::new(),
-            capabilities: vec![],
-            prompt_template: None,
-            submit: None,
-            text_delivery: None,
-        }
+        let mut agent = crate::test_support::test_agent(id);
+        agent.mode = mode;
+        agent.command = command.map(String::from);
+        agent
     }
 
     #[test]
