@@ -1,7 +1,7 @@
 //! Binary entrypoint for the `kira-mux` CLI.
 //!
-//! Initializes logging, delegates to the library, and maps typed errors to
-//! process exit codes.
+//! Delegates to the library (which parses the CLI and initializes
+//! logging) and maps typed errors to process exit codes.
 #![allow(
     unused_crate_dependencies,
     reason = "thin binary delegates dependency use to the kira_mux library target"

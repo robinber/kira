@@ -14,8 +14,10 @@ pub(crate) use workspace::{AgentsArgs, AgentsCommand};
 impl Cli {
     /// Whether this invocation prints machine-readable JSON on stdout, so
     /// logging can keep stderr quiet for `2>&1` pipelines. Exhaustive on
-    /// purpose: a new command or a new `--json` flag must state its answer
-    /// here or it does not compile.
+    /// purpose: a new command variant must state its answer here or it
+    /// does not compile. (A `--json` flag added to a variant already in
+    /// the `false` arm still needs its arm moved — the guard covers new
+    /// commands, not new flags.)
     pub(crate) fn wants_json(&self) -> bool {
         match &self.command {
             CommandKind::List { json, .. }
