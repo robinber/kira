@@ -10,11 +10,11 @@ use crate::config::ConfigError;
 use crate::error::KiraMuxError;
 use crate::inspector::{self, ManagedPane, WorkspaceTopology};
 use crate::model::{ResolvedAgent, ResolvedProject};
-use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
     WINDOW_ROLE_AGENTS,
 };
+use crate::tmux::{TmuxAdapter, TmuxError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
@@ -98,7 +98,24 @@ pub(crate) fn restart(
     restart_managed_panes(tmux, project, &panes, agent_id)
 }
 
-pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<()> {
+/// What `kill` did, so the app layer reports without re-deriving
+/// session names or re-checking existence itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KillOutcome {
+    /// No session existed; nothing to do.
+    AlreadyStopped,
+    /// The owned session was confirmed and removed.
+    Killed,
+}
+
+/// Kill the managed session. `confirm` runs only for a live session that
+/// passed the ownership check, so users are never prompted about sessions
+/// kira does not own; return an error from it to abort.
+pub(crate) fn kill(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+    confirm: impl FnOnce(&str) -> Result<()>,
+) -> Result<KillOutcome> {
     let session = session_name(project);
     tracing::debug!(
         project_id = project.id.as_str(),
@@ -107,18 +124,30 @@ pub(crate) fn kill(tmux: &dyn TmuxAdapter, project: &ResolvedProject) -> Result<
     );
 
     if !tmux.session_exists(&session)? {
-        return Ok(());
+        return Ok(KillOutcome::AlreadyStopped);
     }
 
     inspector::ensure_session_owned(tmux, project)?;
+    confirm(&project.id)?;
+    // The prompt can wait on a human for arbitrarily long, so ownership must
+    // be proven again: a session replaced during the wait is never killed. A
+    // session that vanished during the wait already reached the goal.
+    if let Err(error) = inspector::ensure_session_owned(tmux, project) {
+        return match error.downcast_ref::<TmuxError>() {
+            Some(TmuxError::MissingSession(_) | TmuxError::NoServer(_)) => {
+                Ok(KillOutcome::AlreadyStopped)
+            }
+            _ => Err(error),
+        };
+    }
     if let Err(error) = tmux.kill_session(&session) {
-        // The session may have died between the existence check and the
+        // The session may have died between the ownership check and the
         // kill; the goal is reached either way.
         if tmux.session_exists(&session)? {
             return Err(error);
         }
     }
-    Ok(())
+    Ok(KillOutcome::Killed)
 }
 
 fn attach_to_session(tmux: &dyn TmuxAdapter, session: &str) -> Result<()> {

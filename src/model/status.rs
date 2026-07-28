@@ -145,10 +145,12 @@ impl fmt::Display for AgentState {
 /// Lightweight project overview used by the CLI list command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ProjectSummary {
-    /// Stable project ID.
-    pub id: String,
-    /// Active profile ID.
-    pub profile_id: String,
+    /// Stable project ID; `None` when a config failure hid it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Active profile ID; `None` when a config failure hid it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     /// Human-friendly project name.
     pub name: String,
     /// Display form of the project root.

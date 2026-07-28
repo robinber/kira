@@ -10,10 +10,7 @@ use anyhow::Result;
 use crate::error::{KiraMuxError, WorkspaceDriftReason};
 use crate::model::{ResolvedAgent, ResolvedProject};
 use crate::tmux::metadata::WINDOW_ROLE_AGENTS;
-use crate::tmux::{
-    PaneInfo, TmuxAdapter, TmuxError, WorkspacePaneSnapshot, WorkspaceSnapshot,
-    WorkspaceWindowSnapshot,
-};
+use crate::tmux::{PaneInfo, TmuxAdapter, TmuxError, WorkspacePaneSnapshot, WorkspaceSnapshot};
 use crate::workspace::session_name;
 
 /// A managed pane paired with its resolved agent definition.
@@ -46,18 +43,27 @@ pub(crate) enum WorkspaceTopology {
 }
 
 /// Shared classification used by inspect, status, and agent listing.
+///
+/// Healthy/Degraded carry the managed pane snapshots in configured agent
+/// order, so consumers never re-derive pane positions from the raw snapshot.
 #[derive(Debug)]
-pub(crate) enum SharedTopology {
-    Healthy { ordered_pane_indexes: Vec<usize> },
-    Degraded { ordered_pane_indexes: Vec<usize> },
-    Drifted { reason: WorkspaceDriftReason },
+pub(crate) enum SharedTopology<'a> {
+    Healthy {
+        ordered_panes: Vec<&'a WorkspacePaneSnapshot>,
+    },
+    Degraded {
+        ordered_panes: Vec<&'a WorkspacePaneSnapshot>,
+    },
+    Drifted {
+        reason: WorkspaceDriftReason,
+    },
 }
 
 /// Classify a bulk [`WorkspaceSnapshot`] against the resolved project contract.
-pub(crate) fn classify_snapshot(
+pub(crate) fn classify_snapshot<'a>(
     project: &ResolvedProject,
-    snapshot: &WorkspaceSnapshot,
-) -> SharedTopology {
+    snapshot: &'a WorkspaceSnapshot,
+) -> SharedTopology<'a> {
     if let Some(reason) = classify_session_metadata(
         project,
         snapshot.fingerprint.as_deref(),
@@ -81,10 +87,10 @@ pub(crate) fn classify_snapshot(
     classify_managed_panes(project, &window.panes)
 }
 
-fn classify_managed_panes(
+fn classify_managed_panes<'a>(
     project: &ResolvedProject,
-    panes: &[WorkspacePaneSnapshot],
-) -> SharedTopology {
+    panes: &'a [WorkspacePaneSnapshot],
+) -> SharedTopology<'a> {
     let configured_agent_ids = project
         .agents
         .iter()
@@ -112,22 +118,15 @@ fn classify_managed_panes(
         }
     }
 
-    let ordered_pane_indexes = match order_managed_pane_indexes(project, &pane_indexes_by_agent) {
-        Ok(ordered_pane_indexes) => ordered_pane_indexes,
+    let ordered_panes = match order_managed_panes(project, panes, &pane_indexes_by_agent) {
+        Ok(ordered_panes) => ordered_panes,
         Err(reason) => return SharedTopology::Drifted { reason },
     };
 
-    if ordered_pane_indexes
-        .iter()
-        .any(|index| panes[*index].pane.pane_dead)
-    {
-        SharedTopology::Degraded {
-            ordered_pane_indexes,
-        }
+    if ordered_panes.iter().any(|snapshot| snapshot.pane.pane_dead) {
+        SharedTopology::Degraded { ordered_panes }
     } else {
-        SharedTopology::Healthy {
-            ordered_pane_indexes,
-        }
+        SharedTopology::Healthy { ordered_panes }
     }
 }
 
@@ -206,17 +205,18 @@ fn classify_window_shape(
     }
 }
 
-fn order_managed_pane_indexes(
+fn order_managed_panes<'a>(
     project: &ResolvedProject,
+    panes: &'a [WorkspacePaneSnapshot],
     pane_indexes_by_agent: &BTreeMap<&str, usize>,
-) -> std::result::Result<Vec<usize>, WorkspaceDriftReason> {
+) -> std::result::Result<Vec<&'a WorkspacePaneSnapshot>, WorkspaceDriftReason> {
     project
         .agents
         .iter()
         .map(|agent| {
             pane_indexes_by_agent
                 .get(agent.id.as_str())
-                .copied()
+                .map(|index| &panes[*index])
                 .ok_or_else(|| WorkspaceDriftReason::MissingManagedPane(agent.id.clone()))
         })
         .collect()
@@ -224,16 +224,15 @@ fn order_managed_pane_indexes(
 
 fn build_inspected_workspace(
     project: &ResolvedProject,
-    window: &WorkspaceWindowSnapshot,
-    ordered_pane_indexes: Vec<usize>,
+    ordered_panes: &[&WorkspacePaneSnapshot],
 ) -> InspectedWorkspace {
     InspectedWorkspace {
-        panes: ordered_pane_indexes
-            .into_iter()
-            .enumerate()
-            .map(|(agent_index, pane_index)| ManagedPane {
-                pane: window.panes[pane_index].pane.clone(),
-                agent: project.agents[agent_index].clone(),
+        panes: ordered_panes
+            .iter()
+            .zip(&project.agents)
+            .map(|(snapshot, agent)| ManagedPane {
+                pane: snapshot.pane.clone(),
+                agent: agent.clone(),
             })
             .collect(),
     }
@@ -269,25 +268,14 @@ pub(crate) fn inspect(
     let Some(snapshot) = snapshot else {
         return Ok(WorkspaceTopology::Absent);
     };
-    let shared = classify_snapshot(project, &snapshot);
-
-    let (ordered_pane_indexes, degraded) = match shared {
-        SharedTopology::Healthy {
-            ordered_pane_indexes,
-        } => (ordered_pane_indexes, false),
-        SharedTopology::Degraded {
-            ordered_pane_indexes,
-        } => (ordered_pane_indexes, true),
+    let (ordered_panes, degraded) = match classify_snapshot(project, &snapshot) {
+        SharedTopology::Healthy { ordered_panes } => (ordered_panes, false),
+        SharedTopology::Degraded { ordered_panes } => (ordered_panes, true),
         SharedTopology::Drifted { reason } => {
             return Ok(WorkspaceTopology::Drifted { reason });
         }
     };
-    let Some(window) = snapshot.window.as_ref() else {
-        return Ok(WorkspaceTopology::Drifted {
-            reason: WorkspaceDriftReason::ManagedWindowMissing,
-        });
-    };
-    let workspace = build_inspected_workspace(project, window, ordered_pane_indexes);
+    let workspace = build_inspected_workspace(project, &ordered_panes);
     if degraded {
         Ok(WorkspaceTopology::Degraded(workspace))
     } else {
@@ -303,6 +291,7 @@ mod tests {
     use super::*;
     use crate::error::WorkspaceDriftReason;
     use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
+    use crate::tmux::WorkspaceWindowSnapshot;
 
     /// Typed snapshot for classifier unit tests (no `FakeTmux`).
     /// Mutate one field after construction when a test needs a single
@@ -362,10 +351,8 @@ mod tests {
     #[test]
     fn shared_classifier_reports_healthy_workspace() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]),
-        );
+        let snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), false)]);
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(result, SharedTopology::Healthy { .. }));
     }
@@ -373,10 +360,8 @@ mod tests {
     #[test]
     fn shared_classifier_reports_degraded_workspace() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot(&project, &[(Some("alpha"), false), (Some("beta"), true)]),
-        );
+        let snap = snapshot(&project, &[(Some("alpha"), false), (Some("beta"), true)]);
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(result, SharedTopology::Degraded { .. }));
     }
@@ -446,7 +431,8 @@ mod tests {
     #[test]
     fn shared_classifier_reports_pane_count_mismatch() {
         let project = test_project();
-        let result = classify_snapshot(&project, &snapshot(&project, &[(Some("alpha"), false)]));
+        let snap = snapshot(&project, &[(Some("alpha"), false)]);
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -459,10 +445,8 @@ mod tests {
     #[test]
     fn shared_classifier_reports_missing_pane_metadata() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot(&project, &[(Some("alpha"), false), (None, false)]),
-        );
+        let snap = snapshot(&project, &[(Some("alpha"), false), (None, false)]);
+        let result = classify_snapshot(&project, &snap);
 
         assert!(matches!(
             result,
@@ -475,13 +459,11 @@ mod tests {
     #[test]
     fn shared_classifier_reports_unknown_agent_id() {
         let project = test_project();
-        let result = classify_snapshot(
+        let snap = snapshot(
             &project,
-            &snapshot(
-                &project,
-                &[(Some("alpha"), false), (Some("unknown"), false)],
-            ),
+            &[(Some("alpha"), false), (Some("unknown"), false)],
         );
+        let result = classify_snapshot(&project, &snap);
 
         assert!(
             matches!(
@@ -497,10 +479,8 @@ mod tests {
     #[test]
     fn shared_classifier_reports_duplicate_agent_id() {
         let project = test_project();
-        let result = classify_snapshot(
-            &project,
-            &snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]),
-        );
+        let snap = snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]);
+        let result = classify_snapshot(&project, &snap);
 
         assert!(
             matches!(
@@ -516,13 +496,35 @@ mod tests {
     #[test]
     fn shared_classifier_reports_missing_managed_pane() {
         let project = test_project();
+        let snap = snapshot(&project, &[(Some("alpha"), false)]);
+        let Some(window) = &snap.window else {
+            panic!("snapshot helper must produce a window")
+        };
         let pane_indexes_by_agent = BTreeMap::from([("alpha", 0usize)]);
 
-        let result = order_managed_pane_indexes(&project, &pane_indexes_by_agent);
+        let result = order_managed_panes(&project, &window.panes, &pane_indexes_by_agent);
 
         assert!(matches!(
             result,
             Err(WorkspaceDriftReason::MissingManagedPane(_))
         ));
+    }
+
+    #[test]
+    fn shared_classifier_orders_panes_by_configured_agent_order() {
+        // Panes listed in reverse of the configured [alpha, beta] order must
+        // come back agent-ordered, not snapshot-ordered.
+        let project = test_project();
+        let snap = snapshot(&project, &[(Some("beta"), false), (Some("alpha"), false)]);
+
+        let SharedTopology::Healthy { ordered_panes } = classify_snapshot(&project, &snap) else {
+            panic!("reversed pane listing must still classify healthy")
+        };
+
+        let agent_ids = ordered_panes
+            .iter()
+            .map(|pane| pane.agent_id.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(agent_ids, [Some("alpha"), Some("beta")]);
     }
 }

@@ -68,11 +68,15 @@ fn write_list_text(out: &mut dyn Write, summaries: &[ProjectSummary]) -> io::Res
 /// One text row of `list`: id/profile, name, state, agent count, root.
 ///
 /// Config failures append path + error on following indented lines so text
-/// mode stays consistent with the JSON `path` / `error` fields.
+/// mode stays consistent with the JSON `path` / `error` fields. Missing
+/// identity renders as `<unknown>` / `-` here only; JSON omits the fields.
 fn list_line(row: &ProjectSummary) -> String {
     let primary = format!(
         "{:<24} {:<20} {:<12} {:>2} agents  {}",
-        display_id(&row.id, &row.profile_id),
+        display_id(
+            row.id.as_deref().unwrap_or("<unknown>"),
+            row.profile_id.as_deref().unwrap_or("-"),
+        ),
         if row.name.is_empty() { "-" } else { &row.name },
         row.state,
         row.agent_count,
@@ -312,8 +316,8 @@ mod tests {
     #[test]
     fn list_line_includes_project_name() {
         let line = list_line(&ProjectSummary {
-            id: "my-app".to_string(),
-            profile_id: "default".to_string(),
+            id: Some("my-app".to_string()),
+            profile_id: Some("default".to_string()),
             name: "My App".to_string(),
             root: "/tmp/demo".to_string(),
             state: ProjectState::Running,
@@ -331,8 +335,8 @@ mod tests {
     #[test]
     fn list_line_surfaces_config_error_details() {
         let line = list_line(&ProjectSummary {
-            id: "broken".to_string(),
-            profile_id: "default".to_string(),
+            id: None,
+            profile_id: None,
             name: String::new(),
             root: String::new(),
             state: ProjectState::ConfigError,
@@ -341,6 +345,7 @@ mod tests {
             error: Some("unknown field `nope`".to_string()),
         });
 
+        assert!(line.contains("<unknown>/-"), "got: {line}");
         assert!(line.contains("config_error"), "got: {line}");
         assert!(
             line.contains("path:  /cfg/projects/broken.toml"),

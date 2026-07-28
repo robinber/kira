@@ -53,8 +53,8 @@ pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
             }
         };
         summaries.push(ProjectSummary {
-            id: project.id,
-            profile_id: project.profile_id,
+            id: Some(project.id),
+            profile_id: Some(project.profile_id),
             name: project.name,
             root: project.root.display().to_string(),
             state,
@@ -68,8 +68,8 @@ pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
         summaries.push(summary_from_config_failure(failure));
     }
 
-    // Stable order: valid projects first (file sort order from loader), then
-    // failures by path / id so JSON diffs stay readable.
+    // One global lexicographic order (id, profile, source path) so output is
+    // stable across runs; unidentifiable failures (`id: None`) sort first.
     summaries.sort_by(|a, b| {
         a.id.cmp(&b.id)
             .then_with(|| a.profile_id.cmp(&b.profile_id))
@@ -81,10 +81,8 @@ pub(crate) fn load_project_summaries() -> Result<Vec<ProjectSummary>> {
 
 fn summary_from_config_failure(failure: crate::config::ProjectConfigFailure) -> ProjectSummary {
     ProjectSummary {
-        id: failure
-            .project_id
-            .unwrap_or_else(|| "<unknown>".to_string()),
-        profile_id: failure.profile_id.unwrap_or_else(|| "-".to_string()),
+        id: failure.project_id,
+        profile_id: failure.profile_id,
         name: String::new(),
         root: String::new(),
         state: ProjectState::ConfigError,
@@ -137,6 +135,23 @@ mod tests {
         FakeTmux, TestResultExt, setup_healthy_session, setup_session_with_dead_panes, test_project,
     };
     use crate::tmux::TmuxError;
+
+    #[test]
+    fn unidentifiable_failure_summary_omits_id_fields_in_json() {
+        let summary = summary_from_config_failure(crate::config::ProjectConfigFailure {
+            path: std::path::PathBuf::from("/cfg/projects/broken.toml"),
+            project_id: None,
+            profile_id: None,
+            error: "unreadable".to_string(),
+        });
+
+        let json = serde_json::to_value(&summary).or_panic("summary must serialize");
+        assert!(
+            json.get("id").is_none() && json.get("profile_id").is_none(),
+            "missing identity must be omitted, not a sentinel, got: {json}"
+        );
+        assert_eq!(json["state"], "config_error");
+    }
 
     #[test]
     fn summarize_absent_session_is_stopped() {
