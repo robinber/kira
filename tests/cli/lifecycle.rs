@@ -311,6 +311,10 @@ command = "echo"
         garbage.is_some(),
         "malformed TOML must surface as config_error, got: {value}"
     );
+    assert!(
+        garbage.is_some_and(|row| row["id"] == "garbage" && row.get("profile_id").is_none()),
+        "whole-file failure must keep the filename id and omit profile_id, got: {value}"
+    );
 
     // stderr carries the aggregate message; details stay on stdout JSON.
     assert!(

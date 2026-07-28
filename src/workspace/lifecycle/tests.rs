@@ -307,7 +307,8 @@ fn kill_removes_session() {
     let project = test_project();
     setup_healthy_session(&fake, &project);
 
-    kill(&fake, &project).or_panic("kill_removes_session");
+    let outcome = kill(&fake, &project, |_| Ok(())).or_panic("kill_removes_session");
+    assert_eq!(outcome, KillOutcome::Killed);
     assert!(
         !fake
             .session_exists(&session_name(&project))
@@ -316,11 +317,35 @@ fn kill_removes_session() {
 }
 
 #[test]
-fn kill_absent_session_succeeds() {
+fn kill_absent_session_reports_already_stopped_without_confirm() {
     let fake = FakeTmux::new();
     let project = test_project();
 
-    kill(&fake, &project).or_panic("kill_absent_session_succeeds");
+    let outcome = kill(&fake, &project, |_| {
+        panic!("confirm must not run for an absent session")
+    })
+    .or_panic("kill_absent_session_reports_already_stopped_without_confirm");
+
+    assert_eq!(outcome, KillOutcome::AlreadyStopped);
+}
+
+#[test]
+fn kill_declined_confirm_leaves_session_alive() {
+    let fake = FakeTmux::new();
+    let project = test_project();
+    setup_healthy_session(&fake, &project);
+
+    let error = kill(&fake, &project, |_| Err(KiraMuxError::KillAborted.into()))
+        .err_or_panic("kill_declined_confirm_leaves_session_alive: expected Err");
+
+    assert!(matches!(
+        error.downcast_ref::<KiraMuxError>(),
+        Some(KiraMuxError::KillAborted)
+    ));
+    assert!(
+        fake.session_exists(&session_name(&project))
+            .or_panic("kill_declined_confirm_leaves_session_alive")
+    );
 }
 
 #[test]
@@ -330,8 +355,10 @@ fn kill_refuses_untagged_session_name_collision() {
     let session = session_name(&project);
     fake.add_session(&session);
 
-    let error = kill(&fake, &project)
-        .err_or_panic("kill_refuses_untagged_session_name_collision: expected Err");
+    let error = kill(&fake, &project, |_| {
+        panic!("confirm must not run before ownership is proven")
+    })
+    .err_or_panic("kill_refuses_untagged_session_name_collision: expected Err");
 
     assert!(matches!(
         error.downcast_ref::<KiraMuxError>(),
@@ -373,7 +400,7 @@ fn kill_allows_owned_session_with_fingerprint_drift() {
     setup_healthy_session(&fake, &project);
     fake.set_session_opt(&session, SESSION_CONFIG_FINGERPRINT, "stale");
 
-    kill(&fake, &project).or_panic("kill_allows_owned_session_with_fingerprint_drift");
+    kill(&fake, &project, |_| Ok(())).or_panic("kill_allows_owned_session_with_fingerprint_drift");
 
     assert!(
         !fake
@@ -432,7 +459,7 @@ fn kill_succeeds_when_session_vanishes_during_kill() {
     setup_healthy_session(&fake, &project);
     fake.set_vanish_before_kill(true);
 
-    kill(&fake, &project).or_panic("kill_succeeds_when_session_vanishes_during_kill");
+    kill(&fake, &project, |_| Ok(())).or_panic("kill_succeeds_when_session_vanishes_during_kill");
     assert!(
         !fake
             .session_exists(&session_name(&project))
