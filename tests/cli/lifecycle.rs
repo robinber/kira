@@ -83,9 +83,7 @@ fn kill_refuses_an_untagged_same_name_session() {
     assert_success(&bed.kira(&["start", "it"]), "start");
     bed.wait_for_state("running");
 
-    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    assert_success(&sessions, "list managed session");
-    let managed_name = stdout_of(&sessions).trim().to_string();
+    let managed_name = managed_session_name(&bed);
     assert!(
         !managed_name.is_empty(),
         "managed session name must be present"
