@@ -12,17 +12,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, bail};
 
 use super::adapter::{
-    PaneInfo, TmuxAdapter, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
-    WorkspaceWindowSnapshot,
+    PaneInfo, TmuxAdapter, WindowGeometry, WorkspaceSnapshot, WorkspaceWindowSnapshot,
 };
 use super::env_file::{ShellEnvFile, respawn_pane_args};
 use super::error::TmuxError;
-use super::metadata::{
-    PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
-};
+use super::metadata::{SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID};
 use super::parse::{
-    command_error, is_missing_session_message, is_missing_target_message, is_no_server_message,
-    map_spawn_error, normalize_args, normalize_capture, parse_pane_line, stdout_lines,
+    FIELD_DELIMITER, command_error, is_missing_session_message, is_missing_target_message,
+    is_no_server_message, line_format, map_spawn_error, non_empty, normalize_args,
+    normalize_capture, pane_line_format, parse_pane_line, parse_workspace_pane_line, stdout_lines,
+    workspace_pane_line_format,
 };
 
 const TEST_SOCKET_ENV: &str = "KIRA_MUX_TMUX_SOCKET_NAME";
@@ -81,9 +80,11 @@ impl TmuxAdapter for TmuxClient {
             return Ok(None);
         }
 
-        let display_fmt = format!(
-            "#{{{SESSION_CONFIG_FINGERPRINT}}}\t#{{{SESSION_PROJECT_ID}}}\t#{{{SESSION_PROFILE_ID}}}",
-        );
+        let display_fmt = line_format(&[
+            &format!("#{{{SESSION_CONFIG_FINGERPRINT}}}"),
+            &format!("#{{{SESSION_PROJECT_ID}}}"),
+            &format!("#{{{SESSION_PROFILE_ID}}}"),
+        ]);
         let display_output =
             self.output(["display-message", "-p", "-t", session_name, &display_fmt])?;
         if !display_output.status.success() {
@@ -92,9 +93,7 @@ impl TmuxAdapter for TmuxClient {
         let metadata = parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
 
         let window_target = super::window_target(session_name, window_name);
-        let pane_fmt = format!(
-            "#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{alternate_on}}\t#{{pane_height}}\t#{{{PANE_AGENT_ID}}}\t#{{{WINDOW_ROLE}}}",
-        );
+        let pane_fmt = workspace_pane_line_format();
         let pane_output = self.output(["list-panes", "-t", &window_target, "-F", &pane_fmt])?;
         let window = if pane_output.status.success() {
             let parsed = stdout_lines(&pane_output)
@@ -151,13 +150,8 @@ impl TmuxAdapter for TmuxClient {
 
     /// List panes for the target session or window.
     fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>> {
-        let output = self.output([
-            "list-panes",
-            "-F",
-            "#{pane_id}|#{pane_dead}|#{pane_dead_status}|#{alternate_on}|#{pane_height}",
-            "-t",
-            target,
-        ])?;
+        let pane_fmt = pane_line_format();
+        let output = self.output(["list-panes", "-F", &pane_fmt, "-t", target])?;
         if !output.status.success() {
             // Same classifier as run_on_target / read_option: no-server and
             // missing session must stay typed so wait can map them to exit 6.
@@ -359,19 +353,22 @@ impl TmuxAdapter for TmuxClient {
     /// the window-local `window-size` value.
     fn window_geometry(&self, pane_id: &str) -> Result<WindowGeometry> {
         // socket_path is the one field that may contain arbitrary characters
-        // (including `|`): keep it LAST so splitn leaves it intact.
-        let output = self.output([
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{window_id}|#{window_width}|#{window_height}|#{window_zoomed_flag}|#{pane_active}|#{socket_path}",
-        ])?;
+        // (including the delimiter): keep it LAST so splitn leaves it intact.
+        const WINDOW_GEOMETRY_FIELDS: [&str; 6] = [
+            "#{window_id}",
+            "#{window_width}",
+            "#{window_height}",
+            "#{window_zoomed_flag}",
+            "#{pane_active}",
+            "#{socket_path}",
+        ];
+        let geometry_fmt = line_format(&WINDOW_GEOMETRY_FIELDS);
+        let output = self.output(["display-message", "-p", "-t", pane_id, &geometry_fmt])?;
         if !output.status.success() {
             return Err(failed_tmux_status(pane_id, &output));
         }
         let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut parts = line.splitn(6, '|');
+        let mut parts = line.splitn(WINDOW_GEOMETRY_FIELDS.len(), FIELD_DELIMITER);
         let window_id = parts.next().context("missing window_id")?.to_string();
         let width: usize = parts
             .next()
@@ -681,54 +678,11 @@ fn escape_trailing_semicolon(text: &str) -> Cow<'_, str> {
 
 fn parse_display_message_line(raw: &str) -> DisplayedSessionMetadata {
     let line = raw.trim();
-    let mut parts = line.splitn(3, '\t');
+    let mut parts = line.splitn(3, FIELD_DELIMITER);
     DisplayedSessionMetadata {
         fingerprint: parts.next().and_then(non_empty),
         project_id: parts.next().and_then(non_empty),
         profile_id: parts.next().and_then(non_empty),
-    }
-}
-
-fn parse_workspace_pane_line(line: &str) -> Result<(WorkspacePaneSnapshot, Option<String>)> {
-    let mut parts = line.splitn(7, '\t');
-    let pane_id = parts.next().context("missing pane_id")?.to_string();
-    let pane_dead = parts.next().context("missing pane_dead")? == "1";
-    let pane_dead_status = parts.next().and_then(|value| {
-        if value.is_empty() {
-            None
-        } else {
-            value.parse().ok()
-        }
-    });
-    let alternate_on = parts.next().is_some_and(|value| value == "1");
-    let pane_height = parts
-        .next()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
-    let agent_id = parts.next().and_then(non_empty);
-    let window_role = parts.next().and_then(non_empty);
-
-    Ok((
-        WorkspacePaneSnapshot {
-            pane: PaneInfo {
-                pane_id,
-                pane_dead,
-                pane_dead_status,
-                alternate_on,
-                pane_height,
-            },
-            agent_id,
-        },
-        window_role,
-    ))
-}
-
-fn non_empty(s: &str) -> Option<String> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
     }
 }
 

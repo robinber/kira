@@ -61,39 +61,23 @@ pub(super) fn resolve_agent_cwd(
         });
     }
 
-    let expanded = expand_path(value, Some(project_root))?;
-    let resolved = normalize_path(&expanded);
+    let resolved = normalize_path(&expand_path(value, Some(project_root))?);
 
-    let is_absolute_or_home =
-        PathBuf::from(value).is_absolute() || value.starts_with("~/") || value == "~";
-
-    if !is_absolute_or_home && !resolved.starts_with(project_root) {
-        return Err(ConfigError::AgentCwdEscapesRoot {
-            agent_id: agent_id.to_string(),
-            path: resolved,
-        });
+    // Absolute and home-anchored cwds are trusted as configured; only
+    // root-relative values carry the containment contract.
+    if !is_absolute_or_home(value) {
+        ensure_cwd_inside_root(agent_id, &resolved, project_root)?;
     }
 
-    if !is_absolute_or_home
-        && resolved
-            .symlink_metadata()
-            .is_ok_and(|m| m.file_type().is_symlink())
-        && let Some(path) = check_symlink_escape(&resolved, project_root)
-    {
-        return Err(ConfigError::AgentCwdEscapesRoot {
-            agent_id: agent_id.to_string(),
-            path,
-        });
-    }
-
-    if !resolved.exists() && resolution_mode == ResolutionMode::Deferred {
-        return Ok(resolved);
-    }
     if !resolved.exists() {
-        return Err(ConfigError::AgentCwdNotFound {
-            agent_id: agent_id.to_string(),
-            path: resolved,
-        });
+        return if resolution_mode == ResolutionMode::Deferred {
+            Ok(resolved)
+        } else {
+            Err(ConfigError::AgentCwdNotFound {
+                agent_id: agent_id.to_string(),
+                path: resolved,
+            })
+        };
     }
     if !resolved.is_dir() {
         return Err(ConfigError::AgentCwdNotDirectory {
@@ -102,7 +86,47 @@ pub(super) fn resolve_agent_cwd(
         });
     }
 
-    if !is_absolute_or_home {
+    Ok(resolved)
+}
+
+fn is_absolute_or_home(value: &str) -> bool {
+    Path::new(value).is_absolute() || value.starts_with("~/") || value == "~"
+}
+
+/// Reject a root-relative agent cwd that escapes the project root.
+///
+/// Decision order — each mechanism catches escapes the previous cannot:
+/// 1. Lexical: the normalized path must sit under the configured
+///    (non-canonical) root. Catches plain `..` escapes with no disk access, so
+///    it also protects paths that do not exist yet.
+/// 2. Symlink probe: when the path itself is a symlink, its target — canonical,
+///    or `read_link` fallback for broken links — must stay under the canonical
+///    root. Catches links pointing outside, even dangling ones.
+/// 3. Canonical containment: when the path exists, its canonical form must stay
+///    under the canonical root. Catches escapes through symlinked intermediate
+///    directories that 1 and 2 cannot see. Skipped for paths absent from disk:
+///    deferred resolution tolerates them, and runtime resolution rejects them
+///    as `AgentCwdNotFound` right after this check.
+fn ensure_cwd_inside_root(agent_id: &str, resolved: &Path, project_root: &Path) -> Result<()> {
+    if !resolved.starts_with(project_root) {
+        return Err(ConfigError::AgentCwdEscapesRoot {
+            agent_id: agent_id.to_string(),
+            path: resolved.to_path_buf(),
+        });
+    }
+
+    if resolved
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+        && let Some(path) = check_symlink_escape(resolved, project_root)
+    {
+        return Err(ConfigError::AgentCwdEscapesRoot {
+            agent_id: agent_id.to_string(),
+            path,
+        });
+    }
+
+    if resolved.exists() {
         let canonical_root =
             project_root
                 .canonicalize()
@@ -113,7 +137,7 @@ pub(super) fn resolve_agent_cwd(
         let canonical = resolved
             .canonicalize()
             .map_err(|source| ConfigError::PathResolution {
-                path: resolved.clone(),
+                path: resolved.to_path_buf(),
                 source,
             })?;
         if !canonical.starts_with(&canonical_root) {
@@ -124,7 +148,7 @@ pub(super) fn resolve_agent_cwd(
         }
     }
 
-    Ok(resolved)
+    Ok(())
 }
 pub(super) fn expand_path(value: &str, project_root: Option<&Path>) -> Result<PathBuf> {
     if let Some(rest) = value.strip_prefix("~/") {
@@ -292,6 +316,19 @@ mod tests {
         assert!(matches!(error, ConfigError::ProjectRootNotFound(path) if path == missing_root));
     }
 
+    #[test]
+    fn agent_cwd_lexical_escape_is_rejected_without_disk_access() {
+        // Mechanism 1: `..` escapes must fail even in deferred mode where
+        // nothing exists on disk yet.
+        let base = tempfile::tempdir().or_panic("agent_cwd_lexical_escape");
+        let root = base.path().join("missing-root");
+
+        let error = resolve_agent_cwd("alpha", Some("../outside"), &root, ResolutionMode::Deferred)
+            .err_or_panic("agent_cwd_lexical_escape: expected Err");
+
+        assert!(matches!(error, ConfigError::AgentCwdEscapesRoot { .. }));
+    }
+
     #[cfg(unix)]
     mod symlink_escape_tests {
         use std::os::unix::fs::symlink;
@@ -375,6 +412,51 @@ mod tests {
                 .canonicalize()
                 .or_panic("check_symlink_escape_returns_none_when_canonical_inside_root");
             assert!(check_symlink_escape(&link, &project_root).is_none());
+        }
+
+        #[test]
+        fn agent_cwd_broken_symlink_escape_is_rejected_before_existence_checks() {
+            // Mechanism 2: a dangling link (`exists()` false) must be caught
+            // as an escape, not tolerated by deferred missing-path handling.
+            let temp = setup_project_root_with_subdir();
+            symlink(
+                "/nonexistent/escape/target",
+                temp.path().join("broken_link"),
+            )
+            .or_panic("agent_cwd_broken_symlink_escape");
+
+            let error = resolve_agent_cwd(
+                "alpha",
+                Some("broken_link"),
+                temp.path(),
+                ResolutionMode::Deferred,
+            )
+            .err_or_panic("agent_cwd_broken_symlink_escape: expected Err");
+
+            assert!(matches!(error, ConfigError::AgentCwdEscapesRoot { .. }));
+        }
+
+        #[test]
+        fn agent_cwd_intermediate_symlink_escape_is_rejected() {
+            // Mechanism 3: the cwd itself is a plain directory, but an
+            // intermediate component is a link out of the root — only
+            // canonical containment can see it.
+            let temp = setup_project_root_with_subdir();
+            let outside = tempfile::tempdir().or_panic("agent_cwd_intermediate_symlink_escape");
+            std::fs::create_dir(outside.path().join("sub"))
+                .or_panic("agent_cwd_intermediate_symlink_escape");
+            symlink(outside.path(), temp.path().join("link"))
+                .or_panic("agent_cwd_intermediate_symlink_escape");
+
+            let error = resolve_agent_cwd(
+                "alpha",
+                Some("link/sub"),
+                temp.path(),
+                ResolutionMode::Runtime,
+            )
+            .err_or_panic("agent_cwd_intermediate_symlink_escape: expected Err");
+
+            assert!(matches!(error, ConfigError::AgentCwdEscapesRoot { .. }));
         }
 
         #[test]

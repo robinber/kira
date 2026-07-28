@@ -85,16 +85,24 @@ fn workspace_snapshot_uses_three_commands_independent_of_pane_count() {
             .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count")
             .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count");
 
+        let panes = snapshot
+            .window
+            .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count")
+            .panes;
         assert_eq!(
-            snapshot
-                .window
-                .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count")
-                .panes
-                .len(),
+            panes.len(),
             pane_count,
             "unexpected pane count for script under {}",
             temp.path().display()
         );
+        // Agent ids must land in the agent column — a scripted line with a
+        // field-count skew would silently shift them into the depth fields.
+        for (index, pane) in panes.iter().enumerate() {
+            assert_eq!(
+                pane.agent_id.as_deref(),
+                Some(format!("agent-{index}").as_str())
+            );
+        }
         let calls = fs::read_to_string(&log_path)
             .or_panic("workspace_snapshot_uses_three_commands_independent_of_pane_count");
         assert_eq!(
@@ -373,7 +381,9 @@ fn scripted_tmux_command_failure(
 fn scripted_tmux(pane_count: usize) -> (tempfile::TempDir, TmuxClient, PathBuf) {
     let pane_lines = (0..pane_count)
         .map(|index| {
-            format!("printf '%s\\t%s\\t\\t%s\\t%s\\n' '%{index}' '0' 'agent-{index}' 'agents'")
+            format!(
+                "printf '%s\\t%s\\t\\t%s\\t%s\\t%s\\t%s\\n' '%{index}' '0' '0' '24' 'agent-{index}' 'agents'"
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
