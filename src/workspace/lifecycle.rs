@@ -10,11 +10,11 @@ use crate::config::ConfigError;
 use crate::error::KiraMuxError;
 use crate::inspector::{self, ManagedPane, WorkspaceTopology};
 use crate::model::{ResolvedAgent, ResolvedProject};
-use crate::tmux::TmuxAdapter;
 use crate::tmux::metadata::{
     PANE_AGENT_ID, SESSION_CONFIG_FINGERPRINT, SESSION_PROFILE_ID, SESSION_PROJECT_ID, WINDOW_ROLE,
     WINDOW_ROLE_AGENTS,
 };
+use crate::tmux::{TmuxAdapter, TmuxError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
@@ -129,8 +129,19 @@ pub(crate) fn kill(
 
     inspector::ensure_session_owned(tmux, project)?;
     confirm(&project.id)?;
+    // The prompt can wait on a human for arbitrarily long, so ownership must
+    // be proven again: a session replaced during the wait is never killed. A
+    // session that vanished during the wait already reached the goal.
+    if let Err(error) = inspector::ensure_session_owned(tmux, project) {
+        return match error.downcast_ref::<TmuxError>() {
+            Some(TmuxError::MissingSession(_) | TmuxError::NoServer(_)) => {
+                Ok(KillOutcome::AlreadyStopped)
+            }
+            _ => Err(error),
+        };
+    }
     if let Err(error) = tmux.kill_session(&session) {
-        // The session may have died between the existence check and the
+        // The session may have died between the ownership check and the
         // kill; the goal is reached either way.
         if tmux.session_exists(&session)? {
             return Err(error);

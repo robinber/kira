@@ -349,6 +349,71 @@ fn kill_declined_confirm_leaves_session_alive() {
 }
 
 #[test]
+fn kill_revalidates_ownership_after_confirm() {
+    // The confirm prompt waits on a human; a session replaced during that
+    // wait must never be killed on the strength of the pre-prompt check.
+    let fake = FakeTmux::new();
+    let project = test_project();
+    let session = session_name(&project);
+    setup_healthy_session(&fake, &project);
+
+    let error = kill(&fake, &project, |_| {
+        fake.kill_session(&session)
+            .or_panic("kill_revalidates_ownership_after_confirm: replace");
+        fake.add_session(&session);
+        Ok(())
+    })
+    .err_or_panic("kill_revalidates_ownership_after_confirm: expected Err");
+
+    assert!(matches!(
+        error.downcast_ref::<KiraMuxError>(),
+        Some(KiraMuxError::Drifted {
+            reason: WorkspaceDriftReason::ProjectMetadataMismatch,
+            ..
+        })
+    ));
+    assert!(
+        fake.session_exists(&session)
+            .or_panic("kill_revalidates_ownership_after_confirm"),
+        "the replacement session must survive"
+    );
+}
+
+#[test]
+fn kill_session_vanishing_during_confirm_reports_already_stopped() {
+    let fake = FakeTmux::new();
+    let project = test_project();
+    let session = session_name(&project);
+    setup_healthy_session(&fake, &project);
+
+    let outcome = kill(&fake, &project, |_| {
+        fake.kill_session(&session)
+            .or_panic("kill_session_vanishing_during_confirm: vanish");
+        Ok(())
+    })
+    .or_panic("kill_session_vanishing_during_confirm_reports_already_stopped");
+
+    assert_eq!(outcome, KillOutcome::AlreadyStopped);
+}
+
+#[test]
+fn kill_hard_failure_with_live_session_propagates() {
+    let fake = FakeTmux::new();
+    let project = test_project();
+    setup_healthy_session(&fake, &project);
+    fake.set_fail_kill(true);
+
+    kill(&fake, &project, |_| Ok(()))
+        .err_or_panic("kill_hard_failure_with_live_session_propagates: expected Err");
+
+    assert!(
+        fake.session_exists(&session_name(&project))
+            .or_panic("kill_hard_failure_with_live_session_propagates"),
+        "a hard kill failure must not report success while the session lives"
+    );
+}
+
+#[test]
 fn kill_refuses_untagged_session_name_collision() {
     let fake = FakeTmux::new();
     let project = test_project();
@@ -459,7 +524,9 @@ fn kill_succeeds_when_session_vanishes_during_kill() {
     setup_healthy_session(&fake, &project);
     fake.set_vanish_before_kill(true);
 
-    kill(&fake, &project, |_| Ok(())).or_panic("kill_succeeds_when_session_vanishes_during_kill");
+    let outcome = kill(&fake, &project, |_| Ok(()))
+        .or_panic("kill_succeeds_when_session_vanishes_during_kill");
+    assert_eq!(outcome, KillOutcome::Killed);
     assert!(
         !fake
             .session_exists(&session_name(&project))

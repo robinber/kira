@@ -225,6 +225,9 @@ impl TmuxAdapter for FakeTmux {
         if self.no_server.load(Ordering::Relaxed) {
             return Err(TmuxError::NoServer("no server running on fake socket".into()).into());
         }
+        if self.fail_kill.swap(false, Ordering::Relaxed) {
+            return Err(TmuxError::CommandFailure("fake kill failure".into()).into());
+        }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
         if self.vanish_before_kill.swap(false, Ordering::Relaxed) {
             sessions.remove(name);

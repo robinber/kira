@@ -52,6 +52,9 @@ pub(crate) struct FakeTmux {
     /// Next `kill_session` removes the session (if present) and returns
     /// `MissingSession`, simulating a vanish between existence check and kill.
     vanish_before_kill: AtomicBool,
+    /// One-shot: next `kill_session` fails with a generic `CommandFailure`
+    /// while the session remains present (hard kill error, not a vanish).
+    fail_kill: AtomicBool,
     no_server: AtomicBool,
     /// When set, `capture_pane` fails with a generic `CommandFailure` while
     /// the pane stays live — a transient capture failure, unlike the typed
@@ -236,6 +239,7 @@ impl FakeTmux {
             fail_attach: AtomicBool::new(false),
             vanish_before_attach: AtomicBool::new(false),
             vanish_before_kill: AtomicBool::new(false),
+            fail_kill: AtomicBool::new(false),
             no_server: AtomicBool::new(false),
             fail_capture: AtomicBool::new(false),
             delivery_response: Mutex::new(None),
@@ -461,6 +465,11 @@ impl FakeTmux {
     /// Next kill drops the session and returns `MissingSession` (kill race).
     pub(crate) fn set_vanish_before_kill(&self, vanish: bool) {
         self.vanish_before_kill.store(vanish, Ordering::Relaxed);
+    }
+
+    /// One-shot: next kill fails while the session still exists.
+    pub(crate) fn set_fail_kill(&self, fail: bool) {
+        self.fail_kill.store(fail, Ordering::Relaxed);
     }
 
     pub(crate) fn ops(&self) -> Vec<FakeOp> {
