@@ -103,24 +103,31 @@ impl TestBed {
         run(&mut command)
     }
 
+    /// The sandbox every process in this bed runs under: config home and
+    /// HOME inside the tempdir, a plain shell, the tmux socket confined to
+    /// the tempdir (no state outlives the test), and any surrounding tmux
+    /// session hidden. One place — the kira, raw-tmux, and Drop cleanup
+    /// paths must never drift apart.
+    fn apply_sandbox_env(&self, command: &mut Command) {
+        command
+            .env("XDG_CONFIG_HOME", self.config_home.path())
+            .env("HOME", self.config_home.path())
+            .env("SHELL", "/bin/sh")
+            .env("TMUX_TMPDIR", self.config_home.path())
+            .env_remove("TMUX");
+    }
+
     /// Base `kira-mux` command wired to this bed's isolated tmux server.
     pub(crate) fn kira_command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_kira-mux"));
         command
             .args(args)
-            .env("XDG_CONFIG_HOME", self.config_home.path())
             .env("KIRA_MUX_TMUX_SOCKET_NAME", &self.socket)
             // Second-scale wait windows so `send --wait` scenarios (incl.
             // the exit-7 hard timeout) run inside test deadlines. Scripted
             // agents must emit within the fast profile's quiet windows.
-            .env("KIRA_MUX_WAIT_PROFILE", "fast")
-            .env("HOME", self.config_home.path())
-            .env("SHELL", "/bin/sh")
-            // Keep the server's socket inside the bed's tempdir so no tmux
-            // state outlives the test, and a surrounding tmux session (a
-            // developer running the suite inside tmux) is never visible.
-            .env("TMUX_TMPDIR", self.config_home.path())
-            .env_remove("TMUX");
+            .env("KIRA_MUX_WAIT_PROFILE", "fast");
+        self.apply_sandbox_env(&mut command);
         command
     }
 
@@ -161,15 +168,8 @@ impl TestBed {
     /// server state the CLI does not expose.
     pub(crate) fn tmux(&self, args: &[&str]) -> Output {
         let mut command = Command::new("tmux");
-        command
-            .arg("-L")
-            .arg(&self.socket)
-            .args(args)
-            .env("XDG_CONFIG_HOME", self.config_home.path())
-            .env("HOME", self.config_home.path())
-            .env("SHELL", "/bin/sh")
-            .env("TMUX_TMPDIR", self.config_home.path())
-            .env_remove("TMUX");
+        command.arg("-L").arg(&self.socket).args(args);
+        self.apply_sandbox_env(&mut command);
         run(&mut command)
     }
 
@@ -199,14 +199,10 @@ impl TestBed {
 
 impl Drop for TestBed {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .env("XDG_CONFIG_HOME", self.config_home.path())
-            .env("HOME", self.config_home.path())
-            .env("SHELL", "/bin/sh")
-            .env("TMUX_TMPDIR", self.config_home.path())
-            .env_remove("TMUX")
-            .output();
+        let mut command = Command::new("tmux");
+        command.args(["-L", &self.socket, "kill-server"]);
+        self.apply_sandbox_env(&mut command);
+        let _ = command.output();
     }
 }
 
@@ -284,6 +280,20 @@ pub(crate) fn make_executable(path: &std::path::Path) {
     if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
         panic!("failed to chmod {}: {error}", path.display());
     }
+}
+
+/// Write the standard delayed-reply wait agent: echoes each prompt line as
+/// an answer chunk, then a final line carrying `sentinel`.
+pub(crate) fn write_wait_agent(bed: &TestBed, sentinel: &str) -> PathBuf {
+    let script = bed.project_root.path().join("wait-agent");
+    write_file(
+        &script,
+        &format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 1\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: {sentinel}\\n'\ndone\n"
+        ),
+    );
+    make_executable(&script);
+    script
 }
 
 /// Resolve the managed session name (it embeds a hash) via list-sessions.

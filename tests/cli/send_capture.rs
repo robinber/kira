@@ -24,12 +24,7 @@ fn send_and_capture_roundtrip_through_paste() {
 #[test]
 fn send_wait_survives_prompt_echo_before_delayed_answer() {
     let bed = TestBed::new();
-    let script = bed.project_root.path().join("wait-agent");
-    write_file(
-        &script,
-        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 1\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: WAIT_OK\\n'\ndone\n",
-    );
-    make_executable(&script);
+    let script = write_wait_agent(&bed, "WAIT_OK");
     bed.write_project(&format!(
         "[[agents]]\nid = \"alpha\"\ncommand = \"{}\"\n",
         script.display()
@@ -40,7 +35,17 @@ fn send_wait_survives_prompt_echo_before_delayed_answer() {
     let started = Instant::now();
     let waited = bed.kira_within(
         Duration::from_mins(2),
-        &["send", "it", "alpha", "race probe", "--wait"],
+        // `--lines` rides along: the sized capture window must not cut
+        // the delayed reply short either (previously its own ~15s test).
+        &[
+            "send",
+            "it",
+            "alpha",
+            "race probe",
+            "--wait",
+            "--lines",
+            "80",
+        ],
     );
 
     assert_success(&waited, "send --wait");
@@ -94,42 +99,6 @@ fn send_wait_zero_lines_is_rejected() {
     assert!(
         stderr.contains("at least 1") || stderr.contains("zero"),
         "error should reject zero lines, got: {stderr:?}"
-    );
-}
-
-#[test]
-fn send_wait_with_lines_still_captures_full_reply() {
-    let bed = TestBed::new();
-    let script = bed.project_root.path().join("wait-agent-lines");
-    write_file(
-        &script,
-        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 1\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: LINES_OK\\n'\ndone\n",
-    );
-    make_executable(&script);
-    bed.write_project(&format!(
-        "[[agents]]\nid = \"alpha\"\ncommand = \"{}\"\n",
-        script.display()
-    ));
-    assert_success(&bed.kira(&["start", "it"]), "start");
-    bed.wait_for_state("running");
-
-    let waited = bed.kira_within(
-        Duration::from_mins(2),
-        &[
-            "send",
-            "it",
-            "alpha",
-            "lines probe",
-            "--wait",
-            "--lines",
-            "80",
-        ],
-    );
-    assert_success(&waited, "send --wait --lines");
-    let output = stdout_of(&waited);
-    assert!(
-        output.contains("answer chunk: lines probe") && output.contains("answer final: LINES_OK"),
-        "wait --lines must still capture the full delayed reply, got: {output:?}"
     );
 }
 
