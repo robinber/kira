@@ -27,7 +27,7 @@ fn send_wait_survives_prompt_echo_before_delayed_answer() {
     let script = bed.project_root.path().join("wait-agent");
     write_file(
         &script,
-        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 4\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: WAIT_OK\\n'\ndone\n",
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 1\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 0.5\n  printf 'answer final: WAIT_OK\\n'\ndone\n",
     );
     make_executable(&script);
     bed.write_project(&format!(
@@ -49,10 +49,12 @@ fn send_wait_survives_prompt_echo_before_delayed_answer() {
         output.contains("answer chunk: race probe") && output.contains("answer final: WAIT_OK"),
         "wait must capture the full delayed reply, got: {output:?}"
     );
-    // The quiet timer must restart after the delayed answer: the final line
-    // prints at ~5 s and the shortest window after it is 5 s plus one poll.
+    // The quiet timer must restart after the delayed answer: under the fast
+    // wait profile the final line prints at ~1.5 s and the shortest window
+    // after durable production is 1.5 s, so an early return sits well below
+    // this bound.
     assert!(
-        started.elapsed() >= Duration::from_secs(9),
+        started.elapsed() >= Duration::from_millis(2900),
         "wait returned before the post-answer quiet window elapsed"
     );
 }
@@ -101,7 +103,7 @@ fn send_wait_with_lines_still_captures_full_reply() {
     let script = bed.project_root.path().join("wait-agent-lines");
     write_file(
         &script,
-        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 4\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 1\n  printf 'answer final: LINES_OK\\n'\ndone\n",
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  sleep 1\n  printf 'answer chunk: %s\\n' \"$line\"\n  sleep 0.5\n  printf 'answer final: LINES_OK\\n'\ndone\n",
     );
     make_executable(&script);
     bed.write_project(&format!(

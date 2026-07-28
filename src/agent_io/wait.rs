@@ -84,7 +84,38 @@ impl Default for WaitOptions {
     }
 }
 
+/// Env var selecting a wait profile — a test seam like
+/// `KIRA_MUX_TMUX_SOCKET_NAME`. `fast` shrinks every window so the
+/// exit-code contract (including the hard timeout → exit 7) is
+/// exercisable end-to-end without production waits.
+const WAIT_PROFILE_ENV: &str = "KIRA_MUX_WAIT_PROFILE";
+
 impl WaitOptions {
+    /// Production tuning, unless `KIRA_MUX_WAIT_PROFILE=fast` selects the
+    /// integration-test profile.
+    pub(crate) fn from_env() -> Self {
+        match std::env::var(WAIT_PROFILE_ENV) {
+            Ok(profile) if profile == "fast" => Self::fast_profile(),
+            _ => Self::default(),
+        }
+    }
+
+    /// Second-scale windows preserving the production ratios: agents
+    /// scripted by the integration suite emit within these windows, and
+    /// the hard timeout stays reachable inside a test deadline.
+    fn fast_profile() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(50),
+            submission_stability: Duration::from_millis(150),
+            submission_timeout: Duration::from_millis(750),
+            normal_quiet_window: Duration::from_millis(1500),
+            low_confidence_quiet_window: Duration::from_millis(2000),
+            submission_only_quiet_window: Duration::from_millis(3000),
+            hard_timeout: Duration::from_secs(6),
+            clock: WaitClock::Wall,
+        }
+    }
+
     fn elapsed(&self, wall_start: Instant) -> Duration {
         match &self.clock {
             WaitClock::Wall => wall_start.elapsed(),

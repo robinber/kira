@@ -1,5 +1,7 @@
 //! Stable CLI exit-code contract against a real binary and tmux.
 
+use std::time::Duration;
+
 use crate::harness::*;
 
 // Exit-code contract
@@ -248,3 +250,40 @@ command = "/nonexistent/kira-mux-missing-agent-bin"
 }
 
 // ---------------------------------------------------------------------------
+
+#[test]
+fn send_wait_hard_timeout_exits_7_with_partial_capture_on_stderr() {
+    // The last reachable exit code without end-to-end coverage: an agent
+    // that keeps producing output faster than any quiet window never
+    // settles, so the fast profile's hard timeout fires.
+    let bed = TestBed::new();
+    let script = bed.project_root.path().join("chatty-agent");
+    write_file(
+        &script,
+        "#!/bin/sh\nIFS= read -r line\ni=0\nwhile :; do\n  i=$((i + 1))\n  printf 'still working %s\\n' \"$i\"\n  sleep 0.3\ndone\n",
+    );
+    make_executable(&script);
+    bed.write_project(&format!(
+        "[[agents]]\nid = \"alpha\"\ncommand = \"{}\"\n",
+        script.display()
+    ));
+    assert_success(&bed.kira(&["start", "it"]), "start");
+    bed.wait_for_state("running");
+
+    let waited = bed.kira_within(
+        Duration::from_secs(30),
+        &["send", "it", "alpha", "never done", "--wait"],
+    );
+
+    assert_eq!(
+        exit_code(&waited),
+        7,
+        "a wait that never converges must exit 7, stderr: {:?}",
+        stderr_of(&waited)
+    );
+    assert!(
+        stderr_of(&waited).contains("still working"),
+        "the timeout must surface the last capture on stderr, got: {:?}",
+        stderr_of(&waited)
+    );
+}
