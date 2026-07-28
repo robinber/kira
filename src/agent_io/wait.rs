@@ -109,8 +109,8 @@ impl WaitOptions {
             submission_stability: Duration::from_millis(150),
             submission_timeout: Duration::from_millis(750),
             normal_quiet_window: Duration::from_millis(1500),
-            low_confidence_quiet_window: Duration::from_millis(2000),
-            submission_only_quiet_window: Duration::from_millis(3000),
+            low_confidence_quiet_window: Duration::from_secs(2),
+            submission_only_quiet_window: Duration::from_secs(3),
             hard_timeout: Duration::from_secs(6),
             clock: WaitClock::Wall,
         }
