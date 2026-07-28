@@ -112,6 +112,9 @@ pub(crate) trait TmuxAdapter {
     ///
     /// Missing sessions return `Ok(false)`. No server and other hard failures
     /// return typed [`crate::tmux::TmuxError`] values.
+    /// Check whether a session exists. A stopped server reports
+    /// `Ok(false)` — no server means no sessions — so callers never
+    /// hand-classify `NoServer` around this method.
     fn session_exists(&self, session_name: &str) -> Result<bool>;
     /// Bulk read of session ownership plus managed window/pane metadata.
     ///

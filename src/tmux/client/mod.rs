@@ -57,12 +57,10 @@ impl TmuxAdapter for TmuxClient {
         }
 
         let message = command_error(&output);
-        if is_missing_session_message(&message) {
+        if is_missing_session_message(&message) || is_no_server_message(&message) {
+            // Contract: a stopped server means no sessions, reported as
+            // absence rather than a transport error.
             return Ok(false);
-        }
-
-        if is_no_server_message(&message) {
-            return Err(TmuxError::NoServer(message).into());
         }
 
         Err(TmuxError::CommandFailure(message).into())
@@ -78,19 +76,7 @@ impl TmuxAdapter for TmuxClient {
         session_name: &str,
         window_name: &str,
     ) -> Result<Option<WorkspaceSnapshot>> {
-        let exists = match self.session_exists(session_name) {
-            Ok(exists) => exists,
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<TmuxError>(),
-                    Some(TmuxError::NoServer(_))
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-        if !exists {
+        if !self.session_exists(session_name)? {
             return Ok(None);
         }
 
@@ -461,7 +447,12 @@ impl TmuxAdapter for TmuxClient {
     /// so pane removal (which auto-unzooms) cannot slip between the check
     /// and the toggle and turn it into a re-zoom of a surviving pane.
     fn unzoom_window(&self, target: &str) -> Result<()> {
-        let unzoom = format!("resize-pane -Z -t '{target}'");
+        // The only command-string construction in the client: the target is
+        // embedded in a shell-ish tmux command line, so escape single
+        // quotes even though every current caller passes a tmux-generated
+        // `@N` window id.
+        let quoted = target.replace('\'', "'\\''");
+        let unzoom = format!("resize-pane -Z -t '{quoted}'");
         self.run_on_target(
             target,
             [

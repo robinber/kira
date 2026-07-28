@@ -214,16 +214,7 @@ pub(crate) fn deep_capture(
     if need_zoom {
         tmux.toggle_pane_zoom(pane_id)?;
     }
-    let captured = resize_and_capture(
-        tmux,
-        pane_id,
-        &geometry,
-        &baseline,
-        target_height,
-        need_resize,
-        lines,
-        options,
-    );
+    let captured = resize_and_capture(tmux, pane_id, &geometry, &baseline, lines, options);
     // The lock stays held through the full restore attempt below.
     if let Err(error) = restore_window(tmux, pane_id, &geometry, need_zoom, need_resize) {
         tracing::warn!(
@@ -235,20 +226,18 @@ pub(crate) fn deep_capture(
     captured.map(DeepOutcome::Deepened)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal step of deep_capture; a one-off context struct would only rename the coupling"
-)]
 fn resize_and_capture(
     tmux: &dyn TmuxAdapter,
     pane_id: &str,
     geometry: &WindowGeometry,
     baseline: &str,
-    target_height: usize,
-    need_resize: bool,
     lines: usize,
     options: &DeepCaptureOptions,
 ) -> Result<String> {
+    // Same one-line derivations as the caller (which needs them for flow
+    // control and restore) — cheaper than threading two more parameters.
+    let target_height = lines.min(DEEP_CAPTURE_MAX_HEIGHT);
+    let need_resize = geometry.height < target_height;
     if need_resize {
         tmux.resize_window(&geometry.window_id, geometry.width, target_height)?;
     }

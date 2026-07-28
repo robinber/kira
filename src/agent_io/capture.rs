@@ -22,10 +22,6 @@ use crate::model::ResolvedProject;
 use crate::tmux::{PaneInfo, TmuxAdapter};
 
 #[derive(Debug, Serialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "JSON DTO: each bool is a stable field of the capture contract, not a state machine"
-)]
 pub(crate) struct PaneCapture {
     pub project_id: String,
     pub profile_id: String,
@@ -39,10 +35,11 @@ pub(crate) struct PaneCapture {
     /// Visible pane height at resolve time — the plain-capture depth ceiling
     /// when `alternate_on` is set.
     pub pane_height: usize,
-    /// Whether `output` came from a completed deep capture. Kept alongside
-    /// [`Self::deep_capture_status`] for compatibility
-    /// (`deep_capture == (deep_capture_status == "completed")`).
-    pub deep_capture: bool,
+    /// Whether `output` came from a completed deep capture. Legacy
+    /// duplicate of [`Self::deep_capture_status`] kept for script
+    /// compatibility; derived at serialization so the two can never
+    /// disagree.
+    pub deep_capture: DeepCaptureCompleted,
     /// Depth-strategy outcome; see [`DeepCaptureStatus`].
     pub deep_capture_status: DeepCaptureStatus,
     /// Whether the request exceeds what deep capture can ever deliver for
@@ -54,6 +51,24 @@ pub(crate) struct PaneCapture {
     /// Requested line limit, not the number of lines actually returned.
     pub lines: usize,
     pub output: String,
+}
+
+/// Serializes as `deep_capture_status == "completed"`: the legacy bool in
+/// the JSON contract is derived from the stored status, never stored
+/// itself.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeepCaptureCompleted(DeepCaptureStatus);
+
+impl DeepCaptureCompleted {
+    pub(crate) fn completed(self) -> bool {
+        self.0 == DeepCaptureStatus::Completed
+    }
+}
+
+impl Serialize for DeepCaptureCompleted {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(self.completed())
+    }
 }
 
 pub(crate) fn capture_output(
@@ -75,7 +90,7 @@ pub(crate) fn capture_output(
         pane_dead_status: pane.pane_dead_status,
         alternate_on: pane.alternate_on,
         pane_height: pane.pane_height,
-        deep_capture: status == DeepCaptureStatus::Completed,
+        deep_capture: DeepCaptureCompleted(status),
         deep_capture_status: status,
         // Request-based, not outcome-based: a `not_needed` on a pane already
         // spanning a ceiling-height window must not read as "fully
