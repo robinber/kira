@@ -10,7 +10,7 @@ use crate::tmux::metadata::{
 };
 use crate::tmux::{
     PaneInfo, TmuxAdapter, TmuxError, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
-    WorkspaceWindowSnapshot,
+    WorkspaceWindowSnapshot, normalize_capture,
 };
 
 impl TmuxAdapter for FakeTmux {
@@ -74,7 +74,8 @@ impl TmuxAdapter for FakeTmux {
     ) -> Result<()> {
         self.add_session(name);
         self.add_window(name, window_name);
-        self.add_pane(name, window_name, "%0", false);
+        let seed = self.alloc_pane_id();
+        self.add_pane(name, window_name, &seed, false);
         Ok(())
     }
 
@@ -108,20 +109,20 @@ impl TmuxAdapter for FakeTmux {
             return Err(TmuxError::MissingSession(target.to_string()).into());
         };
 
-        let mut panes = if let Some(window_name) = window_name {
-            let Some(window) = session.windows.get(window_name) else {
-                return Err(TmuxError::MissingTarget(target.to_string()).into());
-            };
-            window.panes.iter().map(FakePane::info).collect()
-        } else {
-            let mut all = Vec::new();
-            for window in session.windows.values() {
-                for p in &window.panes {
-                    all.push(p.info());
-                }
-            }
-            all
+        // Real `list-panes -t session` (without -s) lists only the session's
+        // current window; the production client never passes a bare session,
+        // so the fake refuses rather than modeling semantics real tmux does
+        // not have.
+        let Some(window_name) = window_name else {
+            return Err(TmuxError::CommandFailure(format!(
+                "fake list_panes requires a window or pane target, got bare session {target:?}"
+            ))
+            .into());
         };
+        let Some(window) = session.windows.get(window_name) else {
+            return Err(TmuxError::MissingTarget(target.to_string()).into());
+        };
+        let mut panes: Vec<PaneInfo> = window.panes.iter().map(FakePane::info).collect();
         if self.reverse_pane_listing_enabled() {
             panes.reverse();
         }
@@ -145,7 +146,7 @@ impl TmuxAdapter for FakeTmux {
         let Some(window) = session.windows.get_mut(window_name) else {
             return Err(TmuxError::MissingTarget(target.to_string()).into());
         };
-        let pane_id = format!("%{}", window.panes.len());
+        let pane_id = self.alloc_pane_id();
         window.panes.push(FakePane::new(&pane_id, false));
         Ok(pane_id)
     }
@@ -393,12 +394,9 @@ impl TmuxAdapter for FakeTmux {
                     } else {
                         history_limit
                     };
-                    let lines: Vec<&str> = pane.content.lines().collect();
-                    let content = if lines.len() > depth {
-                        lines[lines.len() - depth..].join("\n") + "\n"
-                    } else {
-                        pane.content.clone()
-                    };
+                    // Same normalization as the real client: trailing blank
+                    // padding stripped, exactly one trailing newline.
+                    let content = normalize_capture(&pane.content, depth);
                     if remove_now {
                         window.panes.remove(idx);
                         // Mirror tmux: removing the zoomed pane auto-unzooms

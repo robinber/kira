@@ -674,7 +674,7 @@ mod tests {
 
         assert_eq!(seed.delivered.pane_id, "%0");
         assert_eq!(seed.delivered.rendered, "hello world");
-        assert_eq!(seed.pre_submit, "idle before submit");
+        assert_eq!(seed.pre_submit, "idle before submit\n");
         assert_eq!(seed.capture_lines, DEFAULT_WAIT_CAPTURE_LINES);
         assert!(
             fake.ops()
