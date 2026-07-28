@@ -104,7 +104,7 @@ impl TmuxAdapter for TmuxClient {
         }
         let metadata = parse_display_message_line(&String::from_utf8_lossy(&display_output.stdout));
 
-        let window_target = format!("{session_name}:{window_name}");
+        let window_target = super::window_target(session_name, window_name);
         let pane_fmt = format!(
             "#{{pane_id}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{alternate_on}}\t#{{pane_height}}\t#{{{PANE_AGENT_ID}}}\t#{{{WINDOW_ROLE}}}",
         );

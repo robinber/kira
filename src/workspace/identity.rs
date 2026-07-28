@@ -20,9 +20,7 @@ pub(crate) fn session_name(project: &ResolvedProject) -> String {
     )
 }
 
-pub(crate) fn window_target(session: &str, window_name: &str) -> String {
-    format!("{session}:{window_name}")
-}
+pub(crate) use crate::tmux::window_target;
 
 #[cfg(test)]
 mod tests {
