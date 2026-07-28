@@ -252,6 +252,9 @@ enum WaitPhase {
 /// [`WaitPhase::Settling`], so the settling facts cannot survive a revert
 /// to the submission phase or leak into it.
 struct SettlingState {
+    /// Frame history since the acknowledgement; owns the quiet-window
+    /// evidence so a revert drops it automatically with the variant.
+    tracker: FrameTracker,
     /// Whether any production evidence has been observed (at or since the
     /// acknowledgement); selects the quiet-window class.
     production_seen: bool,
@@ -278,7 +281,6 @@ struct SettlingObservation<'a> {
 /// Reset the tracker on the acknowledged frame, log the transition, and
 /// build the settling state that [`WaitPhase::Settling`] carries.
 fn enter_settling(
-    tracker: &mut FrameTracker,
     last_frame: &str,
     production_seen: bool,
     via: &'static str,
@@ -286,7 +288,7 @@ fn enter_settling(
     options: &WaitOptions,
     agent_id: &str,
 ) -> SettlingState {
-    tracker.reset(last_frame.to_string());
+    let tracker = FrameTracker::new(last_frame.to_string());
     let (window, class) = tracker.quiet_window(options, production_seen);
     tracing::debug!(
         agent = agent_id,
@@ -298,6 +300,7 @@ fn enter_settling(
         "submission acknowledged, settling"
     );
     SettlingState {
+        tracker,
         production_seen,
         threshold_seen: false,
         last_visible_change: observed_at,
@@ -321,7 +324,6 @@ enum SettlingDecision {
 /// reverted, or needs more polls.
 fn observe_settling(
     state: &mut SettlingState,
-    tracker: &mut FrameTracker,
     observation: SettlingObservation<'_>,
     options: &WaitOptions,
     agent_id: &str,
@@ -329,14 +331,15 @@ fn observe_settling(
     if observation.changed {
         if observation.frame == observation.pre_submit {
             // Returning to the exact pre-submit image invalidates the
-            // acknowledgement. Stay conservative and wait for a durable
-            // submission transition instead of reporting the idle pane.
+            // acknowledgement (the settling state, evidence included, is
+            // dropped with the variant). Stay conservative and wait for a
+            // durable submission transition instead of reporting the idle
+            // pane.
             tracing::debug!(
                 agent = agent_id,
                 elapsed = ?observation.observed_at,
                 "frame reverted to pre-submit image, re-waiting for submission"
             );
-            tracker.reset(observation.pre_submit.to_string());
             return SettlingDecision::Reverted;
         }
         if state.post_ack_production_logged {
@@ -353,14 +356,14 @@ fn observe_settling(
             state.post_ack_production_logged = true;
         }
         state.production_seen = true;
-        tracker.observe_change(observation.frame);
+        state.tracker.observe_change(observation.frame);
         state.last_visible_change = observation.observed_at;
         state.threshold_seen = false;
         return SettlingDecision::Pending;
     }
 
-    tracker.observe_stable(observation.frame);
-    let (quiet_window, quiet_class) = tracker.quiet_window(options, state.production_seen);
+    state.tracker.observe_stable(observation.frame);
+    let (quiet_window, quiet_class) = state.tracker.quiet_window(options, state.production_seen);
     if state.logged_quiet_class != Some(quiet_class) {
         tracing::debug!(
             agent = agent_id,
@@ -425,14 +428,6 @@ impl FrameTracker {
             material: VecDeque::with_capacity(RECENT_FRAME_LIMIT),
             changed_before: false,
         }
-    }
-
-    fn reset(&mut self, baseline: String) {
-        self.recent.clear();
-        self.recent.push_back(baseline);
-        self.pending = None;
-        self.material.clear();
-        self.changed_before = false;
     }
 
     fn observe_change(&mut self, frame: &str) {
@@ -518,7 +513,6 @@ pub(crate) fn wait_on_pane(
     let mut last_capture = seed.pre_submit.clone();
     let mut last_frame = pre_submit.clone();
     let mut phase = WaitPhase::Submitting(SubmissionState::new(Duration::ZERO));
-    let mut tracker = FrameTracker::new(pre_submit.clone());
 
     loop {
         let now = options.elapsed(wall_start);
@@ -576,7 +570,6 @@ pub(crate) fn wait_on_pane(
                         production_seen,
                         via,
                     } => WaitPhase::Settling(enter_settling(
-                        &mut tracker,
                         &last_frame,
                         production_seen,
                         via,
@@ -593,8 +586,7 @@ pub(crate) fn wait_on_pane(
                     pre_submit: &pre_submit,
                     observed_at,
                 };
-                match observe_settling(&mut settling, &mut tracker, observation, options, agent_id)
-                {
+                match observe_settling(&mut settling, observation, options, agent_id) {
                     SettlingDecision::Pending => WaitPhase::Settling(settling),
                     SettlingDecision::Reverted => {
                         WaitPhase::Submitting(SubmissionState::new(observed_at))
