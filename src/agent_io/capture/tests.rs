@@ -21,7 +21,7 @@ fn capture_output_returns_content() {
     );
     assert_eq!(capture.agent_id, "alpha");
     assert_eq!(capture.pane_id, "%0");
-    assert_eq!(capture.output, "some output here");
+    assert_eq!(capture.output, "some output here\n");
     assert_eq!(capture.project_id, "test");
     assert!(!capture.pane_dead);
 }
@@ -38,7 +38,7 @@ fn capture_output_dead_pane_allowed() {
         "capture_output should succeed for a dead pane",
     );
     assert!(capture.pane_dead);
-    assert_eq!(capture.output, "dead pane output");
+    assert_eq!(capture.output, "dead pane output\n");
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn capture_output_falls_back_when_tui_never_repaints() {
         DeepCaptureStatus::Unavailable,
         "an unobserved repaint must not claim a completed deep capture"
     );
-    assert_eq!(output, "short\ntranscript");
+    assert_eq!(output, "short\ntranscript\n");
     let window = test_window_id(&project);
     assert!(
         fake.ops().iter().any(|op| matches!(

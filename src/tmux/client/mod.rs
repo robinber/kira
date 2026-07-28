@@ -22,7 +22,7 @@ use super::metadata::{
 };
 use super::parse::{
     command_error, is_missing_session_message, is_missing_target_message, is_no_server_message,
-    map_spawn_error, normalize_args, parse_pane_line, stdout_lines,
+    map_spawn_error, normalize_args, normalize_capture, parse_pane_line, stdout_lines,
 };
 
 const TEST_SOCKET_ENV: &str = "KIRA_MUX_TMUX_SOCKET_NAME";
@@ -362,18 +362,9 @@ impl TmuxAdapter for TmuxClient {
         let raw = String::from_utf8_lossy(&output.stdout);
         // tmux pads the visible area with empty lines below content, which
         // inflates the line count and can push useful scrollback (especially
-        // from dead panes) past the limit. Strip only that trailing padding;
-        // interior blank lines are genuine transcript content.
-        let mut lines: Vec<&str> = raw.lines().collect();
-        while lines.last().is_some_and(|line| line.is_empty()) {
-            lines.pop();
-        }
-
-        if lines.len() > history_limit {
-            Ok(lines[lines.len() - history_limit..].join("\n") + "\n")
-        } else {
-            Ok(lines.join("\n") + "\n")
-        }
+        // from dead panes) past the limit; normalize_capture strips only
+        // that trailing padding.
+        Ok(normalize_capture(&raw, history_limit))
     }
 
     /// Read the window id, server socket path, width/height, zoom state,
@@ -500,6 +491,16 @@ impl TmuxAdapter for TmuxClient {
 }
 
 impl TmuxClient {
+    /// Test-only client pinned to an isolated socket, for conformance runs
+    /// against a throwaway real server.
+    #[cfg(test)]
+    pub(crate) fn with_socket(tmux_bin: impl Into<String>, socket_name: &str) -> Self {
+        Self {
+            tmux_bin: tmux_bin.into(),
+            socket_name: Some(socket_name.to_string()),
+        }
+    }
+
     /// Build a client and pick up the test socket from
     /// `KIRA_MUX_TMUX_SOCKET_NAME` when set.
     pub(crate) fn from_env(tmux_bin: impl Into<String>) -> Self {

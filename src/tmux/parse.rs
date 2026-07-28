@@ -42,6 +42,23 @@ pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
     })
 }
 
+/// Normalize raw captured pane text the way capture consumers see it:
+/// trailing blank padding stripped (interior blanks are real transcript
+/// content), capped to the last `limit` lines, exactly one trailing
+/// newline — even for empty content. Shared by the real client and
+/// `FakeTmux` so capture shapes cannot drift between them.
+pub(crate) fn normalize_capture(raw: &str, limit: usize) -> String {
+    let mut lines: Vec<&str> = raw.lines().collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    if lines.len() > limit {
+        lines[lines.len() - limit..].join("\n") + "\n"
+    } else {
+        lines.join("\n") + "\n"
+    }
+}
+
 pub(super) fn command_error(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if stderr.is_empty() {

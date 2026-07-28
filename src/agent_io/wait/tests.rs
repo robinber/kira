@@ -59,7 +59,7 @@ fn wait_returns_final_capture_once_pane_stabilizes_after_activity() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &options)
         .or_panic("wait_returns_final_capture_once_pane_stabilizes_after_activity");
 
-    assert_eq!(output, "prompt echo\nthinking...\nanswer: 42");
+    assert_eq!(output, "prompt echo\nthinking...\nanswer: 42\n");
     assert!(
         options.elapsed(Instant::now()) < Duration::from_millis(40),
         "a frame after the prompt acknowledgement must count as production"
@@ -81,7 +81,7 @@ fn wait_times_out_when_pane_never_changes() {
         matches!(
             err.downcast_ref::<KiraMuxError>(),
             Some(KiraMuxError::WaitTimeout { agent_id, last_capture })
-                if agent_id == "alpha" && last_capture == "ready"
+                if agent_id == "alpha" && last_capture == "ready\n"
         ),
         "expected WaitTimeout carrying the last capture, got: {err}"
     );
@@ -202,7 +202,7 @@ fn wait_on_pane_skips_resolve_and_uses_given_pane_id() {
     };
     let output = wait_on_pane(&fake, "alpha", &seed, &fast_options())
         .or_panic("wait_on_pane_skips_resolve_and_uses_given_pane_id");
-    assert_eq!(output, "prompt echo\nreply");
+    assert_eq!(output, "prompt echo\nreply\n");
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn delayed_answer_after_prompt_echo_is_not_returned_early() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
         .or_panic("delayed_answer_after_prompt_echo_is_not_returned_early");
 
-    assert_eq!(output, "prompt echo\nanswer after silent thinking");
+    assert_eq!(output, "prompt echo\nanswer after silent thinking\n");
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn one_frame_response_waits_for_the_submission_only_window() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &options)
         .or_panic("one_frame_response_waits_for_the_submission_only_window");
 
-    assert_eq!(output, "prompt echo\nanswer: 42");
+    assert_eq!(output, "prompt echo\nanswer: 42\n");
     // A pane that never changes again after the submission
     // acknowledgement is indistinguishable from a silently thinking
     // model: convergence must wait out the submission-only window, not
@@ -287,7 +287,7 @@ fn prompt_rendered_after_submission_timeout_still_uses_submission_only_window() 
     let output = wait_for_stable_output(&fake, &project, "alpha", &options)
         .or_panic("prompt_rendered_after_submission_timeout_still_uses_submission_only_window");
 
-    assert_eq!(output, "prompt echo");
+    assert_eq!(output, "prompt echo\n");
     assert!(
         options.elapsed(Instant::now()) >= Duration::from_millis(52),
         "a late prompt echo must not be demoted to weak production"
@@ -322,7 +322,7 @@ fn placeholder_submission_uses_generic_stability_fallback() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &options)
         .or_panic("placeholder_submission_uses_generic_stability_fallback");
 
-    assert_eq!(output, "[Pasted text #1]\nanswer");
+    assert_eq!(output, "[Pasted text #1]\nanswer\n");
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn swallowed_prompt_reverting_to_pre_submit_times_out() {
         matches!(
             err.downcast_ref::<KiraMuxError>(),
             Some(KiraMuxError::WaitTimeout { agent_id, last_capture })
-                if agent_id == "alpha" && last_capture == "ready"
+                if agent_id == "alpha" && last_capture == "ready\n"
         ),
         "a reverted submission must not converge, got: {err}"
     );
@@ -367,7 +367,7 @@ fn cyclic_spinner_keeps_resetting_settling() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
         .or_panic("cyclic_spinner_keeps_resetting_settling");
 
-    assert_eq!(output, "prompt echo\nanswer complete");
+    assert_eq!(output, "prompt echo\nanswer complete\n");
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn unique_late_redraw_cancels_confirmation() {
     let output = wait_for_stable_output(&fake, &project, "alpha", &fast_options())
         .or_panic("unique_late_redraw_cancels_confirmation");
 
-    assert_eq!(output, redraw);
+    assert_eq!(output, format!("{redraw}\n"));
 }
 
 #[test]

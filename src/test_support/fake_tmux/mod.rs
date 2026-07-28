@@ -5,11 +5,13 @@
 
 mod adapter;
 #[cfg(test)]
+mod conformance;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Result, bail};
 
@@ -58,6 +60,9 @@ pub(crate) struct FakeTmux {
     /// Content the fake "agent" renders below every delivered text. `None`
     /// (the default) echoes only the text itself.
     delivery_response: Mutex<Option<String>>,
+    /// Next pane index for [`FakeTmux::alloc_pane_id`] — server-lifetime
+    /// monotonic like real tmux pane ids.
+    next_pane_id: AtomicUsize,
     /// When set, `list_panes` returns panes in reversed order so tests can
     /// prove callers never depend on listing order for pane identity.
     reverse_pane_listing: AtomicBool,
@@ -234,6 +239,7 @@ impl FakeTmux {
             no_server: AtomicBool::new(false),
             fail_capture: AtomicBool::new(false),
             delivery_response: Mutex::new(None),
+            next_pane_id: AtomicUsize::new(0),
             reverse_pane_listing: AtomicBool::new(false),
             server_stops_after_captures: Mutex::new(None),
             relocate_after_geometry_reads: Mutex::new(None),
@@ -484,7 +490,22 @@ impl FakeTmux {
     }
 
     pub(crate) fn add_pane(&self, session: &str, window: &str, pane_id: &str, dead: bool) {
+        // Keep allocator ids ahead of explicitly chosen ones so splits can
+        // never collide with a fixture pane.
+        if let Some(index) = pane_id
+            .strip_prefix('%')
+            .and_then(|digits| digits.parse::<usize>().ok())
+        {
+            self.next_pane_id.fetch_max(index + 1, Ordering::Relaxed);
+        }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        // Loud collision detection: pane ids are server-lifetime unique on
+        // real tmux, so a duplicate here is a fixture bug (or an
+        // allocator/fixture race) that must abort instead of aliasing.
+        assert!(
+            Self::find_pane(&sessions, pane_id).is_none(),
+            "duplicate fake pane id {pane_id}: ids must be unique across all sessions"
+        );
         let session_name = session;
         let window_name = window;
         let session = some(
@@ -496,6 +517,13 @@ impl FakeTmux {
             format!("missing fake window '{window_name}' in session '{session_name}'"),
         );
         window.panes.push(FakePane::new(pane_id, dead));
+    }
+
+    /// Server-lifetime-unique pane id, mirroring real tmux: ids are
+    /// monotonic per server and never reused, across every session and
+    /// window this fake owns.
+    pub(super) fn alloc_pane_id(&self) -> String {
+        format!("%{}", self.next_pane_id.fetch_add(1, Ordering::Relaxed))
     }
 
     pub(crate) fn set_session_opt(&self, session: &str, key: &str, value: &str) {
