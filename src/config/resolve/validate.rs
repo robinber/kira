@@ -121,3 +121,74 @@ pub(super) fn validate_agent(
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::error::ConfigError;
+    use crate::config::model::AgentMode;
+    use crate::test_support::TestResultExt;
+
+    #[test]
+    fn forbidden_identifier_chars_are_rejected() {
+        for (id, expected_ch) in [
+            ("a:b", ':'),
+            ("a.b", '.'),
+            ("a\tb", '\t'),
+            ("a\nb", '\n'),
+            ("a\rb", '\r'),
+            // Padded ids round-trip through trimmed tmux options and would
+            // report permanent drift.
+            (" alpha", ' '),
+            ("a b", ' '),
+            ("a ", ' '),
+            ("a\u{00a0}", '\u{00a0}'),
+        ] {
+            let error = validate_identifier("agent id", id)
+                .err_or_panic("forbidden_identifier_chars_are_rejected: expected Err");
+            let ConfigError::InvalidIdentifierChar { kind, id: got, ch } = error else {
+                panic!("expected InvalidIdentifierChar for {id:?}");
+            };
+            assert_eq!(kind, "agent id");
+            assert_eq!(got, id);
+            assert_eq!(ch, expected_ch);
+        }
+
+        validate_identifier("agent id", "plain-id_09")
+            .or_panic("forbidden_identifier_chars_are_rejected");
+    }
+
+    #[test]
+    fn shell_mode_rejects_nonempty_args() {
+        let error = validate_agent(
+            "worker",
+            AgentMode::Shell,
+            None,
+            Some("npm test"),
+            &["--watch".to_string()],
+        )
+        .err_or_panic("shell_mode_rejects_nonempty_args: expected Err");
+        assert!(matches!(
+            error,
+            ConfigError::ShellArgsNotSupported { agent_id } if agent_id == "worker"
+        ));
+    }
+
+    #[test]
+    fn shell_mode_allows_empty_args() {
+        validate_agent("worker", AgentMode::Shell, None, Some("npm test"), &[])
+            .or_panic("shell_mode_allows_empty_args");
+    }
+
+    #[test]
+    fn direct_mode_allows_args() {
+        validate_agent(
+            "coder",
+            AgentMode::Direct,
+            Some("codex"),
+            None,
+            &["--full-auto".to_string()],
+        )
+        .or_panic("direct_mode_allows_args");
+    }
+}

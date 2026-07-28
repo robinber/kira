@@ -164,3 +164,186 @@ pub(super) fn build_template_map(
 
     Ok(by_name)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::path::Path;
+
+    use super::*;
+    use crate::config::error::ConfigError;
+    use crate::config::fingerprint::{
+        FingerprintAgentMaterial, FingerprintInput, compute_fingerprint,
+    };
+    use crate::config::model::{AgentTemplate, Layout, ProjectAgent, ResolutionMode};
+    use crate::test_support::TestResultExt;
+
+    #[test]
+    fn resolve_env_map_reports_missing_environment_variable() {
+        let variable = "KIRA_MUX_TEST_MISSING_ENV_RESTRICTION_7E3D2C";
+        assert!(
+            env::var_os(variable).is_none(),
+            "reserved test variable must remain unset"
+        );
+        let env_map = BTreeMap::from([("TOKEN".to_string(), format!("${variable}"))]);
+
+        let error = resolve_env_map("alpha", env_map)
+            .err_or_panic("resolve_env_map_reports_missing_environment_variable: expected Err");
+        let display = error.to_string();
+        let ConfigError::UnresolvedEnvVar { agent_id, var_name } = error else {
+            panic!("expected unresolved environment variable error");
+        };
+
+        assert_eq!(agent_id, "alpha");
+        assert_eq!(var_name, variable);
+        assert_eq!(
+            display,
+            format!("agent alpha references missing environment variable {variable}")
+        );
+    }
+
+    #[test]
+    fn empty_label_falls_back_to_agent_id() {
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: Some(String::new()),
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: None,
+            text_delivery: None,
+        };
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            None,
+            Path::new("/tmp/kira-test-root"),
+            ResolutionMode::Deferred,
+        )
+        .or_panic("empty_label_falls_back_to_agent_id");
+
+        assert_eq!(
+            resolved.label, "alpha",
+            "empty label must fall back to the id, not render as `alpha ()`"
+        );
+    }
+
+    #[test]
+    fn agent_submit_and_text_delivery_override_template() {
+        use crate::config::{SubmitPolicy, TextDelivery};
+
+        let template = AgentTemplate {
+            name: "coder".to_string(),
+            label: None,
+            mode: None,
+            command: Some("my-agent".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: Some(SubmitPolicy::Double),
+            text_delivery: Some(TextDelivery::SendKeys),
+        };
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: Some("coder".to_string()),
+            label: None,
+            mode: None,
+            command: None,
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: Some(SubmitPolicy::Single),
+            text_delivery: None,
+        };
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            Some(&template),
+            Path::new("/tmp/kira-test-root"),
+            ResolutionMode::Deferred,
+        )
+        .or_panic("agent_submit_and_text_delivery_override_template");
+
+        assert_eq!(resolved.submit, Some(SubmitPolicy::Single));
+        assert_eq!(resolved.text_delivery, Some(TextDelivery::SendKeys));
+    }
+
+    #[test]
+    fn submit_and_text_delivery_do_not_affect_fingerprint() {
+        use crate::config::{SubmitPolicy, TextDelivery};
+
+        let root = Path::new("/tmp/kira-test-root");
+        let base = || ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: Some("Alpha".to_string()),
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: Some(vec!["review".to_string()]),
+            prompt_template: Some("{{user_prompt}}".to_string()),
+            submit: None,
+            text_delivery: None,
+        };
+
+        let mut with_defaults = base();
+        with_defaults.submit = None;
+        with_defaults.text_delivery = None;
+
+        let mut with_overrides = base();
+        with_overrides.submit = Some(SubmitPolicy::Double);
+        with_overrides.text_delivery = Some(TextDelivery::SendKeys);
+        with_overrides.label = Some("Other Label".to_string());
+        with_overrides.capabilities = Some(vec!["impl".to_string()]);
+        with_overrides.prompt_template = Some("review: {{user_prompt}}".to_string());
+
+        let (resolved_defaults, material_defaults) =
+            resolve_single_agent(with_defaults, None, root, ResolutionMode::Deferred)
+                .or_panic("submit_and_text_delivery_do_not_affect_fingerprint");
+        let (resolved_overrides, material_overrides) =
+            resolve_single_agent(with_overrides, None, root, ResolutionMode::Deferred)
+                .or_panic("submit_and_text_delivery_do_not_affect_fingerprint");
+
+        assert_ne!(resolved_defaults.submit, resolved_overrides.submit);
+        assert_ne!(
+            resolved_defaults.text_delivery,
+            resolved_overrides.text_delivery
+        );
+
+        let fingerprint = |material: &FingerprintAgentMaterial| {
+            compute_fingerprint(FingerprintInput {
+                project_id: "demo",
+                profile_id: "default",
+                root,
+                layout: Layout::Auto,
+                main_pane_ratio: 50,
+                window_name: "agents",
+                default_shell: "/bin/sh",
+                remain_on_exit: crate::config::RemainOnExit::Failed,
+                agents: std::slice::from_ref(material),
+            })
+        };
+
+        assert_eq!(
+            fingerprint(&material_defaults),
+            fingerprint(&material_overrides),
+            "send-time and cosmetic fields must not drift the fingerprint"
+        );
+    }
+}
