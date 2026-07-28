@@ -110,6 +110,10 @@ impl TestBed {
             .args(args)
             .env("XDG_CONFIG_HOME", self.config_home.path())
             .env("KIRA_MUX_TMUX_SOCKET_NAME", &self.socket)
+            // Second-scale wait windows so `send --wait` scenarios (incl.
+            // the exit-7 hard timeout) run inside test deadlines. Scripted
+            // agents must emit within the fast profile's quiet windows.
+            .env("KIRA_MUX_WAIT_PROFILE", "fast")
             .env("HOME", self.config_home.path())
             .env("SHELL", "/bin/sh")
             // Keep the server's socket inside the bed's tempdir so no tmux

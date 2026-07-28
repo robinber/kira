@@ -402,6 +402,10 @@ Quality floor is intentional and strict:
 - integration tests drive the compiled binary against real tmux servers
   (`tests/cli/`, needs `tmux` on `PATH`; each test uses an
   isolated socket, so your own tmux sessions are never touched)
+- testing seams read by the binary: `KIRA_MUX_TMUX_SOCKET_NAME` (isolated
+  tmux socket) and `KIRA_MUX_WAIT_PROFILE=fast` (second-scale `send --wait`
+  windows so timeout contracts are testable; any other non-empty value is
+  rejected with exit 2 — do not set these outside tests)
 - CI on push and pull requests (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 
 ```bash

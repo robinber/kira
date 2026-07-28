@@ -84,7 +84,51 @@ impl Default for WaitOptions {
     }
 }
 
+/// Env var selecting a wait profile — a test seam like
+/// `KIRA_MUX_TMUX_SOCKET_NAME`. `fast` shrinks every window so the
+/// exit-code contract (including the hard timeout → exit 7) is
+/// exercisable end-to-end without production waits.
+const WAIT_PROFILE_ENV: &str = "KIRA_MUX_WAIT_PROFILE";
+
 impl WaitOptions {
+    /// Production tuning, unless `KIRA_MUX_WAIT_PROFILE=fast` selects the
+    /// integration-test profile.
+    ///
+    /// # Errors
+    ///
+    /// A set-but-unknown profile is a configuration error (exit 2): a typo
+    /// while using the seam must not silently fall back to the ten-minute
+    /// production timeout.
+    pub(crate) fn from_env() -> Result<Self> {
+        match std::env::var(WAIT_PROFILE_ENV) {
+            Ok(profile) if profile == "fast" => Ok(Self::fast_profile()),
+            Ok(profile) if profile.is_empty() => Ok(Self::default()),
+            Ok(profile) => Err(KiraMuxError::ConfigValidation(
+                crate::config::ConfigError::UnknownWaitProfile(profile),
+            )
+            .into()),
+            Err(_) => Ok(Self::default()),
+        }
+    }
+
+    /// Second-scale windows keeping the production ordering and behavior
+    /// classes (the scale factors differ per knob): scripted integration
+    /// agents emit with >=1.5s margin under every quiet window using
+    /// whole-second sleeps, and the hard timeout stays reachable inside a
+    /// test deadline.
+    fn fast_profile() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(50),
+            submission_stability: Duration::from_millis(150),
+            submission_timeout: Duration::from_millis(750),
+            normal_quiet_window: Duration::from_millis(2500),
+            low_confidence_quiet_window: Duration::from_secs(3),
+            submission_only_quiet_window: Duration::from_secs(4),
+            hard_timeout: Duration::from_secs(8),
+            clock: WaitClock::Wall,
+        }
+    }
+
     fn elapsed(&self, wall_start: Instant) -> Duration {
         match &self.clock {
             WaitClock::Wall => wall_start.elapsed(),
