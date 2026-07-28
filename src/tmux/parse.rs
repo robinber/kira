@@ -1,10 +1,50 @@
 //! Parse tmux stdout lines and classify common failure messages.
+//!
+//! Every generated `-F` line format and its parser live here as one spec:
+//! the field lists below produce the format strings *and* bound the splits,
+//! so a format edit cannot silently skew the parsed columns.
 
 use std::process::Output;
 
 use anyhow::{Context, Result};
 
-use super::adapter::PaneInfo;
+use super::adapter::{PaneInfo, WorkspacePaneSnapshot};
+use super::metadata::{PANE_AGENT_ID, WINDOW_ROLE};
+
+/// Field delimiter for every generated `-F` line format. Tab cannot appear
+/// in the ids, flags, and identifier-validated option values kira reads.
+pub(super) const FIELD_DELIMITER: char = '\t';
+
+/// Join `-F` fields into one line format using [`FIELD_DELIMITER`].
+pub(super) fn line_format(fields: &[&str]) -> String {
+    fields.join(&FIELD_DELIMITER.to_string())
+}
+
+/// The [`PaneInfo`] wire fields, in the exact order `parse_pane_fields`
+/// consumes them.
+const PANE_INFO_FIELDS: [&str; 5] = [
+    "#{pane_id}",
+    "#{pane_dead}",
+    "#{pane_dead_status}",
+    "#{alternate_on}",
+    "#{pane_height}",
+];
+
+/// `-F` format for `list_panes`: exactly the [`PaneInfo`] fields.
+pub(super) fn pane_line_format() -> String {
+    line_format(&PANE_INFO_FIELDS)
+}
+
+/// `-F` format for workspace snapshots: the [`PaneInfo`] fields plus the
+/// pane agent id and window role options.
+pub(super) fn workspace_pane_line_format() -> String {
+    let agent_id = format!("#{{{PANE_AGENT_ID}}}");
+    let window_role = format!("#{{{WINDOW_ROLE}}}");
+    let mut fields = PANE_INFO_FIELDS.to_vec();
+    fields.push(&agent_id);
+    fields.push(&window_role);
+    line_format(&fields)
+}
 
 pub(super) fn stdout_lines(output: &Output) -> Vec<String> {
     String::from_utf8_lossy(&output.stdout)
@@ -14,8 +54,8 @@ pub(super) fn stdout_lines(output: &Output) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
-    let mut parts = line.splitn(5, '|');
+/// Consume the [`PANE_INFO_FIELDS`] columns from `parts`.
+fn parse_pane_fields<'a>(parts: &mut impl Iterator<Item = &'a str>) -> Result<PaneInfo> {
     let pane_id = parts.next().context("missing pane_id")?.to_string();
     let pane_dead = parts.next().context("missing pane_dead")? == "1";
     let pane_dead_status = parts.next().and_then(|value| {
@@ -40,6 +80,30 @@ pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
         alternate_on,
         pane_height,
     })
+}
+
+pub(super) fn parse_pane_line(line: &str) -> Result<PaneInfo> {
+    parse_pane_fields(&mut line.splitn(PANE_INFO_FIELDS.len(), FIELD_DELIMITER))
+}
+
+pub(super) fn parse_workspace_pane_line(
+    line: &str,
+) -> Result<(WorkspacePaneSnapshot, Option<String>)> {
+    let mut parts = line.splitn(PANE_INFO_FIELDS.len() + 2, FIELD_DELIMITER);
+    let pane = parse_pane_fields(&mut parts)?;
+    let agent_id = parts.next().and_then(non_empty);
+    let window_role = parts.next().and_then(non_empty);
+
+    Ok((WorkspacePaneSnapshot { pane, agent_id }, window_role))
+}
+
+pub(super) fn non_empty(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Normalize raw captured pane text the way capture consumers see it:
@@ -114,8 +178,9 @@ mod tests {
     use std::process::{ExitStatus, Output};
 
     use super::{
-        command_error, is_missing_session_message, is_missing_target_message, is_no_server_message,
-        map_spawn_error, parse_pane_line, stdout_lines,
+        FIELD_DELIMITER, command_error, is_missing_session_message, is_missing_target_message,
+        is_no_server_message, map_spawn_error, pane_line_format, parse_pane_line, stdout_lines,
+        workspace_pane_line_format,
     };
     use crate::error::KiraMuxError;
     use crate::test_support::{TestOptionExt, TestResultExt};
@@ -148,8 +213,24 @@ mod tests {
     }
 
     #[test]
+    fn pane_line_formats_and_parsers_share_one_field_spec() {
+        // Both -F strings and both split bounds derive from PANE_INFO_FIELDS;
+        // this pins the workspace format as the pane format plus exactly the
+        // two trailing metadata fields the workspace parser consumes.
+        let pane_fmt = pane_line_format();
+        let workspace_fmt = workspace_pane_line_format();
+
+        assert_eq!(pane_fmt.split(FIELD_DELIMITER).count(), 5);
+        assert!(
+            workspace_fmt.starts_with(&pane_fmt),
+            "workspace format must extend the pane format, got: {workspace_fmt}"
+        );
+        assert_eq!(workspace_fmt.split(FIELD_DELIMITER).count(), 7);
+    }
+
+    #[test]
     fn parse_pane_line_parses_alive_pane() {
-        let pane = parse_pane_line("%5|0|").or_panic("parse_pane_line_parses_alive_pane");
+        let pane = parse_pane_line("%5\t0\t").or_panic("parse_pane_line_parses_alive_pane");
 
         assert_eq!(pane.pane_id, "%5");
         assert!(!pane.pane_dead);
@@ -158,8 +239,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_exit_code() {
-        let pane =
-            parse_pane_line("%5|1|137").or_panic("parse_pane_line_parses_dead_pane_with_exit_code");
+        let pane = parse_pane_line("%5\t1\t137")
+            .or_panic("parse_pane_line_parses_dead_pane_with_exit_code");
 
         assert_eq!(pane.pane_id, "%5");
         assert!(pane.pane_dead);
@@ -168,8 +249,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_dead_pane_with_empty_status() {
-        let pane =
-            parse_pane_line("%5|1|").or_panic("parse_pane_line_parses_dead_pane_with_empty_status");
+        let pane = parse_pane_line("%5\t1\t")
+            .or_panic("parse_pane_line_parses_dead_pane_with_empty_status");
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, None);
@@ -177,7 +258,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_ignores_non_numeric_dead_status() {
-        let pane = parse_pane_line("%5|1|not-a-number")
+        let pane = parse_pane_line("%5\t1\tnot-a-number")
             .or_panic("parse_pane_line_ignores_non_numeric_dead_status");
 
         assert!(pane.pane_dead);
@@ -186,7 +267,8 @@ mod tests {
 
     #[test]
     fn parse_pane_line_preserves_empty_pane_id_field() {
-        let pane = parse_pane_line("|0|").or_panic("parse_pane_line_preserves_empty_pane_id_field");
+        let pane =
+            parse_pane_line("\t0\t").or_panic("parse_pane_line_preserves_empty_pane_id_field");
 
         assert_eq!(pane.pane_id, "");
         assert!(!pane.pane_dead);
@@ -202,7 +284,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_reads_alternate_screen_and_height() {
-        let pane = parse_pane_line("%5|0||1|42")
+        let pane = parse_pane_line("%5\t0\t\t1\t42")
             .or_panic("parse_pane_line_reads_alternate_screen_and_height");
 
         assert!(pane.alternate_on);
@@ -214,7 +296,7 @@ mod tests {
         // Older/truncated lines: liveness parsing must not fail, and the
         // defaults simply disable deep capture.
         let pane =
-            parse_pane_line("%5|1|137").or_panic("parse_pane_line_defaults_missing_depth_fields");
+            parse_pane_line("%5\t1\t137").or_panic("parse_pane_line_defaults_missing_depth_fields");
 
         assert!(pane.pane_dead);
         assert_eq!(pane.pane_dead_status, Some(137));
@@ -224,7 +306,7 @@ mod tests {
 
     #[test]
     fn parse_pane_line_ignores_malformed_depth_fields() {
-        let pane = parse_pane_line("%5|1|137|extra|junk")
+        let pane = parse_pane_line("%5\t1\t137\textra\tjunk")
             .or_panic("parse_pane_line_ignores_malformed_depth_fields");
 
         assert!(pane.pane_dead);
