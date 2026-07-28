@@ -24,13 +24,14 @@ fn start_creates_live_session_and_status_reports_running() {
     assert_eq!(status["agents"][1]["state"], "running", "got: {status}");
 
     // The session really exists, on this bed's isolated server only.
-    let sessions = bed.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    assert_success(&sessions, "list-sessions");
-    let names: Vec<String> = stdout_of(&sessions).lines().map(str::to_owned).collect();
-    assert_eq!(names.len(), 1, "expected exactly one session: {names:?}");
+    let name = managed_session_name(&bed);
     assert!(
-        names[0].starts_with("kira-it-default-"),
-        "unexpected session name: {names:?}"
+        !name.contains('\n'),
+        "expected exactly one session: {name:?}"
+    );
+    assert!(
+        name.starts_with("kira-it-default-"),
+        "unexpected session name: {name:?}"
     );
 
     // list goes through the bulk workspace snapshot path (session options +
