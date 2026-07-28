@@ -33,5 +33,8 @@ pub use error::{KiraMuxError, WorkspaceDriftReason};
 /// the selected command.
 pub fn run() -> Result<()> {
     let cli = cli::Cli::parse();
+    // After parse, before dispatch: clap errors print their own usage text
+    // and need no tracing; everything else logs under the right default.
+    logging::init_logging(cli.wants_json());
     app::run(cli)
 }

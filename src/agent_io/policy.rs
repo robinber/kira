@@ -67,16 +67,78 @@ fn shell_command_needs_double_enter(agent: &ResolvedAgent) -> bool {
 }
 
 fn contains_tool(command: &str, tools: &[&str]) -> bool {
-    command
-        .split(|ch: char| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '\'' | '"' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>'
-                )
-        })
-        .map(command_basename)
+    command_position_basenames(command)
+        .into_iter()
         .any(|token| tools.contains(&token))
+}
+
+/// Basenames in command position only: the first word of the command and
+/// of every `;`/`&`/`|`/`(`-separated segment. Assignments and the
+/// `env`/`exec`/`nohup` and `sh -c`-style wrappers are transparent, and
+/// `ssh` skips its options (including spaced option arguments) plus the
+/// destination so the remote command is inspected — but a tool name in
+/// argument position (`mytool --model claude`,
+/// `ssh host 'echo claude ready'`) never classifies.
+fn command_position_basenames(command: &str) -> Vec<&str> {
+    let mut positions = Vec::new();
+    for segment in command.split([';', '&', '|', '(', '\n']) {
+        let mut tokens = segment
+            .split(|ch: char| {
+                ch.is_whitespace() || matches!(ch, '\'' | '"' | '`' | ')' | '<' | '>')
+            })
+            .filter(|token| !token.is_empty())
+            .peekable();
+        while let Some(token) = tokens.next() {
+            let base = command_basename(token);
+            if base.contains('=') {
+                continue;
+            }
+            match base {
+                "env" | "exec" | "nohup" => {
+                    skip_options(&mut tokens, &["a", "u", "C", "P", "S"]);
+                }
+                "sh" | "bash" | "zsh" | "dash" => {
+                    skip_options(&mut tokens, &[]);
+                }
+                "ssh" => {
+                    skip_options(
+                        &mut tokens,
+                        &[
+                            "p", "i", "o", "l", "F", "E", "L", "R", "D", "J", "W", "e", "b", "c",
+                            "m", "S", "B", "w",
+                        ],
+                    );
+                    // The first bare token is the destination; the remote
+                    // command line follows.
+                    tokens.next();
+                }
+                _ => {
+                    positions.push(base);
+                    break;
+                }
+            }
+        }
+    }
+    positions
+}
+
+/// Consume leading `-`-prefixed tokens; flags in `spaced_arg_flags` also
+/// consume their following argument token (glued forms like `-p2222` ride
+/// in one token already).
+fn skip_options<'a>(
+    tokens: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    spaced_arg_flags: &[&str],
+) {
+    while let Some(next) = tokens.peek() {
+        let Some(flag) = next.strip_prefix('-') else {
+            break;
+        };
+        let takes_arg = spaced_arg_flags.contains(&flag);
+        tokens.next();
+        if takes_arg {
+            tokens.next();
+        }
+    }
 }
 
 pub(super) fn needs_send_keys_for_text(agent: &ResolvedAgent, pane_command: Option<&str>) -> bool {
@@ -253,6 +315,63 @@ mod tests {
             infer_submit_behavior(&agent, Some("__shell__")),
             SubmitBehavior::SingleEnter
         );
+    }
+
+    #[test]
+    fn tool_names_in_argument_position_do_not_classify() {
+        // Only command positions match: a tool name as an argument or
+        // inside a quoted echo must not trigger tool behavior.
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("ssh -t root@example 'echo claude ready'".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::SingleEnter
+        );
+
+        agent.shell_command = Some("mytool --model claude".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::SingleEnter
+        );
+    }
+
+    #[test]
+    fn wrapped_tool_in_command_position_still_classifies() {
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("env FOO=1 exec claude --model opus".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::DoubleEnter
+        );
+    }
+
+    #[test]
+    fn ssh_spaced_option_arguments_do_not_eat_the_destination() {
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("ssh -p 2222 root@example claude".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::DoubleEnter
+        );
+
+        agent.shell_command = Some("env -i claude".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::DoubleEnter
+        );
+    }
+
+    #[test]
+    fn shell_wrapped_tool_still_classifies() {
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("sh -c 'claude --model opus'".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::DoubleEnter
+        );
+
+        agent.shell_command = Some("bash -lc \"opencode\"".to_string());
+        assert!(needs_send_keys_for_text(&agent, Some("__shell__")));
     }
 
     #[test]
