@@ -492,7 +492,10 @@ command = "echo"
     assert!(loaded.projects.is_empty());
     assert_eq!(loaded.failures.len(), 1);
     assert_eq!(loaded.failures[0].project_id.as_deref(), Some("bad-root"));
-    assert_eq!(loaded.failures[0].profile_id.as_deref(), Some("default"));
+    assert_eq!(
+        loaded.failures[0].profile_id.as_deref(),
+        Some(DEFAULT_PROFILE_ID)
+    );
     assert!(
         loaded.failures[0].error.contains("absolute")
             || loaded.failures[0].error.contains("relative"),

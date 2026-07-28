@@ -97,7 +97,7 @@ pub(crate) fn print_status(status: &ProjectStatus, json: bool) -> Result<()> {
 
 fn write_status_text(out: &mut dyn Write, status: &ProjectStatus) -> io::Result<()> {
     writeln!(out, "Project: {} ({})", status.name, status.id)?;
-    if status.profile_id != "default" {
+    if status.profile_id != crate::config::DEFAULT_PROFILE_ID {
         writeln!(out, "Profile: {}", status.profile_id)?;
     }
     writeln!(out, "Root:    {}", status.root)?;
