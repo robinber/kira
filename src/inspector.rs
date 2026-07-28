@@ -318,8 +318,6 @@ mod tests {
     use super::*;
     use crate::error::WorkspaceDriftReason;
     use crate::test_support::{FakeTmux, TestResultExt, setup_healthy_session, test_project};
-    use crate::tmux::metadata::WINDOW_ROLE;
-    use crate::workspace::session_name;
 
     /// Typed snapshot for classifier unit tests (no `FakeTmux`).
     /// Mutate one field after construction when a test needs a single
@@ -374,162 +372,6 @@ mod tests {
 
         let result = inspect(&fake, &project).or_panic("inspect_degraded_with_dead_pane");
         assert!(matches!(result, WorkspaceTopology::Degraded(_)));
-    }
-
-    #[test]
-    fn inspect_drifted_fingerprint_mismatch() {
-        let fake = FakeTmux::new();
-        let project = test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            "wrong-fingerprint",
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-
-        let result = inspect(&fake, &project).or_panic("inspect_drifted_fingerprint_mismatch");
-        assert!(matches!(
-            result,
-            WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::FingerprintMismatch
-            }
-        ));
-    }
-
-    #[test]
-    fn inspect_drifted_pane_count_mismatch() {
-        let fake = FakeTmux::new();
-        let project = test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-
-        let result = inspect(&fake, &project).or_panic("inspect_drifted_pane_count_mismatch");
-        assert!(matches!(
-            result,
-            WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::PaneCountMismatch
-            }
-        ));
-    }
-
-    #[test]
-    fn inspect_drifted_unknown_agent_id() {
-        let fake = FakeTmux::new();
-        let project = test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "unknown-agent",
-        );
-
-        let result = inspect(&fake, &project).or_panic("inspect_drifted_unknown_agent_id");
-        assert!(matches!(
-            result,
-            WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::UnknownManagedAgentId(_)
-            }
-        ));
-    }
-
-    #[test]
-    fn inspect_drifted_duplicate_agent_id() {
-        let fake = FakeTmux::new();
-        let project = test_project();
-        let session = session_name(&project);
-
-        fake.add_session(&session);
-        fake.set_session_opt(
-            &session,
-            "@kira_mux_config_fingerprint",
-            &project.fingerprint,
-        );
-        fake.set_session_opt(&session, "@kira_mux_project_id", &project.id);
-        fake.set_session_opt(&session, "@kira_mux_profile_id", &project.profile_id);
-        fake.add_window(&session, &project.window_name);
-        fake.set_window_opt(
-            &session,
-            &project.window_name,
-            WINDOW_ROLE,
-            WINDOW_ROLE_AGENTS,
-        );
-        fake.add_pane(&session, &project.window_name, "%0", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            0,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-        fake.add_pane(&session, &project.window_name, "%1", false);
-        fake.set_pane_opt(
-            &session,
-            &project.window_name,
-            1,
-            "@kira_mux_agent_id",
-            "alpha",
-        );
-
-        let result = inspect(&fake, &project).or_panic("inspect_drifted_duplicate_agent_id");
-        assert!(matches!(
-            result,
-            WorkspaceTopology::Drifted {
-                reason: WorkspaceDriftReason::DuplicateManagedAgentId(_)
-            }
-        ));
     }
 
     #[test]
@@ -656,12 +498,15 @@ mod tests {
             ),
         );
 
-        assert!(matches!(
-            result,
-            SharedTopology::Drifted {
-                reason: WorkspaceDriftReason::UnknownManagedAgentId(_)
-            }
-        ));
+        assert!(
+            matches!(
+                result,
+                SharedTopology::Drifted {
+                    reason: WorkspaceDriftReason::UnknownManagedAgentId(ref id)
+                } if id == "unknown"
+            ),
+            "the drift reason must carry the offending id"
+        );
     }
 
     #[test]
@@ -672,12 +517,15 @@ mod tests {
             &snapshot(&project, &[(Some("alpha"), false), (Some("alpha"), false)]),
         );
 
-        assert!(matches!(
-            result,
-            SharedTopology::Drifted {
-                reason: WorkspaceDriftReason::DuplicateManagedAgentId(_)
-            }
-        ));
+        assert!(
+            matches!(
+                result,
+                SharedTopology::Drifted {
+                    reason: WorkspaceDriftReason::DuplicateManagedAgentId(ref id)
+                } if id == "alpha"
+            ),
+            "the drift reason must carry the duplicated id"
+        );
     }
 
     #[test]
