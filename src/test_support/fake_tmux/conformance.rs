@@ -242,6 +242,45 @@ fn vanished_target_classifications_match_real_tmux() {
     }
 }
 
+/// The no-server stderr wording is version-dependent prose; this pins the
+/// classifier against the tmux the suite actually runs (a fresh socket has
+/// no server), completing the per-failure-class coverage of
+/// [`vanished_target_classifications_match_real_tmux`].
+#[test]
+fn stopped_server_classifications_match_real_tmux() {
+    let fake = FakeTmux::new();
+    fake.add_session("conf");
+    fake.add_window("conf", "w");
+    fake.add_pane("conf", "w", "%0", false);
+    fake.set_no_server(true);
+    let capture = fake
+        .capture_pane("%0", 50)
+        .err_or_panic("conformance: fake capture on stopped server must fail");
+    assert_eq!(error_kind(&capture), "no_server");
+    assert!(
+        !fake
+            .session_exists("conf")
+            .or_panic("conformance: fake session_exists"),
+        "a stopped server reports no sessions"
+    );
+
+    if let Some(real) = real_server() {
+        // No session was ever created: the socket has no server.
+        let capture = real
+            .client
+            .capture_pane("%0", 50)
+            .err_or_panic("conformance: real capture without a server must fail");
+        assert_eq!(error_kind(&capture), "no_server");
+        assert!(
+            !real
+                .client
+                .session_exists("conf")
+                .or_panic("conformance: real session_exists"),
+            "a stopped server reports no sessions"
+        );
+    }
+}
+
 fn observe_error_kinds(tmux: &dyn TmuxAdapter) -> Vec<&'static str> {
     let paste = tmux
         .paste_text("%99", "x")

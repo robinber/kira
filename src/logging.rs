@@ -5,16 +5,17 @@ use std::sync::Once;
 use tracing_subscriber::EnvFilter;
 
 /// Initialize tracing once for the current process.
-pub fn init_logging() {
+///
+/// `json_stdout` comes from the parsed CLI (see `Cli::wants_json`): when
+/// the invocation prints machine-readable JSON, the default level drops to
+/// `error` so WARN-level tracing cannot contaminate `2>&1` pipelines.
+pub fn init_logging(json_stdout: bool) {
     static INIT: Once = Once::new();
 
     INIT.call_once(|| {
         let filter = EnvFilter::try_from_env("KIRA_MUX_LOG")
             .or_else(|_| EnvFilter::try_from_default_env())
-            .unwrap_or_else(|_| {
-                let level = default_log_level(std::env::args());
-                EnvFilter::new(level)
-            });
+            .unwrap_or_else(|_| EnvFilter::new(default_log_level(json_stdout)));
 
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -25,26 +26,10 @@ pub fn init_logging() {
     });
 }
 
-/// Return the default log level when neither `KIRA_MUX_LOG` nor `RUST_LOG` is
-/// set by the operator. When `--json` appears in the process arguments, the
-/// default drops to `error` so WARN-level tracing does not contaminate
-/// machine-readable stdout for callers that merge stderr into stdout (`2>&1`).
-///
-/// Arguments after a `--` separator are positional values (e.g. a prompt that
-/// happens to contain `--json`) and are not scanned.
-fn default_log_level<I>(args: I) -> &'static str
-where
-    I: IntoIterator<Item = String>,
-{
-    if args
-        .into_iter()
-        .take_while(|a| a != "--")
-        .any(|a| a == "--json")
-    {
-        "error"
-    } else {
-        "warn"
-    }
+/// Default level when neither `KIRA_MUX_LOG` nor `RUST_LOG` is set: `warn`
+/// for humans, `error` for JSON invocations.
+fn default_log_level(json_stdout: bool) -> &'static str {
+    if json_stdout { "error" } else { "warn" }
 }
 
 /// Render an environment variable without exposing its raw value.
@@ -62,50 +47,9 @@ mod tests {
     use super::{default_log_level, redact_env_value};
 
     #[test]
-    fn default_log_level_warn_without_json_flag() {
-        let args = vec![
-            "kira-mux".to_string(),
-            "status".to_string(),
-            "demo".to_string(),
-        ];
-        assert_eq!(default_log_level(args), "warn");
-    }
-
-    #[test]
-    fn default_log_level_error_with_json_flag() {
-        let args = vec![
-            "kira-mux".to_string(),
-            "status".to_string(),
-            "demo".to_string(),
-            "--json".to_string(),
-        ];
-        assert_eq!(default_log_level(args), "error");
-    }
-
-    #[test]
-    fn default_log_level_error_with_json_flag_anywhere_in_args() {
-        let args = vec![
-            "kira-mux".to_string(),
-            "status".to_string(),
-            "kira".to_string(),
-            "--json".to_string(),
-            "--profile".to_string(),
-            "pool-1".to_string(),
-        ];
-        assert_eq!(default_log_level(args), "error");
-    }
-
-    #[test]
-    fn default_log_level_ignores_json_after_double_dash() {
-        let args = vec![
-            "kira-mux".to_string(),
-            "send".to_string(),
-            "demo".to_string(),
-            "alpha".to_string(),
-            "--".to_string(),
-            "--json".to_string(),
-        ];
-        assert_eq!(default_log_level(args), "warn");
+    fn default_log_level_matches_output_mode() {
+        assert_eq!(default_log_level(false), "warn");
+        assert_eq!(default_log_level(true), "error");
     }
 
     #[test]

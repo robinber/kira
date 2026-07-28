@@ -10,8 +10,6 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    kira_mux::logging::init_logging();
-
     match kira_mux::run() {
         Ok(()) => ExitCode::SUCCESS,
         // Unix pipeline convention: `kira-mux … | head` should not report a

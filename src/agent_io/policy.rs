@@ -67,16 +67,45 @@ fn shell_command_needs_double_enter(agent: &ResolvedAgent) -> bool {
 }
 
 fn contains_tool(command: &str, tools: &[&str]) -> bool {
-    command
-        .split(|ch: char| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '\'' | '"' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>'
-                )
-        })
-        .map(command_basename)
+    command_position_basenames(command)
+        .into_iter()
         .any(|token| tools.contains(&token))
+}
+
+/// Basenames in command position only: the first word of the command and
+/// of every `;`/`&`/`|`/`(`-separated segment. `env`-style assignments and
+/// the `env`/`exec`/`nohup` wrappers are transparent, and `ssh` skips its
+/// options plus the destination so the remote command is inspected — but a
+/// tool name in argument position (`mytool --model claude`,
+/// `ssh host 'echo claude ready'`) never classifies.
+fn command_position_basenames(command: &str) -> Vec<&str> {
+    let mut positions = Vec::new();
+    for segment in command.split([';', '&', '|', '(', '\n']) {
+        let mut tokens = segment
+            .split(|ch: char| {
+                ch.is_whitespace() || matches!(ch, '\'' | '"' | '`' | ')' | '<' | '>')
+            })
+            .filter(|token| !token.is_empty());
+        while let Some(token) = tokens.next() {
+            let base = command_basename(token);
+            if base.contains('=') || matches!(base, "env" | "exec" | "nohup") {
+                continue;
+            }
+            if base == "ssh" {
+                // Skip options; the first bare word is the destination, and
+                // whatever follows is the remote command line.
+                for next in tokens.by_ref() {
+                    if !next.starts_with('-') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            positions.push(base);
+            break;
+        }
+    }
+    positions
 }
 
 pub(super) fn needs_send_keys_for_text(agent: &ResolvedAgent, pane_command: Option<&str>) -> bool {
@@ -252,6 +281,34 @@ mod tests {
         assert_eq!(
             infer_submit_behavior(&agent, Some("__shell__")),
             SubmitBehavior::SingleEnter
+        );
+    }
+
+    #[test]
+    fn tool_names_in_argument_position_do_not_classify() {
+        // Only command positions match: a tool name as an argument or
+        // inside a quoted echo must not trigger tool behavior.
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("ssh -t root@example 'echo claude ready'".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::SingleEnter
+        );
+
+        agent.shell_command = Some("mytool --model claude".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::SingleEnter
+        );
+    }
+
+    #[test]
+    fn wrapped_tool_in_command_position_still_classifies() {
+        let mut agent = test_agent(AgentMode::Shell, None);
+        agent.shell_command = Some("env FOO=1 exec claude --model opus".to_string());
+        assert_eq!(
+            infer_submit_behavior(&agent, Some("__shell__")),
+            SubmitBehavior::DoubleEnter
         );
     }
 
