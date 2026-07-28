@@ -338,6 +338,35 @@ mod tests {
     }
 
     #[test]
+    fn health_window_is_shared_across_live_panes() {
+        // Discriminates batching from the old serial verify: two live
+        // panes must cost one window, not one per pane.
+        let fake = FakeTmux::new();
+        fake.add_session("s");
+        fake.add_window("s", "agents");
+        fake.add_pane("s", "agents", "%0", false);
+        fake.add_pane("s", "agents", "%1", false);
+        let project = test_project();
+
+        let started = std::time::Instant::now();
+        let failures = super::verify_panes_survived_launch(
+            &fake,
+            &[("%0", &project.agents[0]), ("%1", &project.agents[1])],
+        );
+        let elapsed = started.elapsed();
+
+        assert!(failures.is_empty(), "live panes must pass verification");
+        assert!(
+            elapsed >= super::POST_LAUNCH_HEALTH_WINDOW,
+            "the full window must elapse for live panes, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < super::POST_LAUNCH_HEALTH_WINDOW + std::time::Duration::from_millis(250),
+            "two live panes must share one window, not pay one each, got {elapsed:?}"
+        );
+    }
+
+    #[test]
     fn shared_health_window_reports_only_the_dead_panes() {
         let fake = FakeTmux::new();
         fake.add_session("s");
