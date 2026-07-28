@@ -11,6 +11,32 @@ use crate::tmux::metadata::{
     WINDOW_ROLE_AGENTS,
 };
 
+/// Minimal direct-mode agent (`echo` in the test-project root, label
+/// capitalized from the id). Mutate the returned value for the one
+/// deviation a test needs instead of spelling every field — new
+/// `ResolvedAgent` fields then only touch this builder.
+pub(crate) fn test_agent(id: &str) -> ResolvedAgent {
+    let mut chars = id.chars();
+    let label = match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    };
+    ResolvedAgent {
+        id: id.to_string(),
+        label,
+        mode: AgentMode::Direct,
+        command: Some("echo".to_string()),
+        shell_command: None,
+        args: vec![],
+        cwd: PathBuf::from("/tmp/test-project"),
+        env: BTreeMap::new(),
+        capabilities: vec![],
+        prompt_template: None,
+        submit: None,
+        text_delivery: None,
+    }
+}
+
 pub(crate) fn test_project() -> ResolvedProject {
     ResolvedProject {
         id: "test".to_string(),
@@ -24,36 +50,7 @@ pub(crate) fn test_project() -> ResolvedProject {
         default_shell: "/bin/sh".to_string(),
         remain_on_exit: RemainOnExit::Failed,
         tmux_bin: "tmux".to_string(),
-        agents: vec![
-            ResolvedAgent {
-                id: "alpha".to_string(),
-                label: "Alpha".to_string(),
-                mode: AgentMode::Direct,
-                command: Some("echo".to_string()),
-                shell_command: None,
-                args: vec![],
-                cwd: PathBuf::from("/tmp/test-project"),
-                env: BTreeMap::new(),
-                capabilities: vec![],
-                prompt_template: None,
-                submit: None,
-                text_delivery: None,
-            },
-            ResolvedAgent {
-                id: "beta".to_string(),
-                label: "Beta".to_string(),
-                mode: AgentMode::Direct,
-                command: Some("echo".to_string()),
-                shell_command: None,
-                args: vec![],
-                cwd: PathBuf::from("/tmp/test-project"),
-                env: BTreeMap::new(),
-                capabilities: vec![],
-                prompt_template: None,
-                submit: None,
-                text_delivery: None,
-            },
-        ],
+        agents: vec![test_agent("alpha"), test_agent("beta")],
         fingerprint: "abc123".to_string(),
         groups: BTreeMap::new(),
     }

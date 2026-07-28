@@ -222,7 +222,6 @@ fn pane_is_dead(tmux: &dyn TmuxAdapter, pane_id: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::io;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -230,8 +229,7 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::TopologyGuard;
-    use crate::config::AgentMode;
-    use crate::model::{ResolvedAgent, ResolvedProject};
+    use crate::model::ResolvedProject;
     use crate::test_support::{FakeOp, FakeTmux, TestResultExt, test_project};
     use crate::tmux::TmuxAdapter;
 
@@ -267,20 +265,11 @@ mod tests {
 
     fn minimal_project() -> ResolvedProject {
         let mut project = test_project();
-        project.agents = vec![ResolvedAgent {
-            id: "coder".to_string(),
-            label: "Coder".to_string(),
-            mode: AgentMode::Direct,
-            command: Some("codex".to_string()),
-            shell_command: None,
-            args: vec!["--profile".to_string(), "fast".to_string()],
-            cwd: PathBuf::from("/tmp"),
-            env: BTreeMap::new(),
-            capabilities: vec![],
-            prompt_template: None,
-            submit: None,
-            text_delivery: None,
-        }];
+        let mut coder = crate::test_support::test_agent("coder");
+        coder.command = Some("codex".to_string());
+        coder.args = vec!["--profile".to_string(), "fast".to_string()];
+        coder.cwd = PathBuf::from("/tmp");
+        project.agents = vec![coder];
         project
     }
 
