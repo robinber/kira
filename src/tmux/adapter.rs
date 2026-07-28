@@ -133,7 +133,11 @@ pub(crate) trait TmuxAdapter {
         window_name: &str,
         pane_count: usize,
     ) -> Result<()>;
-    /// List panes for a session or window target.
+    /// List panes for a `session:window` or `%pane` target.
+    ///
+    /// Bare session targets are not part of the contract: real
+    /// `list-panes -t session` (without `-s`) reads only the session's
+    /// current window, which no caller wants.
     fn list_panes(&self, target: &str) -> Result<Vec<PaneInfo>>;
     /// Split a window, creating another pane in `start_directory`.
     ///

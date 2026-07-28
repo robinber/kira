@@ -499,6 +499,13 @@ impl FakeTmux {
             self.next_pane_id.fetch_max(index + 1, Ordering::Relaxed);
         }
         let mut sessions = ok(self.sessions.lock(), "fake tmux sessions mutex poisoned");
+        // Loud collision detection: pane ids are server-lifetime unique on
+        // real tmux, so a duplicate here is a fixture bug (or an
+        // allocator/fixture race) that must abort instead of aliasing.
+        assert!(
+            Self::find_pane(&sessions, pane_id).is_none(),
+            "duplicate fake pane id {pane_id}: ids must be unique across all sessions"
+        );
         let session_name = session;
         let window_name = window;
         let session = some(

@@ -4,8 +4,10 @@
 //! semantics to real tmux instead of to comments.
 //!
 //! Every test asserts the fake unconditionally and repeats the identical
-//! sequence against the real server when one can be started, so CI without
-//! tmux still checks the fake side.
+//! sequence against the real server. The real half is mandatory by
+//! default (see the canary); environments that genuinely cannot run tmux
+//! opt out explicitly with `KIRA_MUX_SKIP_TMUX_CONFORMANCE=1` rather
+//! than degrading silently.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -14,7 +16,14 @@ use super::FakeTmux;
 use crate::test_support::TestResultExt;
 use crate::tmux::{TmuxAdapter, TmuxClient, TmuxError};
 
+const TMUX_BIN: &str = "tmux";
+const SKIP_ENV: &str = "KIRA_MUX_SKIP_TMUX_CONFORMANCE";
+
 static SOCKET_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+fn conformance_skipped() -> bool {
+    std::env::var_os(SKIP_ENV).is_some_and(|value| value == "1")
+}
 
 /// A real client on an isolated socket, its server killed on drop.
 struct RealServer {
@@ -24,20 +33,24 @@ struct RealServer {
 
 impl Drop for RealServer {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("tmux")
+        let _ = std::process::Command::new(TMUX_BIN)
             .args(["-L", &self.socket, "kill-server"])
             .output();
     }
 }
 
-/// `None` when no usable tmux binary is on PATH.
+/// `None` when the explicit skip is set or no usable tmux binary is on
+/// PATH.
 fn real_server() -> Option<RealServer> {
+    if conformance_skipped() {
+        return None;
+    }
     let socket = format!(
         "kira-conformance-{}-{}",
         std::process::id(),
         SOCKET_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let client = TmuxClient::with_socket("tmux", &socket);
+    let client = TmuxClient::with_socket(TMUX_BIN, &socket);
     match client.session_exists("probe") {
         // A fresh socket answers "no server": the binary works.
         Ok(_) => Some(RealServer { client, socket }),
@@ -96,15 +109,20 @@ fn observe_id_sequence(tmux: &dyn TmuxAdapter) -> Vec<String> {
     ids
 }
 
-/// Canary: the dual-impl half of this suite must actually run wherever
-/// the repo's tests run (CI and dev machines ship tmux — the client unit
-/// tests already spawn it). If this fails, the conformance suite has
-/// silently degraded to fake-only assertions.
+/// Canary: the dual-impl half of this suite is mandatory by default — the
+/// unit CI job installs tmux explicitly for it. Without this test, a
+/// missing binary would silently degrade every conformance test to
+/// fake-only assertions while staying green. Environments that cannot run
+/// tmux set `KIRA_MUX_SKIP_TMUX_CONFORMANCE=1` to opt out loudly.
 #[test]
 fn real_tmux_is_available_for_conformance() {
+    if conformance_skipped() {
+        return;
+    }
     assert!(
         real_server().is_some(),
-        "no usable tmux binary: dual-impl conformance is not running"
+        "no usable tmux binary: dual-impl conformance is not running \
+         (set {SKIP_ENV}=1 to opt out explicitly)"
     );
 }
 
@@ -209,16 +227,25 @@ fn capture_shape_has_no_trailing_padding_and_one_newline() {
 
 #[test]
 fn vanished_target_classifications_match_real_tmux() {
+    // Absolute expectations, not just fake==real: a shared
+    // misclassification of both impls must fail too.
+    let expected = [
+        "missing_target",
+        "missing_target",
+        "missing_target",
+        "missing_session",
+    ];
+
     let fake = FakeTmux::new();
     fake.add_session("conf");
     fake.add_window("conf", "w");
-    let fake_kinds = observe_error_kinds(&fake);
+    assert_eq!(observe_error_kinds(&fake), expected);
 
     if let Some(real) = real_server() {
         real.client
             .create_detached_session("conf", &tmp(), "w", 1)
             .or_panic("conformance: real session");
-        assert_eq!(observe_error_kinds(&real.client), fake_kinds);
+        assert_eq!(observe_error_kinds(&real.client), expected);
     }
 }
 

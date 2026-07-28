@@ -65,6 +65,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+      # The FakeTmux conformance suite runs its dual-impl half against a
+      # real tmux on an isolated socket; install it explicitly instead of
+      # relying on the runner image shipping it.
+      - name: Install tmux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tmux
+          tmux -V
       # Integration tests (tests/) run in their own job against real tmux.
       # There are no doc-tests; the doc job builds rustdoc with -D warnings.
       - run: cargo test --workspace --all-features --lib --bins
