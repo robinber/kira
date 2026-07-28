@@ -141,7 +141,10 @@ struct SubmissionObservation<'a> {
 
 enum SubmissionDecision {
     Pending,
-    Acknowledged { production_seen: bool },
+    Acknowledged {
+        production_seen: bool,
+        via: &'static str,
+    },
 }
 
 fn observe_submission(
@@ -181,7 +184,16 @@ fn observe_submission(
         && observation.observed_at >= options.submission_timeout;
 
     if acknowledged || generically_stable || redraw_timeout {
-        SubmissionDecision::Acknowledged { production_seen }
+        SubmissionDecision::Acknowledged {
+            production_seen,
+            via: if acknowledged {
+                "prompt-stable"
+            } else if generically_stable {
+                "generic-stability"
+            } else {
+                "redraw-timeout"
+            },
+        }
     } else {
         SubmissionDecision::Pending
     }
@@ -256,13 +268,19 @@ impl FrameTracker {
         self.material.len() >= 2 || self.material.iter().any(|event| event.after_prior_activity)
     }
 
-    fn quiet_window(&self, options: &WaitOptions, production_seen: bool) -> Duration {
+    /// The quiet window matching the current evidence, with its class
+    /// name for observability.
+    fn quiet_window(
+        &self,
+        options: &WaitOptions,
+        production_seen: bool,
+    ) -> (Duration, &'static str) {
         if self.has_strong_evidence() {
-            options.normal_quiet_window
+            (options.normal_quiet_window, "normal")
         } else if production_seen {
-            options.low_confidence_quiet_window
+            (options.low_confidence_quiet_window, "low-confidence")
         } else {
-            options.submission_only_quiet_window
+            (options.submission_only_quiet_window, "submission-only")
         }
     }
 }
@@ -282,6 +300,10 @@ fn push_bounded<T>(items: &mut VecDeque<T>, item: T) {
 /// [`KiraMuxError::PaneDiedDuringWait`] when the pane is dead at entry or
 /// dies/vanishes mid-wait (frozen dead content must never read as "stable").
 /// [`KiraMuxError::WaitTimeout`] when the hard timeout elapses first.
+#[expect(
+    clippy::too_many_lines,
+    reason = "instrumented convergence state machine; issue #96 extracts the phases"
+)]
 pub(crate) fn wait_on_pane(
     tmux: &dyn TmuxAdapter,
     agent_id: &str,
@@ -289,9 +311,16 @@ pub(crate) fn wait_on_pane(
     options: &WaitOptions,
 ) -> Result<String> {
     if pane_is_dead(tmux, &seed.delivered.pane_id)? {
+        tracing::debug!(agent = agent_id, "pane already dead at wait entry");
         return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
     }
 
+    tracing::debug!(
+        agent = agent_id,
+        pane = %seed.delivered.pane_id,
+        capture_lines = seed.capture_lines,
+        "wait started"
+    );
     let wall_start = Instant::now();
     let pre_submit = normalize_frame(&seed.pre_submit);
     let prompt_fragments = prompt_fragments(&seed.delivered.rendered);
@@ -303,10 +332,21 @@ pub(crate) fn wait_on_pane(
     let mut candidate_seen = false;
     let mut production_seen = false;
     let mut last_visible_change = Duration::ZERO;
+    let mut logged_quiet_class: Option<&'static str> = None;
+    let mut post_ack_production_logged = false;
 
     loop {
         let now = options.elapsed(wall_start);
         if now >= options.hard_timeout {
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?now,
+                phase = match &phase {
+                    WaitPhase::Submitting(_) => "submitting",
+                    WaitPhase::Settling { .. } => "settling",
+                },
+                "wait hard timeout"
+            );
             return Err(KiraMuxError::WaitTimeout {
                 agent_id: agent_id.to_string(),
                 last_capture,
@@ -317,6 +357,11 @@ pub(crate) fn wait_on_pane(
         options.sleep(options.poll_interval.min(remaining));
 
         if pane_is_dead(tmux, &seed.delivered.pane_id)? {
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?options.elapsed(wall_start),
+                "pane died during wait"
+            );
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
@@ -349,11 +394,23 @@ pub(crate) fn wait_on_pane(
             };
             if let SubmissionDecision::Acknowledged {
                 production_seen: seen,
+                via,
             } = observe_submission(submission, observation, options)
             {
                 candidate_seen = true;
                 production_seen = seen;
                 tracker.reset(last_frame.clone());
+                let (window, class) = tracker.quiet_window(options, production_seen);
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    production_seen = seen,
+                    via,
+                    quiet_window = ?window,
+                    class,
+                    "submission acknowledged, settling"
+                );
+                logged_quiet_class = Some(class);
                 last_visible_change = observed_at;
                 phase = WaitPhase::Settling {
                     threshold_seen: false,
@@ -367,11 +424,31 @@ pub(crate) fn wait_on_pane(
                 // Returning to the exact pre-submit image invalidates the
                 // acknowledgement. Stay conservative and wait for a durable
                 // submission transition instead of reporting the idle pane.
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    "frame reverted to pre-submit image, re-waiting for submission"
+                );
+                logged_quiet_class = None;
+                post_ack_production_logged = false;
                 candidate_seen = false;
                 production_seen = false;
                 tracker.reset(pre_submit.clone());
                 phase = WaitPhase::Submitting(SubmissionState::new(observed_at));
                 continue;
+            }
+            if post_ack_production_logged {
+                tracing::trace!(agent = agent_id, elapsed = ?observed_at, "frame changed");
+            } else {
+                // First production after acknowledgement logs at debug so
+                // poll-aliased activity and one-frame replies are
+                // distinguishable without trace volume.
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    "production evidence after acknowledgement"
+                );
+                post_ack_production_logged = true;
             }
             candidate_seen = true;
             production_seen = true;
@@ -388,15 +465,38 @@ pub(crate) fn wait_on_pane(
             continue;
         }
 
-        let quiet_window = tracker.quiet_window(options, production_seen);
+        let (quiet_window, quiet_class) = tracker.quiet_window(options, production_seen);
+        if logged_quiet_class != Some(quiet_class) {
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?observed_at,
+                quiet_window = ?quiet_window,
+                class = quiet_class,
+                "settling quiet window changed"
+            );
+            logged_quiet_class = Some(quiet_class);
+        }
         if observed_at.saturating_sub(last_visible_change) < quiet_window {
             continue;
         }
 
         if let WaitPhase::Settling { threshold_seen } = &mut phase {
             if *threshold_seen {
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    "wait converged on stable output"
+                );
                 return Ok(last_capture);
             }
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?observed_at,
+                quiet_window = ?quiet_window,
+                class = quiet_class,
+                production_seen,
+                "quiet window satisfied, confirming stability"
+            );
             *threshold_seen = true;
         }
     }

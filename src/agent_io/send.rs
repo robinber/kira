@@ -203,13 +203,25 @@ fn paste_and_submit_inner(
     final_prompt: &str,
 ) -> Result<()> {
     let pane_command = tmux.get_pane_option(&pane.pane_id, PANE_AGENT_COMMAND)?;
+    let behavior = infer_submit_behavior(agent, pane_command.as_deref());
     if !final_prompt.is_empty() && needs_send_keys_for_text(agent, pane_command.as_deref()) {
+        tracing::debug!(
+            pane = %pane.pane_id,
+            delivery = "send-keys",
+            submit = ?behavior,
+            "delivering prompt"
+        );
         crate::tmux::send_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     } else {
+        tracing::debug!(
+            pane = %pane.pane_id,
+            delivery = "paste",
+            submit = ?behavior,
+            "delivering prompt"
+        );
         crate::tmux::paste_then_submit_text(tmux, &pane.pane_id, final_prompt)?;
     }
 
-    let behavior = infer_submit_behavior(agent, pane_command.as_deref());
     if behavior == SubmitBehavior::DoubleEnter {
         std::thread::sleep(DOUBLE_ENTER_DELAY);
         tmux.send_keys(&pane.pane_id, &["Enter"])?;

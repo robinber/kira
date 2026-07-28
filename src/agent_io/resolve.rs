@@ -88,6 +88,12 @@ pub(super) fn resolve_managed_pane<'a>(
         }
     };
 
+    tracing::debug!(
+        agent = agent_id,
+        pane = %pane.pane_id,
+        pane_dead = pane.pane_dead,
+        "managed pane resolved"
+    );
     Ok((pane, agent, topology))
 }
 
