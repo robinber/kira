@@ -84,7 +84,7 @@ pub(crate) fn cmd_list(json: bool) -> Result<()> {
         // Entries already carry per-file diagnostics on stdout (text + JSON).
         // Exit non-zero so automation does not treat a broken config as
         // "project simply absent".
-        return Err(crate::config::ConfigError::ProjectConfigLoadFailures {
+        return Err(KiraMuxError::ProjectConfigLoadFailures {
             count: failure_count,
         }
         .into());

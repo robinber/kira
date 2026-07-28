@@ -12,6 +12,14 @@ pub enum KiraMuxError {
     /// The requested agent ID does not exist in the resolved project.
     #[error("unknown agent id: {0}")]
     UnknownAgentId(String),
+    /// One or more project files failed to load; `list` printed the
+    /// per-entry rows. Lives here (not in `ConfigError`) because it is a
+    /// command outcome, not a config-layer fact.
+    #[error("{count} project config(s) failed to load (details in list output)")]
+    ProjectConfigLoadFailures {
+        /// Number of failed project files / profiles.
+        count: usize,
+    },
     /// The requested group name does not exist in the resolved project.
     #[error("unknown group name: {0}")]
     UnknownGroupName(String),
