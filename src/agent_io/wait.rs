@@ -275,6 +275,37 @@ struct SettlingObservation<'a> {
     observed_at: Duration,
 }
 
+/// Reset the tracker on the acknowledged frame, log the transition, and
+/// build the settling state that [`WaitPhase::Settling`] carries.
+fn enter_settling(
+    tracker: &mut FrameTracker,
+    last_frame: &str,
+    production_seen: bool,
+    via: &'static str,
+    observed_at: Duration,
+    options: &WaitOptions,
+    agent_id: &str,
+) -> SettlingState {
+    tracker.reset(last_frame.to_string());
+    let (window, class) = tracker.quiet_window(options, production_seen);
+    tracing::debug!(
+        agent = agent_id,
+        elapsed = ?observed_at,
+        production_seen,
+        via,
+        quiet_window = ?window,
+        class,
+        "submission acknowledged, settling"
+    );
+    SettlingState {
+        production_seen,
+        threshold_seen: false,
+        last_visible_change: observed_at,
+        logged_quiet_class: Some(class),
+        post_ack_production_logged: false,
+    }
+}
+
 enum SettlingDecision {
     /// Keep settling.
     Pending,
@@ -521,15 +552,7 @@ pub(crate) fn wait_on_pane(
 
         let current = capture_or_died(tmux, agent_id, &seed.delivered.pane_id, seed.capture_lines)?;
         let observed_at = options.elapsed(wall_start);
-        // Byte-identical captures normalize identically: skip the allocation.
-        let mut changed = false;
-        if current != last_capture {
-            let current_frame = normalize_frame(&current);
-            if current_frame != last_frame {
-                last_frame = current_frame;
-                changed = true;
-            }
-        }
+        let changed = frame_changed(&current, &last_capture, &mut last_frame);
         last_capture = current;
 
         phase = match phase {
@@ -552,26 +575,15 @@ pub(crate) fn wait_on_pane(
                     SubmissionDecision::Acknowledged {
                         production_seen,
                         via,
-                    } => {
-                        tracker.reset(last_frame.clone());
-                        let (window, class) = tracker.quiet_window(options, production_seen);
-                        tracing::debug!(
-                            agent = agent_id,
-                            elapsed = ?observed_at,
-                            production_seen,
-                            via,
-                            quiet_window = ?window,
-                            class,
-                            "submission acknowledged, settling"
-                        );
-                        WaitPhase::Settling(SettlingState {
-                            production_seen,
-                            threshold_seen: false,
-                            last_visible_change: observed_at,
-                            logged_quiet_class: Some(class),
-                            post_ack_production_logged: false,
-                        })
-                    }
+                    } => WaitPhase::Settling(enter_settling(
+                        &mut tracker,
+                        &last_frame,
+                        production_seen,
+                        via,
+                        observed_at,
+                        options,
+                        agent_id,
+                    )),
                 }
             }
             WaitPhase::Settling(mut settling) => {
@@ -592,6 +604,21 @@ pub(crate) fn wait_on_pane(
             }
         };
     }
+}
+
+/// Normalize the capture and report whether the visible frame moved,
+/// updating `last_frame` when it did.
+fn frame_changed(current: &str, last_capture: &str, last_frame: &mut String) -> bool {
+    // Byte-identical captures normalize identically: skip the allocation.
+    if current == last_capture {
+        return false;
+    }
+    let current_frame = normalize_frame(current);
+    if current_frame == *last_frame {
+        return false;
+    }
+    *last_frame = current_frame;
+    true
 }
 
 fn normalize_frame(capture: &str) -> String {
