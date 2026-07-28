@@ -36,6 +36,11 @@ pub(crate) fn validate_main_pane_ratio(ratio: u8) -> Result<()> {
 }
 
 pub(crate) fn validate_global_config(global: &GlobalConfig) -> Result<()> {
+    // Identifier checks live here, at load time, so a bad global value
+    // fails once with global-config attribution — not per-project (or
+    // never, with zero projects).
+    validate_identifier("session prefix", &global.session_prefix)?;
+    validate_identifier("window name", &global.window_name)?;
     validate_main_pane_ratio(global.main_pane_ratio)?;
 
     let _ = build_template_map(&global.agent_templates)?;

@@ -359,7 +359,7 @@ pub(crate) fn build_agents_output(
         })
         .collect();
 
-    let profile = if project.profile_id == "default" {
+    let profile = if project.profile_id == crate::config::DEFAULT_PROFILE_ID {
         None
     } else {
         Some(project.profile_id.clone())

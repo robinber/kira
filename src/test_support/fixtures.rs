@@ -40,7 +40,7 @@ pub(crate) fn test_agent(id: &str) -> ResolvedAgent {
 pub(crate) fn test_project() -> ResolvedProject {
     ResolvedProject {
         id: "test".to_string(),
-        profile_id: "default".to_string(),
+        profile_id: crate::config::DEFAULT_PROFILE_ID.to_string(),
         name: "Test".to_string(),
         root: PathBuf::from("/tmp/test-project"),
         layout: Layout::Auto,

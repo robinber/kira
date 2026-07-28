@@ -37,7 +37,7 @@ id = "worker"
     );
     let raw = ok(parsed, "parse project");
 
-    let err = err(resolve_profile_id(&raw, None), "profile should be required");
+    let err = err(select_profile(&raw, None), "profile should be required");
 
     match err {
         ConfigError::ProfileRequired {
@@ -65,7 +65,7 @@ id = "worker"
     );
     let raw = ok(parsed, "parse project");
 
-    let profile = ok(resolve_profile_id(&raw, None), "resolve sole profile");
+    let (profile, _project) = ok(select_profile(&raw, None), "resolve sole profile");
 
     assert_eq!(profile, "work");
 }
@@ -83,9 +83,15 @@ id = "assistant"
     );
     let raw = ok(parsed, "parse project");
 
-    let profile = ok(resolve_profile_id(&raw, None), "resolve flat profile");
+    let (profile, _project) = ok(select_profile(&raw, None), "resolve flat profile");
 
-    assert_eq!(profile, "default");
+    assert_eq!(profile, DEFAULT_PROFILE_ID);
+
+    let err = err(
+        select_profile(&raw, Some("nope")),
+        "a flat file must reject non-default profile ids",
+    );
+    assert!(matches!(err, ConfigError::UnknownProfile { ref id } if id == "nope"));
 }
 
 #[test]
@@ -486,7 +492,10 @@ command = "echo"
     assert!(loaded.projects.is_empty());
     assert_eq!(loaded.failures.len(), 1);
     assert_eq!(loaded.failures[0].project_id.as_deref(), Some("bad-root"));
-    assert_eq!(loaded.failures[0].profile_id.as_deref(), Some("default"));
+    assert_eq!(
+        loaded.failures[0].profile_id.as_deref(),
+        Some(DEFAULT_PROFILE_ID)
+    );
     assert!(
         loaded.failures[0].error.contains("absolute")
             || loaded.failures[0].error.contains("relative"),

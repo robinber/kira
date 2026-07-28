@@ -11,7 +11,8 @@ mod resolve;
 
 pub use error::ConfigError;
 pub(crate) use load::{
-    ProjectConfigFailure, load_project, load_project_from_current_directory, load_projects,
+    DEFAULT_PROFILE_ID, ProjectConfigFailure, load_project, load_project_from_current_directory,
+    load_projects,
 };
 pub(crate) use model::{
     AgentMode, Layout, RemainOnExit, ResolutionMode, SubmitPolicy, TextDelivery,

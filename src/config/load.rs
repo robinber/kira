@@ -98,7 +98,10 @@ pub(crate) fn load_projects(
         };
 
         for pid in profile_ids(&raw) {
-            let resolved_profile = resolve_profile(&raw, pid, &global, resolution_mode);
+            let resolved_profile =
+                select_profile(&raw, Some(pid)).and_then(|(profile_id, project)| {
+                    resolve_project(project, &profile_id, &global, resolution_mode)
+                });
             match resolved_profile {
                 Ok(project) => loaded.projects.push(project),
                 Err(error) => {
@@ -243,8 +246,8 @@ fn resolve_loaded_project(
     global: &GlobalConfig,
     resolution_mode: ResolutionMode,
 ) -> Result<ResolvedProject> {
-    let effective_profile = resolve_profile_id(raw, profile_id)?;
-    resolve_profile(raw, &effective_profile, global, resolution_mode)
+    let (profile_id, project) = select_profile(raw, profile_id)?;
+    resolve_project(project, &profile_id, global, resolution_mode)
 }
 
 fn parse_project_raw(path: &Path) -> Result<ProjectFileRaw> {
@@ -263,84 +266,80 @@ fn parse_project_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
         .map_err(|error| ConfigError::file_parse(path.to_path_buf(), &source, &error))
 }
 
-fn resolve_profile(
-    raw: &ProjectFileRaw,
-    profile_id: &str,
-    global: &GlobalConfig,
-    resolution_mode: ResolutionMode,
-) -> Result<ResolvedProject> {
-    let project = select_profile(raw, profile_id)?;
-    resolve_project(project, profile_id, global, resolution_mode)
-}
+/// Profile id used by flat (profile-less) project files.
+pub(crate) const DEFAULT_PROFILE_ID: &str = "default";
 
-fn select_profile(raw: &ProjectFileRaw, profile_id: &str) -> Result<ProjectFile> {
+/// Validate `requested` against the file shape and return the selected
+/// `(profile_id, ProjectFile)` pair — the only way to obtain a
+/// per-profile view, so a flat file cannot silently accept a bogus
+/// profile id and the two halves of selection cannot disagree.
+fn select_profile(raw: &ProjectFileRaw, requested: Option<&str>) -> Result<(String, ProjectFile)> {
     // Only layout, ratio, and agents vary between the flat and profiled
     // shapes; everything else always comes from the top level.
-    let (layout, main_pane_ratio, agents) = match &raw.profiles {
-        Some(profiles) => {
+    let (profile_id, layout, main_pane_ratio, agents) = if let Some(profiles) = &raw.profiles {
+        {
+            let profile_id = match requested {
+                Some(id) => id.to_string(),
+                None if profiles.len() == 1 => profiles
+                    .keys()
+                    .next()
+                    .cloned()
+                    .ok_or(ConfigError::EmptyProfiles)?,
+                None => {
+                    return Err(ConfigError::ProfileRequired {
+                        project_id: raw.id.clone(),
+                        available: profiles.keys().cloned().collect(),
+                    });
+                }
+            };
             let profile = profiles
-                .get(profile_id)
+                .get(&profile_id)
                 .ok_or_else(|| ConfigError::UnknownProfile {
-                    id: profile_id.to_string(),
+                    id: profile_id.clone(),
                 })?;
             (
+                profile_id,
                 profile.layout,
                 profile.main_pane_ratio,
                 profile.agents.clone(),
             )
         }
-        None => (
-            raw.layout,
-            raw.main_pane_ratio,
-            raw.agents.clone().unwrap_or_default(),
-        ),
+    } else {
+        {
+            let profile_id = requested.unwrap_or(DEFAULT_PROFILE_ID);
+            if profile_id != DEFAULT_PROFILE_ID {
+                return Err(ConfigError::UnknownProfile {
+                    id: profile_id.to_string(),
+                });
+            }
+            (
+                profile_id.to_string(),
+                raw.layout,
+                raw.main_pane_ratio,
+                raw.agents.clone().unwrap_or_default(),
+            )
+        }
     };
 
-    Ok(ProjectFile {
-        id: raw.id.clone(),
-        name: raw.name.clone(),
-        root: raw.root.clone(),
-        layout,
-        main_pane_ratio,
-        window_name: raw.window_name.clone(),
-        agents,
-        groups: raw.groups.clone().unwrap_or_default(),
-    })
+    Ok((
+        profile_id,
+        ProjectFile {
+            id: raw.id.clone(),
+            name: raw.name.clone(),
+            root: raw.root.clone(),
+            layout,
+            main_pane_ratio,
+            window_name: raw.window_name.clone(),
+            agents,
+            groups: raw.groups.clone().unwrap_or_default(),
+        },
+    ))
 }
 
 fn profile_ids(raw: &ProjectFileRaw) -> Vec<&str> {
     match &raw.profiles {
         Some(profiles) => profiles.keys().map(String::as_str).collect(),
-        None => vec!["default"],
-    }
-}
-
-fn resolve_profile_id(raw: &ProjectFileRaw, requested: Option<&str>) -> Result<String> {
-    if let Some(profiles) = &raw.profiles {
-        let id = match requested {
-            Some(id) => id.to_string(),
-            None if profiles.len() == 1 => profiles
-                .keys()
-                .next()
-                .cloned()
-                .ok_or(ConfigError::EmptyProfiles)?,
-            None => {
-                return Err(ConfigError::ProfileRequired {
-                    project_id: raw.id.clone(),
-                    available: profiles.keys().cloned().collect(),
-                });
-            }
-        };
-        if !profiles.contains_key(&id) {
-            return Err(ConfigError::UnknownProfile { id });
-        }
-        Ok(id)
-    } else {
-        let id = requested.unwrap_or("default");
-        if id != "default" {
-            return Err(ConfigError::UnknownProfile { id: id.to_string() });
-        }
-        Ok("default".to_string())
+        None => vec![DEFAULT_PROFILE_ID],
     }
 }
 

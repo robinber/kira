@@ -26,7 +26,6 @@ pub(crate) fn resolve_project(
 ) -> Result<ResolvedProject> {
     validate::validate_project_shape(&project)?;
     validate::validate_identifier("profile id", profile_id)?;
-    validate::validate_identifier("session prefix", &global.session_prefix)?;
 
     let (root, layout, main_pane_ratio, window_name, name) =
         resolve_workspace_defaults(&project, global, resolution_mode)?;
