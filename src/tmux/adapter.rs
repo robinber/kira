@@ -199,3 +199,10 @@ pub(crate) trait TmuxAdapter {
     /// Make a pane the active pane of its window.
     fn select_pane(&self, pane_id: &str) -> Result<()>;
 }
+
+/// Join a session and window into the canonical `session:window` target.
+/// The single home for that format, shared by the client and workspace
+/// layers.
+pub(crate) fn window_target(session: &str, window_name: &str) -> String {
+    format!("{session}:{window_name}")
+}

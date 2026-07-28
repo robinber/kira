@@ -219,45 +219,6 @@ fn failed_tmux_status_classifier_table() {
 }
 
 #[test]
-fn failed_tmux_status_maps_missing_window_to_missing_target() {
-    let error = failed_tmux_status("s:agents", &failed_output("can't find window: agents"));
-    assert!(matches!(
-        error.downcast_ref::<TmuxError>(),
-        Some(TmuxError::MissingTarget(_))
-    ));
-}
-
-#[test]
-fn failed_tmux_status_maps_missing_session_to_missing_session() {
-    let error = failed_tmux_status("s:agents", &failed_output("can't find session: s"));
-    assert!(matches!(
-        error.downcast_ref::<TmuxError>(),
-        Some(TmuxError::MissingSession(_))
-    ));
-}
-
-#[test]
-fn failed_tmux_status_maps_generic_failure_to_command_failure() {
-    let error = failed_tmux_status("s:agents", &failed_output("server unexpectedly closed"));
-    assert!(matches!(
-        error.downcast_ref::<TmuxError>(),
-        Some(TmuxError::CommandFailure(_))
-    ));
-}
-
-#[test]
-fn failed_tmux_status_maps_no_server() {
-    let error = failed_tmux_status(
-        "s:agents",
-        &failed_output("no server running on /tmp/tmux-1000/default"),
-    );
-    assert!(matches!(
-        error.downcast_ref::<TmuxError>(),
-        Some(TmuxError::NoServer(_))
-    ));
-}
-
-#[test]
 fn list_panes_maps_no_server_through_shared_classifier() {
     let (_temp, client, _log_path) =
         scripted_tmux_with_list_failure("no server running on /tmp/tmux-1000/default");

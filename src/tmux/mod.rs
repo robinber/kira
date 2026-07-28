@@ -13,7 +13,7 @@ mod paste;
 
 pub(crate) use adapter::{
     PaneInfo, TmuxAdapter, WindowGeometry, WorkspacePaneSnapshot, WorkspaceSnapshot,
-    WorkspaceWindowSnapshot,
+    WorkspaceWindowSnapshot, window_target,
 };
 pub(crate) use client::TmuxClient;
 pub(crate) use error::TmuxError;

@@ -14,6 +14,7 @@ mod wait;
 
 pub(crate) use capture::{PaneCapture, capture_output};
 pub(crate) use deep_capture::{DeepCaptureOptions, deepen_wait_capture};
+pub(crate) use policy::command_basename;
 pub(crate) use send::{
     DEFAULT_WAIT_CAPTURE_LINES, DeliveredPrompt, send_prompt, send_prompt_for_wait,
 };

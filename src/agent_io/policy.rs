@@ -6,10 +6,17 @@
 use crate::config::{AgentMode, SubmitPolicy, TextDelivery};
 use crate::model::ResolvedAgent;
 use crate::tmux::metadata::PANE_COMMAND_SHELL;
-use crate::util::command_basename;
 
 const DOUBLE_ENTER_TOOLS: &[&str] = &["codex", "claude", "opencode", "qwen", "grok"];
 const SEND_KEYS_TEXT_TOOLS: &[&str] = &["opencode"];
+
+/// Return the final path segment of a command string.
+///
+/// Only `/` is treated as a separator, matching configured agent commands
+/// (Unix-style paths, including absolute binary paths).
+pub(crate) fn command_basename(cmd: &str) -> &str {
+    cmd.rsplit('/').next().unwrap_or(cmd)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubmitBehavior {
@@ -286,5 +293,17 @@ mod tests {
         let mut agent = test_agent(AgentMode::Direct, Some("my-tool"));
         agent.text_delivery = Some(TextDelivery::SendKeys);
         assert!(needs_send_keys_for_text(&agent, None));
+    }
+
+    #[test]
+    fn command_basename_strips_directory_prefix() {
+        assert_eq!(command_basename("/usr/bin/codex"), "codex");
+        assert_eq!(command_basename("bin/claude"), "claude");
+    }
+
+    #[test]
+    fn command_basename_leaves_bare_name() {
+        assert_eq!(command_basename("opencode"), "opencode");
+        assert_eq!(command_basename(""), "");
     }
 }
