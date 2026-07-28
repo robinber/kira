@@ -282,6 +282,10 @@ fn push_bounded<T>(items: &mut VecDeque<T>, item: T) {
 /// [`KiraMuxError::PaneDiedDuringWait`] when the pane is dead at entry or
 /// dies/vanishes mid-wait (frozen dead content must never read as "stable").
 /// [`KiraMuxError::WaitTimeout`] when the hard timeout elapses first.
+#[expect(
+    clippy::too_many_lines,
+    reason = "instrumented convergence state machine; issue #96 extracts the phases"
+)]
 pub(crate) fn wait_on_pane(
     tmux: &dyn TmuxAdapter,
     agent_id: &str,
@@ -292,6 +296,12 @@ pub(crate) fn wait_on_pane(
         return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
     }
 
+    tracing::debug!(
+        agent = agent_id,
+        pane = %seed.delivered.pane_id,
+        capture_lines = seed.capture_lines,
+        "wait started"
+    );
     let wall_start = Instant::now();
     let pre_submit = normalize_frame(&seed.pre_submit);
     let prompt_fragments = prompt_fragments(&seed.delivered.rendered);
@@ -307,6 +317,15 @@ pub(crate) fn wait_on_pane(
     loop {
         let now = options.elapsed(wall_start);
         if now >= options.hard_timeout {
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?now,
+                phase = match &phase {
+                    WaitPhase::Submitting(_) => "submitting",
+                    WaitPhase::Settling { .. } => "settling",
+                },
+                "wait hard timeout"
+            );
             return Err(KiraMuxError::WaitTimeout {
                 agent_id: agent_id.to_string(),
                 last_capture,
@@ -317,6 +336,7 @@ pub(crate) fn wait_on_pane(
         options.sleep(options.poll_interval.min(remaining));
 
         if pane_is_dead(tmux, &seed.delivered.pane_id)? {
+            tracing::debug!(agent = agent_id, elapsed = ?now, "pane died during wait");
             return Err(KiraMuxError::PaneDiedDuringWait(agent_id.to_string()).into());
         }
 
@@ -351,6 +371,12 @@ pub(crate) fn wait_on_pane(
                 production_seen: seen,
             } = observe_submission(submission, observation, options)
             {
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    production_seen = seen,
+                    "submission acknowledged, settling"
+                );
                 candidate_seen = true;
                 production_seen = seen;
                 tracker.reset(last_frame.clone());
@@ -367,12 +393,18 @@ pub(crate) fn wait_on_pane(
                 // Returning to the exact pre-submit image invalidates the
                 // acknowledgement. Stay conservative and wait for a durable
                 // submission transition instead of reporting the idle pane.
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    "frame reverted to pre-submit image, re-waiting for submission"
+                );
                 candidate_seen = false;
                 production_seen = false;
                 tracker.reset(pre_submit.clone());
                 phase = WaitPhase::Submitting(SubmissionState::new(observed_at));
                 continue;
             }
+            tracing::trace!(agent = agent_id, elapsed = ?observed_at, "frame changed");
             candidate_seen = true;
             production_seen = true;
             tracker.observe_change(&last_frame);
@@ -395,8 +427,20 @@ pub(crate) fn wait_on_pane(
 
         if let WaitPhase::Settling { threshold_seen } = &mut phase {
             if *threshold_seen {
+                tracing::debug!(
+                    agent = agent_id,
+                    elapsed = ?observed_at,
+                    "wait converged on stable output"
+                );
                 return Ok(last_capture);
             }
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?observed_at,
+                quiet_window = ?quiet_window,
+                production_seen,
+                "quiet window satisfied, confirming stability"
+            );
             *threshold_seen = true;
         }
     }
