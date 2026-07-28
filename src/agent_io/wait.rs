@@ -245,7 +245,160 @@ fn observe_submission(
 
 enum WaitPhase {
     Submitting(SubmissionState),
-    Settling { threshold_seen: bool },
+    Settling(SettlingState),
+}
+
+/// Post-acknowledgement convergence state. Lives only inside
+/// [`WaitPhase::Settling`], so the settling facts cannot survive a revert
+/// to the submission phase or leak into it.
+struct SettlingState {
+    /// Frame history since the acknowledgement; owns the quiet-window
+    /// evidence so a revert drops it automatically with the variant.
+    tracker: FrameTracker,
+    /// Whether any production evidence has been observed (at or since the
+    /// acknowledgement); selects the quiet-window class.
+    production_seen: bool,
+    /// A full quiet window has already elapsed once; the next stable poll
+    /// past the window confirms convergence.
+    threshold_seen: bool,
+    /// When the frame last visibly changed.
+    last_visible_change: Duration,
+    /// Last quiet-window class logged, to log transitions exactly once.
+    logged_quiet_class: Option<&'static str>,
+    /// The first post-acknowledgement production change logs at debug;
+    /// later ones drop to trace.
+    post_ack_production_logged: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SettlingObservation<'a> {
+    changed: bool,
+    frame: &'a str,
+    pre_submit: &'a str,
+    observed_at: Duration,
+}
+
+/// Reset the tracker on the acknowledged frame, log the transition, and
+/// build the settling state that [`WaitPhase::Settling`] carries.
+fn enter_settling(
+    last_frame: &str,
+    production_seen: bool,
+    via: &'static str,
+    observed_at: Duration,
+    options: &WaitOptions,
+    agent_id: &str,
+) -> SettlingState {
+    let tracker = FrameTracker::new(last_frame.to_string());
+    let (window, class) = tracker.quiet_window(options, production_seen);
+    tracing::debug!(
+        agent = agent_id,
+        elapsed = ?observed_at,
+        production_seen,
+        via,
+        quiet_window = ?window,
+        class,
+        "submission acknowledged, settling"
+    );
+    SettlingState {
+        tracker,
+        production_seen,
+        threshold_seen: false,
+        last_visible_change: observed_at,
+        logged_quiet_class: Some(class),
+        post_ack_production_logged: false,
+    }
+}
+
+enum SettlingDecision {
+    /// Keep settling.
+    Pending,
+    /// The frame reverted to the exact pre-submit image: the
+    /// acknowledgement is invalidated and submission re-arms.
+    Reverted,
+    /// Stable past the quiet window twice: the output has converged.
+    Converged,
+}
+
+/// Settling peer of [`observe_submission`]: fold one post-acknowledgement
+/// poll into the settling state and decide whether the pane converged,
+/// reverted, or needs more polls.
+fn observe_settling(
+    state: &mut SettlingState,
+    observation: SettlingObservation<'_>,
+    options: &WaitOptions,
+    agent_id: &str,
+) -> SettlingDecision {
+    if observation.changed {
+        if observation.frame == observation.pre_submit {
+            // Returning to the exact pre-submit image invalidates the
+            // acknowledgement (the settling state, evidence included, is
+            // dropped with the variant). Stay conservative and wait for a
+            // durable submission transition instead of reporting the idle
+            // pane.
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?observation.observed_at,
+                "frame reverted to pre-submit image, re-waiting for submission"
+            );
+            return SettlingDecision::Reverted;
+        }
+        if state.post_ack_production_logged {
+            tracing::trace!(agent = agent_id, elapsed = ?observation.observed_at, "frame changed");
+        } else {
+            // First production after acknowledgement logs at debug so
+            // poll-aliased activity and one-frame replies are
+            // distinguishable without trace volume.
+            tracing::debug!(
+                agent = agent_id,
+                elapsed = ?observation.observed_at,
+                "production evidence after acknowledgement"
+            );
+            state.post_ack_production_logged = true;
+        }
+        state.production_seen = true;
+        state.tracker.observe_change(observation.frame);
+        state.last_visible_change = observation.observed_at;
+        state.threshold_seen = false;
+        return SettlingDecision::Pending;
+    }
+
+    state.tracker.observe_stable(observation.frame);
+    let (quiet_window, quiet_class) = state.tracker.quiet_window(options, state.production_seen);
+    if state.logged_quiet_class != Some(quiet_class) {
+        tracing::debug!(
+            agent = agent_id,
+            elapsed = ?observation.observed_at,
+            quiet_window = ?quiet_window,
+            class = quiet_class,
+            "settling quiet window changed"
+        );
+        state.logged_quiet_class = Some(quiet_class);
+    }
+    if observation
+        .observed_at
+        .saturating_sub(state.last_visible_change)
+        < quiet_window
+    {
+        return SettlingDecision::Pending;
+    }
+    if state.threshold_seen {
+        tracing::debug!(
+            agent = agent_id,
+            elapsed = ?observation.observed_at,
+            "wait converged on stable output"
+        );
+        return SettlingDecision::Converged;
+    }
+    tracing::debug!(
+        agent = agent_id,
+        elapsed = ?observation.observed_at,
+        quiet_window = ?quiet_window,
+        class = quiet_class,
+        production_seen = state.production_seen,
+        "quiet window satisfied, confirming stability"
+    );
+    state.threshold_seen = true;
+    SettlingDecision::Pending
 }
 
 /// A novel frame with its production context. Starts as the pending
@@ -275,14 +428,6 @@ impl FrameTracker {
             material: VecDeque::with_capacity(RECENT_FRAME_LIMIT),
             changed_before: false,
         }
-    }
-
-    fn reset(&mut self, baseline: String) {
-        self.recent.clear();
-        self.recent.push_back(baseline);
-        self.pending = None;
-        self.material.clear();
-        self.changed_before = false;
     }
 
     fn observe_change(&mut self, frame: &str) {
@@ -344,10 +489,6 @@ fn push_bounded<T>(items: &mut VecDeque<T>, item: T) {
 /// [`KiraMuxError::PaneDiedDuringWait`] when the pane is dead at entry or
 /// dies/vanishes mid-wait (frozen dead content must never read as "stable").
 /// [`KiraMuxError::WaitTimeout`] when the hard timeout elapses first.
-#[expect(
-    clippy::too_many_lines,
-    reason = "instrumented convergence state machine; issue #96 extracts the phases"
-)]
 pub(crate) fn wait_on_pane(
     tmux: &dyn TmuxAdapter,
     agent_id: &str,
@@ -372,12 +513,6 @@ pub(crate) fn wait_on_pane(
     let mut last_capture = seed.pre_submit.clone();
     let mut last_frame = pre_submit.clone();
     let mut phase = WaitPhase::Submitting(SubmissionState::new(Duration::ZERO));
-    let mut tracker = FrameTracker::new(pre_submit.clone());
-    let mut candidate_seen = false;
-    let mut production_seen = false;
-    let mut last_visible_change = Duration::ZERO;
-    let mut logged_quiet_class: Option<&'static str> = None;
-    let mut post_ack_production_logged = false;
 
     loop {
         let now = options.elapsed(wall_start);
@@ -387,7 +522,7 @@ pub(crate) fn wait_on_pane(
                 elapsed = ?now,
                 phase = match &phase {
                     WaitPhase::Submitting(_) => "submitting",
-                    WaitPhase::Settling { .. } => "settling",
+                    WaitPhase::Settling(_) => "settling",
                 },
                 "wait hard timeout"
             );
@@ -411,139 +546,71 @@ pub(crate) fn wait_on_pane(
 
         let current = capture_or_died(tmux, agent_id, &seed.delivered.pane_id, seed.capture_lines)?;
         let observed_at = options.elapsed(wall_start);
-        // Byte-identical captures normalize identically: skip the allocation.
-        let mut changed = false;
-        if current != last_capture {
-            let current_frame = normalize_frame(&current);
-            if current_frame != last_frame {
-                last_frame = current_frame;
-                changed = true;
-            }
-        }
+        let changed = frame_changed(&current, &last_capture, &mut last_frame);
         last_capture = current;
 
-        if let WaitPhase::Submitting(submission) = &mut phase {
-            let prompt_visible = changed
-                && prompt_appeared(
-                    &pre_submit_search,
-                    &normalize_search_text(&last_capture),
-                    &prompt_fragments,
-                );
-            let observation = SubmissionObservation {
-                changed,
-                frame: &last_frame,
-                pre_submit: &pre_submit,
-                prompt_visible,
-                observed_at,
-            };
-            if let SubmissionDecision::Acknowledged {
-                production_seen: seen,
-                via,
-            } = observe_submission(submission, observation, options)
-            {
-                candidate_seen = true;
-                production_seen = seen;
-                tracker.reset(last_frame.clone());
-                let (window, class) = tracker.quiet_window(options, production_seen);
-                tracing::debug!(
-                    agent = agent_id,
-                    elapsed = ?observed_at,
-                    production_seen = seen,
-                    via,
-                    quiet_window = ?window,
-                    class,
-                    "submission acknowledged, settling"
-                );
-                logged_quiet_class = Some(class);
-                last_visible_change = observed_at;
-                phase = WaitPhase::Settling {
-                    threshold_seen: false,
+        phase = match phase {
+            WaitPhase::Submitting(mut submission) => {
+                let prompt_visible = changed
+                    && prompt_appeared(
+                        &pre_submit_search,
+                        &normalize_search_text(&last_capture),
+                        &prompt_fragments,
+                    );
+                let observation = SubmissionObservation {
+                    changed,
+                    frame: &last_frame,
+                    pre_submit: &pre_submit,
+                    prompt_visible,
+                    observed_at,
                 };
+                match observe_submission(&mut submission, observation, options) {
+                    SubmissionDecision::Pending => WaitPhase::Submitting(submission),
+                    SubmissionDecision::Acknowledged {
+                        production_seen,
+                        via,
+                    } => WaitPhase::Settling(enter_settling(
+                        &last_frame,
+                        production_seen,
+                        via,
+                        observed_at,
+                        options,
+                        agent_id,
+                    )),
+                }
             }
-            continue;
-        }
-
-        if changed {
-            if last_frame == pre_submit {
-                // Returning to the exact pre-submit image invalidates the
-                // acknowledgement. Stay conservative and wait for a durable
-                // submission transition instead of reporting the idle pane.
-                tracing::debug!(
-                    agent = agent_id,
-                    elapsed = ?observed_at,
-                    "frame reverted to pre-submit image, re-waiting for submission"
-                );
-                logged_quiet_class = None;
-                post_ack_production_logged = false;
-                candidate_seen = false;
-                production_seen = false;
-                tracker.reset(pre_submit.clone());
-                phase = WaitPhase::Submitting(SubmissionState::new(observed_at));
-                continue;
+            WaitPhase::Settling(mut settling) => {
+                let observation = SettlingObservation {
+                    changed,
+                    frame: &last_frame,
+                    pre_submit: &pre_submit,
+                    observed_at,
+                };
+                match observe_settling(&mut settling, observation, options, agent_id) {
+                    SettlingDecision::Pending => WaitPhase::Settling(settling),
+                    SettlingDecision::Reverted => {
+                        WaitPhase::Submitting(SubmissionState::new(observed_at))
+                    }
+                    SettlingDecision::Converged => return Ok(last_capture),
+                }
             }
-            if post_ack_production_logged {
-                tracing::trace!(agent = agent_id, elapsed = ?observed_at, "frame changed");
-            } else {
-                // First production after acknowledgement logs at debug so
-                // poll-aliased activity and one-frame replies are
-                // distinguishable without trace volume.
-                tracing::debug!(
-                    agent = agent_id,
-                    elapsed = ?observed_at,
-                    "production evidence after acknowledgement"
-                );
-                post_ack_production_logged = true;
-            }
-            candidate_seen = true;
-            production_seen = true;
-            tracker.observe_change(&last_frame);
-            last_visible_change = observed_at;
-            phase = WaitPhase::Settling {
-                threshold_seen: false,
-            };
-            continue;
-        }
-
-        tracker.observe_stable(&last_frame);
-        if !candidate_seen {
-            continue;
-        }
-
-        let (quiet_window, quiet_class) = tracker.quiet_window(options, production_seen);
-        if logged_quiet_class != Some(quiet_class) {
-            tracing::debug!(
-                agent = agent_id,
-                elapsed = ?observed_at,
-                quiet_window = ?quiet_window,
-                class = quiet_class,
-                "settling quiet window changed"
-            );
-            logged_quiet_class = Some(quiet_class);
-        }
-        if observed_at.saturating_sub(last_visible_change) < quiet_window {
-            continue;
-        }
-
-        if let WaitPhase::Settling { threshold_seen } = &mut phase {
-            if *threshold_seen {
-                tracing::debug!(
-                    agent = agent_id,
-                    elapsed = ?observed_at,
-                    "wait converged on stable output"
-                );
-                return Ok(last_capture);
-            }
-            tracing::debug!(
-                agent = agent_id,
-                elapsed = ?observed_at,
-                quiet_window = ?quiet_window,
-                class = quiet_class,
-                production_seen,
-                "quiet window satisfied, confirming stability"
-            );
-            *threshold_seen = true;
-        }
+        };
     }
+}
+
+/// Normalize the capture and report whether the visible frame moved,
+/// updating `last_frame` when it did.
+fn frame_changed(current: &str, last_capture: &str, last_frame: &mut String) -> bool {
+    // Byte-identical captures normalize identically: skip the allocation.
+    if current == last_capture {
+        return false;
+    }
+    let current_frame = normalize_frame(current);
+    if current_frame == *last_frame {
+        return false;
+    }
+    *last_frame = current_frame;
+    true
 }
 
 fn normalize_frame(capture: &str) -> String {

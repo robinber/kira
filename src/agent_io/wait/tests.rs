@@ -252,6 +252,87 @@ fn send_then_wait_converges_via_declared_delivery_response() {
 }
 
 #[test]
+fn settling_revert_then_reack_settles_fresh_with_submission_only_window() {
+    // Leak proof for the SettlingState drop on revert: the first settling
+    // saw production (low-confidence window, 20ms in fast options) and
+    // passed its first confirmation; after the revert and a
+    // production-less re-acknowledgement, the wait must pay the full
+    // submission-only window (40ms) — leaked production_seen or
+    // threshold_seen would converge ~20ms earlier.
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    let mut frames = vec!["prompt echo", "prompt echo\nburst"];
+    frames.extend(std::iter::repeat_n("prompt echo\nburst", 20));
+    frames.push("ready");
+    frames.push("prompt echo");
+    fake.queue_pane_contents("%0", &frames);
+    let options = fast_options();
+
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("settling_revert_then_reack_settles_fresh_with_submission_only_window");
+
+    assert_eq!(output, "prompt echo\n");
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed >= Duration::from_millis(65),
+        "a fresh submission-only window must follow the re-acknowledgement, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn late_production_after_first_confirmation_restarts_the_quiet_window() {
+    // threshold_seen must reset on new production: a change landing after
+    // the first quiet-window confirmation restarts the double-stable
+    // convergence from scratch.
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    let mut frames = vec!["prompt echo", "prompt echo"];
+    frames.extend(std::iter::repeat_n("prompt echo", 40));
+    frames.push("prompt echo\nanswer");
+    fake.queue_pane_contents("%0", &frames);
+    let options = fast_options();
+
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("late_production_after_first_confirmation_restarts_the_quiet_window");
+
+    assert_eq!(output, "prompt echo\nanswer\n");
+    let elapsed = options.elapsed(Instant::now());
+    // The change lands at 43ms — one poll after the threshold armed — and
+    // a fresh low-confidence window (20ms) plus the confirmation poll must
+    // elapse after it; a leaked threshold would converge one poll sooner.
+    assert!(
+        elapsed >= Duration::from_millis(64),
+        "late production must restart the quiet window, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn convergence_needs_two_stable_polls_past_the_quiet_window() {
+    // The threshold contract itself: the first stable poll past the window
+    // only arms the confirmation; the next stable poll converges. With
+    // 1ms virtual polls the ack lands at 2ms and the submission-only
+    // window (40ms) arms at 42ms, so convergence is at 43ms — a
+    // single-poll implementation would return at 42ms.
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    fake.queue_pane_contents("%0", &["prompt echo", "prompt echo"]);
+    let options = fast_options();
+
+    let output = wait_for_stable_output(&fake, &project, "alpha", &options)
+        .or_panic("convergence_needs_two_stable_polls_past_the_quiet_window");
+
+    assert_eq!(output, "prompt echo\n");
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed >= Duration::from_millis(43),
+        "the confirmation poll must follow the armed threshold, got {elapsed:?}"
+    );
+}
+
+#[test]
 fn one_frame_response_waits_for_the_submission_only_window() {
     let fake = crate::test_support::FakeTmux::new();
     let project = crate::test_support::test_project();
