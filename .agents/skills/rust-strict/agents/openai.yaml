@@ -1,6 +1,0 @@
-interface:
-  display_name: "Rust Strict"
-  short_description: "kira-mux Rust workflow: lints, verify, errors, drift control"
-  default_prompt: >-
-    Use $rust-strict for Rust work in this repo: follow AGENTS.md, workspace
-    lints, impact-scoped verification, typed errors, and no-net-new-debt gates.
