@@ -18,16 +18,16 @@ Keep the product small. Prefer a clear CLI over new subsystems.
 ## Load order
 
 1. This file — product contract, package facts, exit codes, module map.
-2. Shared Rust skill **rust-strict** (v1.0.2+) before any Rust change, review, or
-   verification claim. Install paths (same content, tool-specific discovery):
+2. Shared Rust skill **rust-strict** (v1.1.0+) before any Rust change, review, or
+   verification claim. One canonical checkout; Claude/Grok paths are symlinks:
 
    | Tool | Path |
    |---|---|
-   | Codex | [`.agents/skills/rust-strict/SKILL.md`](.agents/skills/rust-strict/SKILL.md) |
-   | Claude Code | [`.claude/skills/rust-strict/SKILL.md`](.claude/skills/rust-strict/SKILL.md) |
-   | Grok | [`.grok/skills/rust-strict/SKILL.md`](.grok/skills/rust-strict/SKILL.md) |
+   | Codex (canonical submodule) | [`.agents/skills/rust-strict/SKILL.md`](.agents/skills/rust-strict/SKILL.md) |
+   | Claude Code | [`.claude/skills/rust-strict/SKILL.md`](.claude/skills/rust-strict/SKILL.md) → symlink |
+   | Grok | [`.grok/skills/rust-strict/SKILL.md`](.grok/skills/rust-strict/SKILL.md) → symlink |
 
-   Source: https://github.com/robinber/agent-skills-rust (git submodules, pin tag).
+   Source: https://github.com/robinber/agent-skills-rust (pin tag, currently `v1.1.0`).
 3. Code next to the module you edit.
 
 When documents disagree, stop and surface the conflict. Do not silently choose
