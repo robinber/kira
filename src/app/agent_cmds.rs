@@ -56,25 +56,36 @@ pub(super) fn cmd_agents_dispatch(sub: AgentsCommand) -> Result<()> {
 /// Literal slash command delivered by `kira-mux send --clear`.
 pub(super) const CLEAR_PROMPT: &str = "/clear";
 
-pub(super) fn cmd_send(
-    project_target: &ProjectTarget,
-    profile: Option<&str>,
-    agent_id: &str,
-    prompt: &str,
-    no_template: bool,
-    wait: bool,
-    lines: Option<usize>,
-) -> Result<()> {
-    let (project, tmux) = load_project_context(project_target, profile, ResolutionMode::Deferred)?;
-    if !wait {
-        let delivered =
-            crate::agent_io::send_prompt(&tmux, &project, agent_id, prompt, no_template)?;
-        log_prompt_delivered(agent_id, &delivered);
+/// Bundled send knobs so the handler stays under the six-parameter profile.
+pub(super) struct SendCmd<'a> {
+    pub(super) project_target: &'a ProjectTarget,
+    pub(super) profile: Option<&'a str>,
+    pub(super) agent_id: &'a str,
+    pub(super) prompt: &'a str,
+    pub(super) no_template: bool,
+    pub(super) wait: bool,
+    pub(super) lines: Option<usize>,
+}
+
+pub(super) fn cmd_send(cmd: &SendCmd<'_>) -> Result<()> {
+    let (project, tmux) =
+        load_project_context(cmd.project_target, cmd.profile, ResolutionMode::Deferred)?;
+    if !cmd.wait {
+        let delivered = crate::agent_io::send_prompt(
+            &tmux,
+            &project,
+            cmd.agent_id,
+            cmd.prompt,
+            cmd.no_template,
+        )?;
+        log_prompt_delivered(cmd.agent_id, &delivered);
         return Ok(());
     }
 
     // Clap rejects zero when `--lines` is set; omitted uses the wait default.
-    let capture_lines = lines.unwrap_or(crate::agent_io::DEFAULT_WAIT_CAPTURE_LINES);
+    let capture_lines = cmd
+        .lines
+        .unwrap_or(crate::agent_io::DEFAULT_WAIT_CAPTURE_LINES);
     debug_assert!(
         capture_lines >= 1,
         "wait capture window must stay non-empty (got {capture_lines})"
@@ -82,15 +93,15 @@ pub(super) fn cmd_send(
     let seed = crate::agent_io::send_prompt_for_wait(
         &tmux,
         &project,
-        agent_id,
-        prompt,
-        no_template,
+        cmd.agent_id,
+        cmd.prompt,
+        cmd.no_template,
         capture_lines,
     )?;
-    log_prompt_delivered(agent_id, &seed.delivered);
+    log_prompt_delivered(cmd.agent_id, &seed.delivered);
     let wait_result = crate::agent_io::wait_on_pane(
         &tmux,
-        agent_id,
+        cmd.agent_id,
         &seed,
         &crate::agent_io::WaitOptions::from_env()?,
     )

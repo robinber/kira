@@ -1,4 +1,12 @@
 //! Shared sandbox and assertion helpers for real-tmux integration tests.
+//!
+//! Fail-fast panics here are intentional: a broken fixture must stop the test
+//! immediately. Clippy's `allow-panic-in-tests` only covers `#[test]` /
+//! `#[cfg(test)]` bodies, not free helpers in an integration-test binary.
+#![allow(
+    clippy::panic,
+    reason = "integration harness fail-fast helpers live outside #[test] bodies"
+)]
 
 use std::fs;
 use std::path::PathBuf;
