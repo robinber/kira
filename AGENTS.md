@@ -48,7 +48,11 @@ the interpretation that permits more work.
 ### Lint floor (do not weaken)
 
 - `unsafe_code = deny`, `missing_docs = deny` (package)
-- clippy deny: `unwrap_used`, `expect_used`, `todo`, `unimplemented`, `dbg_macro`
+- clippy deny: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`,
+  `dbg_macro`
+- `clippy.toml`: `allow-panic-in-tests = true`; `too-many-arguments-threshold = 6`
+  (integration harness helpers outside `#[test]` may use a scoped
+  `clippy::panic` allow — see `tests/cli/harness.rs`)
 - groups: `correctness` / `suspicious` deny; pedantic and others **warn** at package level
 - CI: `RUSTFLAGS=-D warnings`, `RUSTDOCFLAGS=-D warnings`
 - Optional: `cargo lint-pedantic` (pedantic as deny) — not required by CI
@@ -64,14 +68,15 @@ layout — still report the exact selection used.
 - Make the smallest change that satisfies the request.
 - Self-check: would a senior engineer call this overcomplicated? If yes, simplify.
 - **Enforced** in non-test code (package + clippy deny): `unsafe`, `unwrap`,
-  `expect`, `todo!`, `unimplemented!`, `dbg!`.
-- **Repository policy** (not a separate `panic` lint): avoid `panic!` in
-  non-test code; prefer typed errors.
+  `expect`, `panic!`, `todo!`, `unimplemented!`, `dbg!`.
+- Prefer typed errors over panics; test-only `panic!` is allowed via
+  `allow-panic-in-tests`.
 - Typed domain errors (`thiserror`) where exit codes / callers match; `anyhow`
   at I/O, orchestration, and binary edges.
 - Default new items to `pub(crate)` unless the binary/tests need them public.
 - Public today: `run`, `KiraMuxError`, `WorkspaceDriftReason`,
-  `config::ConfigError`, `logging::init_logging`.
+  `config::ConfigError`, `logging::init_logging`, `output::StdoutClosed`,
+  `output::is_stdout_closed` (binary exit-code / EPIPE edge).
 - Keep `main.rs` thin: init logging, call `kira_mux::run()`, map exit codes.
 - This crate is **not** an async service: do not introduce an async runtime,
   streams, or public `async fn` traits unless the task explicitly requires it.
@@ -145,6 +150,12 @@ Treat as large / high-churn surfaces: `test_support/fake_tmux/`, `tmux/client`,
 `inspector.rs`, `workspace/lifecycle.rs`, `config/load.rs`,
 `config/resolve/` (`mod`/`agents`/`paths`/`validate`), `agent_io/send.rs`,
 `agent_io/deep_capture.rs`, `tests/cli/` (harness + scenarios).
+
+### Near 800 LOC (do not grow casually)
+
+| Path | Approx. LOC | Guidance |
+|---|---:|---|
+| `test_support/fake_tmux/mod.rs` | ~785 | **Headroom thin.** New knobs, scripted faults, or helpers must land in a focused sibling (`adapter`, new submodule, or `tests`) — do not keep stacking fields/methods on `mod.rs` past the 800 pressure line. Prefer extract-first when a change would push it over. |
 
 ## Critical surfaces (tests when touched)
 

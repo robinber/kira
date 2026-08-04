@@ -108,15 +108,15 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                     no_template,
                 )
             };
-            agent_cmds::cmd_send(
-                &project,
-                profile.as_deref(),
-                &agent_id,
-                &prompt,
+            agent_cmds::cmd_send(&agent_cmds::SendCmd {
+                project_target: &project,
+                profile: profile.as_deref(),
+                agent_id: &agent_id,
+                prompt: &prompt,
                 no_template,
                 wait,
                 lines,
-            )
+            })
         }
         CommandKind::Capture {
             project,
