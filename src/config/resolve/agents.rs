@@ -92,13 +92,7 @@ pub(super) fn resolve_single_agent(
         &args,
     )?;
 
-    // An empty marker matches every frame and would pin `send --wait` to its
-    // hard timeout: reject it like any other config typo (exit 2).
-    if let Some(ref markers) = busy_markers
-        && markers.iter().any(|marker| marker.trim().is_empty())
-    {
-        return Err(ConfigError::EmptyBusyMarker { agent_id: agent.id });
-    }
+    validate_busy_markers(&format!("agent {}", agent.id), busy_markers.as_deref())?;
 
     let env = match resolution_mode {
         ResolutionMode::Deferred => unresolved_env.clone(),
@@ -158,6 +152,18 @@ pub(super) fn resolve_env_map(
     Ok(resolved)
 }
 
+/// Reject empty or whitespace-only `busy_markers` entries: an empty marker
+/// matches every frame and would pin `send --wait` to its hard timeout, so
+/// it fails like any other config typo (exit 2).
+fn validate_busy_markers(owner: &str, markers: Option<&[String]>) -> Result<()> {
+    if markers.is_some_and(|markers| markers.iter().any(|marker| marker.trim().is_empty())) {
+        return Err(ConfigError::EmptyBusyMarker {
+            owner: owner.to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn build_template_map(
     templates: &[AgentTemplate],
 ) -> Result<BTreeMap<String, &AgentTemplate>> {
@@ -167,6 +173,12 @@ pub(super) fn build_template_map(
         if template.name.trim().is_empty() {
             return Err(ConfigError::EmptyTemplateName);
         }
+        // Validated here — not only at agent resolution — so a bad marker in
+        // an unused template still fails at global-config load.
+        validate_busy_markers(
+            &format!("agent template {}", template.name),
+            template.busy_markers.as_deref(),
+        )?;
         if by_name.insert(template.name.clone(), template).is_some() {
             return Err(ConfigError::DuplicateTemplate(template.name.clone()));
         }
@@ -338,6 +350,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_template_busy_marker_fails_at_template_map_build() {
+        // build_template_map runs at global-config load, so a bad marker in
+        // an unused template must fail there, not only once resolved.
+        let template = AgentTemplate {
+            name: "coder".to_string(),
+            label: None,
+            mode: None,
+            command: Some("my-agent".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: None,
+            text_delivery: None,
+            busy_markers: Some(vec![String::new()]),
+        };
+
+        let error = build_template_map(std::slice::from_ref(&template))
+            .err_or_panic("empty_template_busy_marker_fails_at_template_map_build: expected Err");
+
+        assert!(
+            matches!(
+                &error,
+                ConfigError::EmptyBusyMarker { owner } if owner == "agent template coder"
+            ),
+            "unused template markers must fail at load, got: {error}"
+        );
+    }
+
+    #[test]
     fn empty_busy_marker_entry_is_rejected() {
         let agent = ProjectAgent {
             id: "alpha".to_string(),
@@ -367,7 +411,7 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                ConfigError::EmptyBusyMarker { agent_id } if agent_id == "alpha"
+                ConfigError::EmptyBusyMarker { owner } if owner == "agent alpha"
             ),
             "whitespace-only markers must be a config error, got: {error}"
         );

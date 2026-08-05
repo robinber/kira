@@ -25,7 +25,11 @@
 //! reported done with only the submission echo captured. Busy markers narrow
 //! but do not close the backgrounded-work gap: an idle-looking pane whose
 //! agent wakes up later than the post-busy window still converges early, and
-//! a narrow pane can truncate the marker out of the status line.
+//! a narrow pane can truncate the marker out of the status line. Markers are
+//! text containment, not structure: a marker phrase inside the rendered
+//! prompt is dropped for that send (the echo would pin the wait), but a
+//! *reply* whose bottom-visible tail mentions the phrase still reads as busy
+//! until the hard timeout — `busy_markers = []` opts an agent out.
 //!
 //! Alternate-screen TUIs add a depth limit: their panes accumulate no tmux
 //! history, so every frame observed here is capped at the visible pane
@@ -184,6 +188,10 @@ struct SubmissionState {
     /// next poll or be followed by another non-baseline frame before the
     /// submission is acknowledged.
     prompt_candidate: Option<String>,
+    /// A busy marker was visible on some submission-phase poll. Carried into
+    /// settling via [`Acknowledgement`] so a marker that clears exactly on
+    /// the acknowledging frame still arms the post-busy floor.
+    busy_seen: bool,
 }
 
 impl SubmissionState {
@@ -192,6 +200,7 @@ impl SubmissionState {
             last_change,
             activity_seen: false,
             prompt_candidate: None,
+            busy_seen: false,
         }
     }
 }
@@ -202,6 +211,8 @@ struct SubmissionObservation<'a> {
     frame: &'a str,
     pre_submit: &'a str,
     prompt_visible: bool,
+    /// A busy marker is visible near the bottom of `frame`.
+    busy_visible: bool,
     observed_at: Duration,
 }
 
@@ -209,6 +220,9 @@ struct SubmissionObservation<'a> {
 #[derive(Clone, Copy)]
 struct Acknowledgement {
     production_seen: bool,
+    /// A busy marker was visible at some point up to (and including) the
+    /// acknowledging poll.
+    busy_seen: bool,
     via: &'static str,
 }
 
@@ -224,6 +238,9 @@ fn observe_submission(
 ) -> SubmissionDecision {
     let mut acknowledged = false;
     let mut production_seen = false;
+    if observation.busy_visible {
+        state.busy_seen = true;
+    }
     if observation.changed {
         state.last_change = observation.observed_at;
         if observation.frame == observation.pre_submit {
@@ -256,6 +273,7 @@ fn observe_submission(
     if acknowledged || generically_stable || redraw_timeout {
         SubmissionDecision::Acknowledged(Acknowledgement {
             production_seen,
+            busy_seen: state.busy_seen,
             via: if acknowledged {
                 "prompt-stable"
             } else if generically_stable {
@@ -343,14 +361,15 @@ fn enter_settling(
 ) -> SettlingState {
     let state = SettlingState {
         tracker: FrameTracker::new(last_frame.to_string()),
-        // A visible busy marker is production evidence: the TUI is working.
-        production_seen: ack.production_seen || busy_visible,
+        // A busy marker — visible now or at any submission poll — is
+        // production evidence: the TUI was working.
+        production_seen: ack.production_seen || ack.busy_seen || busy_visible,
         threshold_seen: false,
         last_visible_change: observed_at,
         logged_quiet_class: None,
         post_ack_production_logged: false,
         busy_marker: BusyMarkerState {
-            seen: busy_visible,
+            seen: ack.busy_seen || busy_visible,
             visible: busy_visible,
         },
     };
@@ -645,6 +664,7 @@ pub(crate) fn wait_on_pane(
                     frame: &last_frame,
                     pre_submit: &pre_submit,
                     prompt_visible,
+                    busy_visible,
                     observed_at,
                 };
                 match observe_submission(&mut submission, observation, options) {

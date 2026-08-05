@@ -97,7 +97,23 @@ pub(crate) fn send_prompt_for_wait(
     let pane_command = tmux
         .get_pane_option(&prepared.pane.pane_id, PANE_AGENT_COMMAND)
         .unwrap_or(None);
-    let busy_markers = super::policy::infer_busy_markers(prepared.agent, pane_command.as_deref());
+    let mut busy_markers =
+        super::policy::infer_busy_markers(prepared.agent, pane_command.as_deref());
+    // A marker phrase inside the prompt itself would match the prompt echo
+    // near the pane bottom and pin the wait to its hard timeout: drop those
+    // markers for this send and fall back to frame-diff convergence.
+    let rendered_search = crate::tmux::normalize_search_text(&prepared.rendered).to_lowercase();
+    busy_markers.retain(|marker| {
+        let keep = !rendered_search.contains(marker.as_str());
+        if !keep {
+            tracing::debug!(
+                agent = agent_id,
+                marker,
+                "busy marker appears in the rendered prompt; disabled for this wait"
+            );
+        }
+        keep
+    });
     let delivered = deliver_prepared(tmux, agent_id, prepared)?;
     Ok(WaitSeed {
         delivered,

@@ -580,6 +580,37 @@ fn busy_marker_above_the_bottom_scan_region_is_ignored() {
 }
 
 #[test]
+fn marker_seen_during_submission_arms_the_post_busy_floor() {
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    // The marker shows before the prompt echo renders and is gone on the
+    // acknowledging frame: the submission-phase sighting must carry into
+    // settling and floor the quiet window at 30ms — without the carry the
+    // low-confidence window (20ms) would converge at ~25ms.
+    fake.queue_pane_contents(
+        "%0",
+        &[
+            "ready\nworking\nesc to interrupt",
+            "prompt echo",
+            "prompt echo",
+            "prompt echo\nanswer",
+        ],
+    );
+    let options = fast_options();
+
+    let output = wait_with_busy_markers(&fake, &project, "alpha", &options)
+        .or_panic("marker_seen_during_submission_arms_the_post_busy_floor");
+
+    assert_eq!(output, "prompt echo\nanswer\n");
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed >= Duration::from_millis(34),
+        "a submission-phase marker sighting must floor the quiet window, got {elapsed:?}"
+    );
+}
+
+#[test]
 fn busy_marker_match_is_case_insensitive() {
     let markers = vec!["esc to interrupt".to_string()];
     assert!(busy_marker_visible(

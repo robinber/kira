@@ -246,7 +246,8 @@ workspace.
 **Excluded on purpose** (cosmetic / non-topology — no drift):
 
 - project `name`, agent `label`
-- `capabilities`, `groups`, `prompt_template`, `submit`, `text_delivery`
+- `capabilities`, `groups`, `prompt_template`, `submit`, `text_delivery`,
+  `busy_markers`
 - `session_prefix`, `tmux_bin` — changing the prefix renames the session, so
   the old workspace shows as **stopped** (not drifted); `tmux_bin` only
   changes how tmux is invoked
@@ -345,9 +346,13 @@ short; a model that stays visually silent past the 30 s submission-only
 window is reported done with only the echo captured; an idle monotonic
 counter (clock, watcher) never converges and reaches the hard timeout; an
 agent that backgrounds work and stays visually idle longer than the 15 s
-post-busy floor still converges early; and a narrow pane can truncate the
+post-busy floor still converges early; a narrow pane can truncate the
 busy marker out of its status line, silently falling back to plain
-frame-diff convergence.
+frame-diff convergence; and marker matching is text containment, not
+structure — a marker phrase inside the prompt is dropped for that send
+(the echo would pin the wait), but a **reply** whose bottom-visible tail
+mentions the phrase reads as busy until the hard timeout
+(`busy_markers = []` opts out).
 
 ### Capture depth and alternate-screen TUIs
 
