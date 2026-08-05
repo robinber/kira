@@ -595,3 +595,25 @@ fn send_for_wait_drops_markers_contained_in_the_prompt() {
 
     assert!(seed.busy_markers.is_empty());
 }
+
+#[test]
+fn send_for_wait_drops_whitespace_variant_markers_in_prompt() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    // Repeated internal whitespace in the configured marker must not defeat
+    // the prompt guard: both sides are whitespace-collapsed for comparison.
+    project.agents[0].busy_markers = Some(vec!["busy  now".to_string()]);
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "the TUI will say busy now while working",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_drops_whitespace_variant_markers_in_prompt");
+
+    assert!(seed.busy_markers.is_empty());
+}

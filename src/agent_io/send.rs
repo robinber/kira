@@ -101,10 +101,13 @@ pub(crate) fn send_prompt_for_wait(
         super::policy::infer_busy_markers(prepared.agent, pane_command.as_deref());
     // A marker phrase inside the prompt itself would match the prompt echo
     // near the pane bottom and pin the wait to its hard timeout: drop those
-    // markers for this send and fall back to frame-diff convergence.
+    // markers for this send and fall back to frame-diff convergence. Both
+    // sides are whitespace-collapsed so a marker with repeated internal
+    // whitespace still matches the prompt that will echo it (over-dropping
+    // is safe; under-matching would pin the wait).
     let rendered_search = crate::tmux::normalize_search_text(&prepared.rendered).to_lowercase();
     busy_markers.retain(|marker| {
-        let keep = !rendered_search.contains(marker.as_str());
+        let keep = !rendered_search.contains(&crate::tmux::normalize_search_text(marker));
         if !keep {
             tracing::debug!(
                 agent = agent_id,
