@@ -9,6 +9,14 @@ use crate::tmux::metadata::PANE_COMMAND_SHELL;
 
 const DOUBLE_ENTER_TOOLS: &[&str] = &["codex", "claude", "opencode", "qwen", "grok"];
 const SEND_KEYS_TEXT_TOOLS: &[&str] = &["opencode"];
+/// Tools whose TUI shows a stable interrupt hint near the pane bottom while
+/// a turn is running. Only tools with an empirically confirmed marker belong
+/// here; others keep plain frame-diff convergence.
+const INTERRUPT_HINT_TOOLS: &[&str] = &["claude", "codex"];
+/// Lowercase busy-marker fragments matched case-insensitively against the
+/// bottom lines of a normalized frame ("esc to interrupt" for Claude Code,
+/// "Esc to interrupt" for Codex).
+const INTERRUPT_HINT_MARKERS: &[&str] = &["esc to interrupt"];
 
 /// Return the final path segment of a command string.
 ///
@@ -138,6 +146,38 @@ fn skip_options<'a>(
         if takes_arg {
             tokens.next();
         }
+    }
+}
+
+/// Busy markers for `send --wait`: lowercase fragments whose presence near
+/// the pane bottom proves the agent TUI is still working.
+///
+/// A configured `busy_markers` list wins outright — including an explicit
+/// empty list, which disables the heuristic. Otherwise known tool basenames
+/// get the interrupt-hint defaults, and unknown tools get none (frame-diff
+/// convergence only).
+pub(super) fn infer_busy_markers(agent: &ResolvedAgent, pane_command: Option<&str>) -> Vec<String> {
+    if let Some(markers) = &agent.busy_markers {
+        return markers
+            .iter()
+            .map(|marker| marker.trim().to_lowercase())
+            .collect();
+    }
+    let inferred = match effective_basename(agent, pane_command) {
+        Some(name) => INTERRUPT_HINT_TOOLS.contains(&name),
+        None if pane_command == Some(PANE_COMMAND_SHELL) => agent
+            .shell_command
+            .as_deref()
+            .is_some_and(|command| contains_tool(command, INTERRUPT_HINT_TOOLS)),
+        None => false,
+    };
+    if inferred {
+        INTERRUPT_HINT_MARKERS
+            .iter()
+            .map(|marker| (*marker).to_string())
+            .collect()
+    } else {
+        Vec::new()
     }
 }
 
@@ -412,6 +452,53 @@ mod tests {
         let mut agent = test_agent(AgentMode::Direct, Some("my-tool"));
         agent.text_delivery = Some(TextDelivery::SendKeys);
         assert!(needs_send_keys_for_text(&agent, None));
+    }
+
+    #[test]
+    fn claude_and_codex_infer_interrupt_hint_markers() {
+        let claude = test_agent(AgentMode::Direct, Some("claude"));
+        assert_eq!(infer_busy_markers(&claude, None), vec!["esc to interrupt"]);
+        let codex = test_agent(AgentMode::Direct, Some("/usr/local/bin/codex"));
+        assert_eq!(infer_busy_markers(&codex, None), vec!["esc to interrupt"]);
+    }
+
+    #[test]
+    fn generic_tool_infers_no_busy_markers() {
+        let agent = test_agent(AgentMode::Direct, Some("my-tool"));
+        assert!(infer_busy_markers(&agent, None).is_empty());
+    }
+
+    #[test]
+    fn pane_metadata_claude_infers_busy_markers() {
+        let agent = test_agent(AgentMode::Direct, Some("my-tool"));
+        assert_eq!(
+            infer_busy_markers(&agent, Some("claude")),
+            vec!["esc to interrupt"]
+        );
+    }
+
+    #[test]
+    fn pane_metadata_shell_sentinel_uses_shell_command_for_busy_markers() {
+        let mut agent = test_agent_with_id("claude", AgentMode::Shell, None);
+        agent.shell_command = Some("claude --resume".to_string());
+        assert_eq!(
+            infer_busy_markers(&agent, Some("__shell__")),
+            vec!["esc to interrupt"]
+        );
+    }
+
+    #[test]
+    fn configured_busy_markers_override_inference_and_normalize() {
+        let mut agent = test_agent(AgentMode::Direct, Some("claude"));
+        agent.busy_markers = Some(vec!["  Working HARD ".to_string()]);
+        assert_eq!(infer_busy_markers(&agent, None), vec!["working hard"]);
+    }
+
+    #[test]
+    fn explicit_empty_busy_markers_disable_inference() {
+        let mut agent = test_agent(AgentMode::Direct, Some("claude"));
+        agent.busy_markers = Some(Vec::new());
+        assert!(infer_busy_markers(&agent, None).is_empty());
     }
 
     #[test]

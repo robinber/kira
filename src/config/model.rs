@@ -200,6 +200,10 @@ pub(crate) struct AgentTemplate {
     /// Optional text delivery override (`paste` / `send-keys`).
     #[serde(default)]
     pub text_delivery: Option<TextDelivery>,
+    /// Optional busy-marker override for `send --wait` (set `[]` to disable
+    /// the basename defaults).
+    #[serde(default)]
+    pub busy_markers: Option<Vec<String>>,
 }
 
 /// The mergeable agent field set, one optional value per field.
@@ -223,6 +227,7 @@ pub(crate) struct AgentOverrides {
     pub prompt_template: Option<String>,
     pub submit: Option<SubmitPolicy>,
     pub text_delivery: Option<TextDelivery>,
+    pub busy_markers: Option<Vec<String>>,
 }
 
 impl AgentOverrides {
@@ -247,6 +252,7 @@ impl AgentOverrides {
                 .or_else(|| base.prompt_template.clone()),
             submit: self.submit.or(base.submit),
             text_delivery: self.text_delivery.or(base.text_delivery),
+            busy_markers: self.busy_markers.or_else(|| base.busy_markers.clone()),
         }
     }
 }
@@ -268,6 +274,7 @@ impl AgentTemplate {
             prompt_template,
             submit,
             text_delivery,
+            busy_markers,
         } = self;
         AgentOverrides {
             label: label.clone(),
@@ -281,6 +288,7 @@ impl AgentTemplate {
             prompt_template: prompt_template.clone(),
             submit: *submit,
             text_delivery: *text_delivery,
+            busy_markers: busy_markers.clone(),
         }
     }
 }
@@ -354,6 +362,10 @@ pub(crate) struct ProjectAgent {
     /// Optional text delivery override (`paste` / `send-keys`).
     #[serde(default)]
     pub text_delivery: Option<TextDelivery>,
+    /// Optional busy-marker override for `send --wait` (set `[]` to disable
+    /// the basename defaults).
+    #[serde(default)]
+    pub busy_markers: Option<Vec<String>>,
 }
 
 impl ProjectAgent {
@@ -374,6 +386,7 @@ impl ProjectAgent {
             prompt_template,
             submit,
             text_delivery,
+            busy_markers,
         } = self;
         AgentOverrides {
             label: label.clone(),
@@ -387,6 +400,7 @@ impl ProjectAgent {
             prompt_template: prompt_template.clone(),
             submit: *submit,
             text_delivery: *text_delivery,
+            busy_markers: busy_markers.clone(),
         }
     }
 }
@@ -504,6 +518,29 @@ text_delivery = "send-keys"
         let agent = &agents[0];
         assert_eq!(agent.submit, Some(SubmitPolicy::Double));
         assert_eq!(agent.text_delivery, Some(TextDelivery::SendKeys));
+    }
+
+    #[test]
+    fn agent_accepts_busy_markers_override() {
+        let toml = r#"
+id = "demo"
+root = "/tmp/demo"
+
+[[agents]]
+id = "coder"
+command = "my-agent"
+busy_markers = ["esc to interrupt", "working"]
+"#;
+        let Ok(raw) = toml::from_str::<ProjectFileRaw>(toml) else {
+            panic!("valid busy_markers override must parse");
+        };
+        let Some(agents) = raw.agents else {
+            panic!("agents list required");
+        };
+        assert_eq!(
+            agents[0].busy_markers,
+            Some(vec!["esc to interrupt".to_string(), "working".to_string()])
+        );
     }
 
     #[test]

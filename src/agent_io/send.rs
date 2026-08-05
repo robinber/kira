@@ -41,6 +41,9 @@ pub(crate) struct WaitSeed {
     pub(crate) pre_submit: String,
     /// History lines used for the pre-submit capture and subsequent wait polls.
     pub(crate) capture_lines: usize,
+    /// Lowercase busy-marker fragments for this agent; while one is visible
+    /// near the pane bottom the wait loop refuses to converge.
+    pub(crate) busy_markers: Vec<String>,
 }
 
 struct PreparedPrompt<'a> {
@@ -89,11 +92,18 @@ pub(crate) fn send_prompt_for_wait(
 ) -> Result<WaitSeed> {
     let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
     let pre_submit = capture_before_submit(tmux, &prepared.pane.pane_id, agent_id, capture_lines)?;
+    // Best-effort pane-command read: marker inference degrades to the agent
+    // config alone, and a genuinely broken pane fails typed during delivery.
+    let pane_command = tmux
+        .get_pane_option(&prepared.pane.pane_id, PANE_AGENT_COMMAND)
+        .unwrap_or(None);
+    let busy_markers = super::policy::infer_busy_markers(prepared.agent, pane_command.as_deref());
     let delivered = deliver_prepared(tmux, agent_id, prepared)?;
     Ok(WaitSeed {
         delivered,
         pre_submit,
         capture_lines,
+        busy_markers,
     })
 }
 

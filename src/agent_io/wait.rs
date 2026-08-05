@@ -10,11 +10,22 @@
 //! changed again after the acknowledgement waits longest — a one-frame reply
 //! and a silently thinking model are indistinguishable from captures alone.
 //!
+//! Known agent TUIs additionally expose a busy marker: a stable interrupt
+//! hint (e.g. "esc to interrupt") near the pane bottom while a turn runs.
+//! While a marker is visible the wait never converges, even on a frozen
+//! frame, and once one has been seen the quiet windows are floored by a
+//! longer post-busy window — agents like Claude Code drop the marker and
+//! look fully idle for a while when they background long tool calls, then
+//! wake up to finish the reply.
+//!
 //! Capture-based convergence has known limits: activity perfectly aliased by
 //! the poll interval is invisible, an idle monotonic counter never settles,
 //! a reply that pauses longer than the active quiet window is cut short, and
 //! a model that stays visually silent past the submission-only window is
-//! reported done with only the submission echo captured.
+//! reported done with only the submission echo captured. Busy markers narrow
+//! but do not close the backgrounded-work gap: an idle-looking pane whose
+//! agent wakes up later than the post-busy window still converges early, and
+//! a narrow pane can truncate the marker out of the status line.
 //!
 //! Alternate-screen TUIs add a depth limit: their panes accumulate no tmux
 //! history, so every frame observed here is capped at the visible pane
@@ -37,6 +48,11 @@ use crate::tmux::{TmuxAdapter, normalize_search_text, prompt_fragments};
 
 const RECENT_FRAME_LIMIT: usize = 8;
 
+/// Trailing frame lines scanned for busy markers: enough to span agent
+/// status bars and spinner rows, small enough to skip transcript content
+/// that merely mentions a marker phrase.
+const BUSY_MARKER_SCAN_LINES: usize = 15;
+
 /// Tuning for the stability poll. Production uses [`WaitOptions::default`];
 /// tests inject tiny durations (and optional virtual time) so timeout paths
 /// run without wall-clock sleeps.
@@ -55,6 +71,10 @@ pub(crate) struct WaitOptions {
     /// submission acknowledgement: a one-frame reply and a silently thinking
     /// model look identical, so betting on "done" needs the longest odds.
     submission_only_quiet_window: Duration,
+    /// Floor applied to every quiet window once a busy marker has been seen:
+    /// agents that background work drop the marker and look idle before the
+    /// reply lands, so the marker's disappearance buys extra patience.
+    post_busy_quiet_window: Duration,
     /// Hard cap on the whole wait. Kept below typical caller-side tool
     /// timeouts so kira-mux fails first with a useful error.
     pub(crate) hard_timeout: Duration,
@@ -78,6 +98,7 @@ impl Default for WaitOptions {
             normal_quiet_window: Duration::from_secs(5),
             low_confidence_quiet_window: Duration::from_secs(10),
             submission_only_quiet_window: Duration::from_secs(30),
+            post_busy_quiet_window: Duration::from_secs(15),
             hard_timeout: Duration::from_mins(10),
             clock: WaitClock::Wall,
         }
@@ -124,6 +145,7 @@ impl WaitOptions {
             normal_quiet_window: Duration::from_millis(2500),
             low_confidence_quiet_window: Duration::from_secs(3),
             submission_only_quiet_window: Duration::from_secs(4),
+            post_busy_quiet_window: Duration::from_millis(3500),
             hard_timeout: Duration::from_secs(8),
             clock: WaitClock::Wall,
         }
@@ -183,12 +205,16 @@ struct SubmissionObservation<'a> {
     observed_at: Duration,
 }
 
+/// Facts carried out of a successful submission acknowledgement.
+#[derive(Clone, Copy)]
+struct Acknowledgement {
+    production_seen: bool,
+    via: &'static str,
+}
+
 enum SubmissionDecision {
     Pending,
-    Acknowledged {
-        production_seen: bool,
-        via: &'static str,
-    },
+    Acknowledged(Acknowledgement),
 }
 
 fn observe_submission(
@@ -228,7 +254,7 @@ fn observe_submission(
         && observation.observed_at >= options.submission_timeout;
 
     if acknowledged || generically_stable || redraw_timeout {
-        SubmissionDecision::Acknowledged {
+        SubmissionDecision::Acknowledged(Acknowledgement {
             production_seen,
             via: if acknowledged {
                 "prompt-stable"
@@ -237,7 +263,7 @@ fn observe_submission(
             } else {
                 "redraw-timeout"
             },
-        }
+        })
     } else {
         SubmissionDecision::Pending
     }
@@ -268,6 +294,31 @@ struct SettlingState {
     /// The first post-acknowledgement production change logs at debug;
     /// later ones drop to trace.
     post_ack_production_logged: bool,
+    /// Busy-marker facts, owned here like the rest of the settling
+    /// evidence so a revert drops them with the variant.
+    busy_marker: BusyMarkerState,
+}
+
+/// Busy-marker observations folded into the settling state.
+struct BusyMarkerState {
+    /// A marker has been visible at some point in this settling; arms the
+    /// post-busy quiet-window floor.
+    seen: bool,
+    /// Marker visibility on the previous poll, to log transitions once.
+    visible: bool,
+}
+
+impl SettlingState {
+    /// Quiet window for the current evidence, floored by the post-busy
+    /// window once a busy marker has been seen.
+    fn quiet_window(&self, options: &WaitOptions) -> (Duration, &'static str) {
+        let (window, class) = self.tracker.quiet_window(options, self.production_seen);
+        if self.busy_marker.seen && options.post_busy_quiet_window > window {
+            (options.post_busy_quiet_window, "post-busy")
+        } else {
+            (window, class)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -275,6 +326,8 @@ struct SettlingObservation<'a> {
     changed: bool,
     frame: &'a str,
     pre_submit: &'a str,
+    /// A busy marker is visible near the bottom of `frame`.
+    busy_visible: bool,
     observed_at: Duration,
 }
 
@@ -282,30 +335,39 @@ struct SettlingObservation<'a> {
 /// build the settling state that [`WaitPhase::Settling`] carries.
 fn enter_settling(
     last_frame: &str,
-    production_seen: bool,
-    via: &'static str,
+    ack: Acknowledgement,
+    busy_visible: bool,
     observed_at: Duration,
     options: &WaitOptions,
     agent_id: &str,
 ) -> SettlingState {
-    let tracker = FrameTracker::new(last_frame.to_string());
-    let (window, class) = tracker.quiet_window(options, production_seen);
+    let state = SettlingState {
+        tracker: FrameTracker::new(last_frame.to_string()),
+        // A visible busy marker is production evidence: the TUI is working.
+        production_seen: ack.production_seen || busy_visible,
+        threshold_seen: false,
+        last_visible_change: observed_at,
+        logged_quiet_class: None,
+        post_ack_production_logged: false,
+        busy_marker: BusyMarkerState {
+            seen: busy_visible,
+            visible: busy_visible,
+        },
+    };
+    let (window, class) = state.quiet_window(options);
     tracing::debug!(
         agent = agent_id,
         elapsed = ?observed_at,
-        production_seen,
-        via,
+        production_seen = state.production_seen,
+        via = ack.via,
+        busy_visible,
         quiet_window = ?window,
         class,
         "submission acknowledged, settling"
     );
     SettlingState {
-        tracker,
-        production_seen,
-        threshold_seen: false,
-        last_visible_change: observed_at,
         logged_quiet_class: Some(class),
-        post_ack_production_logged: false,
+        ..state
     }
 }
 
@@ -328,6 +390,18 @@ fn observe_settling(
     options: &WaitOptions,
     agent_id: &str,
 ) -> SettlingDecision {
+    if observation.busy_visible != state.busy_marker.visible {
+        tracing::debug!(
+            agent = agent_id,
+            elapsed = ?observation.observed_at,
+            visible = observation.busy_visible,
+            "busy marker visibility changed"
+        );
+        state.busy_marker.visible = observation.busy_visible;
+    }
+    if observation.busy_visible {
+        state.busy_marker.seen = true;
+    }
     if observation.changed {
         if observation.frame == observation.pre_submit {
             // Returning to the exact pre-submit image invalidates the
@@ -363,7 +437,15 @@ fn observe_settling(
     }
 
     state.tracker.observe_stable(observation.frame);
-    let (quiet_window, quiet_class) = state.tracker.quiet_window(options, state.production_seen);
+    if observation.busy_visible {
+        // The TUI says it is still working: a frozen frame with a visible
+        // busy marker must never count toward any quiet window.
+        state.production_seen = true;
+        state.last_visible_change = observation.observed_at;
+        state.threshold_seen = false;
+        return SettlingDecision::Pending;
+    }
+    let (quiet_window, quiet_class) = state.quiet_window(options);
     if state.logged_quiet_class != Some(quiet_class) {
         tracing::debug!(
             agent = agent_id,
@@ -548,6 +630,7 @@ pub(crate) fn wait_on_pane(
         let observed_at = options.elapsed(wall_start);
         let changed = frame_changed(&current, &last_capture, &mut last_frame);
         last_capture = current;
+        let busy_visible = busy_marker_visible(&last_frame, &seed.busy_markers);
 
         phase = match phase {
             WaitPhase::Submitting(mut submission) => {
@@ -566,13 +649,10 @@ pub(crate) fn wait_on_pane(
                 };
                 match observe_submission(&mut submission, observation, options) {
                     SubmissionDecision::Pending => WaitPhase::Submitting(submission),
-                    SubmissionDecision::Acknowledged {
-                        production_seen,
-                        via,
-                    } => WaitPhase::Settling(enter_settling(
+                    SubmissionDecision::Acknowledged(ack) => WaitPhase::Settling(enter_settling(
                         &last_frame,
-                        production_seen,
-                        via,
+                        ack,
+                        busy_visible,
                         observed_at,
                         options,
                         agent_id,
@@ -584,6 +664,7 @@ pub(crate) fn wait_on_pane(
                     changed,
                     frame: &last_frame,
                     pre_submit: &pre_submit,
+                    busy_visible,
                     observed_at,
                 };
                 match observe_settling(&mut settling, observation, options, agent_id) {
@@ -611,6 +692,24 @@ fn frame_changed(current: &str, last_capture: &str, last_frame: &mut String) -> 
     }
     *last_frame = current_frame;
     true
+}
+
+/// True when any marker fragment appears (case-insensitively) in the bottom
+/// [`BUSY_MARKER_SCAN_LINES`] lines of the normalized frame. Narrow panes
+/// can truncate a marker out of the status line; a miss only falls back to
+/// plain frame-diff convergence.
+fn busy_marker_visible(frame: &str, markers: &[String]) -> bool {
+    if markers.is_empty() {
+        return false;
+    }
+    frame
+        .lines()
+        .rev()
+        .take(BUSY_MARKER_SCAN_LINES)
+        .any(|line| {
+            let line = line.to_lowercase();
+            markers.iter().any(|marker| line.contains(marker.as_str()))
+        })
 }
 
 fn normalize_frame(capture: &str) -> String {

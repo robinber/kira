@@ -72,6 +72,7 @@ pub(super) fn resolve_single_agent(
         prompt_template,
         submit,
         text_delivery,
+        busy_markers,
     } = merged;
 
     let label = label
@@ -90,6 +91,14 @@ pub(super) fn resolve_single_agent(
         shell_command.as_deref(),
         &args,
     )?;
+
+    // An empty marker matches every frame and would pin `send --wait` to its
+    // hard timeout: reject it like any other config typo (exit 2).
+    if let Some(ref markers) = busy_markers
+        && markers.iter().any(|marker| marker.trim().is_empty())
+    {
+        return Err(ConfigError::EmptyBusyMarker { agent_id: agent.id });
+    }
 
     let env = match resolution_mode {
         ResolutionMode::Deferred => unresolved_env.clone(),
@@ -120,6 +129,7 @@ pub(super) fn resolve_single_agent(
         prompt_template,
         submit,
         text_delivery,
+        busy_markers,
     };
     let fingerprint_material = FingerprintAgentMaterial::from_agent(&resolved, &unresolved_env);
 
@@ -212,6 +222,7 @@ mod tests {
             prompt_template: None,
             submit: None,
             text_delivery: None,
+            busy_markers: None,
         };
 
         let (resolved, _material) = resolve_single_agent(
@@ -245,6 +256,7 @@ mod tests {
             prompt_template: None,
             submit: Some(SubmitPolicy::Double),
             text_delivery: Some(TextDelivery::SendKeys),
+            busy_markers: None,
         };
         let agent = ProjectAgent {
             id: "alpha".to_string(),
@@ -260,6 +272,7 @@ mod tests {
             prompt_template: None,
             submit: Some(SubmitPolicy::Single),
             text_delivery: None,
+            busy_markers: None,
         };
 
         let (resolved, _material) = resolve_single_agent(
@@ -272,6 +285,92 @@ mod tests {
 
         assert_eq!(resolved.submit, Some(SubmitPolicy::Single));
         assert_eq!(resolved.text_delivery, Some(TextDelivery::SendKeys));
+    }
+
+    #[test]
+    fn agent_busy_markers_override_template() {
+        let mut template = AgentTemplate {
+            name: "coder".to_string(),
+            label: None,
+            mode: None,
+            command: Some("my-agent".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: None,
+            text_delivery: None,
+            busy_markers: None,
+        };
+        template.busy_markers = Some(vec!["template marker".to_string()]);
+        let mut agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: Some("coder".to_string()),
+            label: None,
+            mode: None,
+            command: None,
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: None,
+            text_delivery: None,
+            busy_markers: None,
+        };
+        agent.busy_markers = Some(vec!["agent marker".to_string()]);
+
+        let (resolved, _material) = resolve_single_agent(
+            agent,
+            Some(&template),
+            Path::new("/tmp/kira-test-root"),
+            ResolutionMode::Deferred,
+        )
+        .or_panic("agent_busy_markers_override_template");
+
+        assert_eq!(
+            resolved.busy_markers,
+            Some(vec!["agent marker".to_string()])
+        );
+    }
+
+    #[test]
+    fn empty_busy_marker_entry_is_rejected() {
+        let agent = ProjectAgent {
+            id: "alpha".to_string(),
+            template: None,
+            label: None,
+            mode: None,
+            command: Some("echo".to_string()),
+            shell_command: None,
+            args: None,
+            cwd: None,
+            env: BTreeMap::new(),
+            capabilities: None,
+            prompt_template: None,
+            submit: None,
+            text_delivery: None,
+            busy_markers: Some(vec!["ok".to_string(), "   ".to_string()]),
+        };
+
+        let error = resolve_single_agent(
+            agent,
+            None,
+            Path::new("/tmp/kira-test-root"),
+            ResolutionMode::Deferred,
+        )
+        .err_or_panic("empty_busy_marker_entry_is_rejected: expected Err");
+
+        assert!(
+            matches!(
+                &error,
+                ConfigError::EmptyBusyMarker { agent_id } if agent_id == "alpha"
+            ),
+            "whitespace-only markers must be a config error, got: {error}"
+        );
     }
 
     #[test]
@@ -293,6 +392,7 @@ mod tests {
             prompt_template: Some("{{user_prompt}}".to_string()),
             submit: None,
             text_delivery: None,
+            busy_markers: None,
         };
 
         let mut with_defaults = base();
@@ -302,6 +402,7 @@ mod tests {
         let mut with_overrides = base();
         with_overrides.submit = Some(SubmitPolicy::Double);
         with_overrides.text_delivery = Some(TextDelivery::SendKeys);
+        with_overrides.busy_markers = Some(vec!["esc to interrupt".to_string()]);
         with_overrides.label = Some("Other Label".to_string());
         with_overrides.capabilities = Some(vec!["impl".to_string()]);
         with_overrides.prompt_template = Some("review: {{user_prompt}}".to_string());

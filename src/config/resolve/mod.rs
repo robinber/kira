@@ -110,6 +110,7 @@ mod tests {
                 prompt_template: None,
                 submit: None,
                 text_delivery: None,
+                busy_markers: None,
             }],
             groups: std::collections::BTreeMap::new(),
         };

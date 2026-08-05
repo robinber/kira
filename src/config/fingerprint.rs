@@ -62,6 +62,7 @@ impl FingerprintAgentMaterial {
             prompt_template: _,
             submit: _,
             text_delivery: _,
+            busy_markers: _,
         } = agent;
         Self {
             id: id.clone(),
