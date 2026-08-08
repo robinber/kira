@@ -154,6 +154,12 @@ pub enum ConfigError {
     /// An agent ID was empty.
     #[error("agent id cannot be empty")]
     EmptyAgentId,
+    /// A `busy_markers` entry was empty or whitespace-only.
+    #[error("{owner}: busy_markers entries cannot be empty")]
+    EmptyBusyMarker {
+        /// Agent or template with the empty marker (e.g. `agent alpha`).
+        owner: String,
+    },
     /// A group name was empty.
     #[error("group name cannot be empty")]
     EmptyGroupName,

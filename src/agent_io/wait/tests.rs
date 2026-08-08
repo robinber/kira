@@ -19,6 +19,29 @@ fn wait_for_stable_output(
         },
         pre_submit: "ready".to_string(),
         capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
+        busy_markers: Vec::new(),
+    };
+    wait_on_pane(tmux, agent_id, &seed, options)
+}
+
+/// Marker-aware variant of [`wait_for_stable_output`]: the same seed with
+/// the lowercase interrupt-hint markers a claude/codex agent would infer.
+fn wait_with_busy_markers(
+    tmux: &dyn TmuxAdapter,
+    project: &ResolvedProject,
+    agent_id: &str,
+    options: &WaitOptions,
+) -> Result<String> {
+    let (pane, _agent, _topology) =
+        super::super::resolve::resolve_managed_pane(tmux, project, agent_id)?;
+    let seed = WaitSeed {
+        delivered: DeliveredPrompt {
+            pane_id: pane.pane_id,
+            rendered: "prompt echo".to_string(),
+        },
+        pre_submit: "ready".to_string(),
+        capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
+        busy_markers: vec!["esc to interrupt".to_string()],
     };
     wait_on_pane(tmux, agent_id, &seed, options)
 }
@@ -34,6 +57,7 @@ fn fast_options() -> WaitOptions {
         normal_quiet_window: Duration::from_millis(10),
         low_confidence_quiet_window: Duration::from_millis(20),
         submission_only_quiet_window: Duration::from_millis(40),
+        post_busy_quiet_window: Duration::from_millis(30),
         hard_timeout: Duration::from_millis(250),
         clock: WaitClock::Virtual(Mutex::new(Duration::ZERO)),
     }
@@ -199,6 +223,7 @@ fn wait_on_pane_skips_resolve_and_uses_given_pane_id() {
         },
         pre_submit: "ready".to_string(),
         capture_lines: super::super::send::DEFAULT_WAIT_CAPTURE_LINES,
+        busy_markers: Vec::new(),
     };
     let output = wait_on_pane(&fake, "alpha", &seed, &fast_options())
         .or_panic("wait_on_pane_skips_resolve_and_uses_given_pane_id");
@@ -467,6 +492,133 @@ fn unique_late_redraw_cancels_confirmation() {
         .or_panic("unique_late_redraw_cancels_confirmation");
 
     assert_eq!(output, format!("{redraw}\n"));
+}
+
+#[test]
+fn frozen_frame_with_visible_busy_marker_never_converges() {
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    // The pane freezes while the TUI still shows its interrupt hint: the
+    // marker must pin the wait to the hard timeout — today's frame-diff
+    // heuristic alone would read the frozen frame as a settled reply.
+    fake.queue_pane_contents("%0", &["prompt echo\nworking\n  esc to interrupt · status"]);
+
+    let err = wait_with_busy_markers(&fake, &project, "alpha", &fast_options())
+        .err_or_panic("frozen_frame_with_visible_busy_marker_never_converges: expected Err");
+
+    assert!(
+        matches!(
+            err.downcast_ref::<KiraMuxError>(),
+            Some(KiraMuxError::WaitTimeout { agent_id, last_capture })
+                if agent_id == "alpha" && last_capture.contains("esc to interrupt")
+        ),
+        "a frozen busy frame must never converge, got: {err}"
+    );
+}
+
+#[test]
+fn busy_marker_clearing_requires_post_busy_quiet_window() {
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    // Marker frames at 2-3ms, cleared by the answer at 4ms. Strong
+    // production evidence would grant the 10ms normal window, but a seen
+    // marker floors every window at 30ms: convergence flips from ~15ms
+    // to >=34ms. This is the backgrounded-work grace: the agent that
+    // dropped its marker may still wake up to finish the reply.
+    fake.queue_pane_contents(
+        "%0",
+        &[
+            "prompt echo",
+            "prompt echo\nworking\nesc to interrupt",
+            "prompt echo\nworking .\nesc to interrupt",
+            "prompt echo\nanswer",
+        ],
+    );
+    let options = fast_options();
+
+    let output = wait_with_busy_markers(&fake, &project, "alpha", &options)
+        .or_panic("busy_marker_clearing_requires_post_busy_quiet_window");
+
+    assert_eq!(output, "prompt echo\nanswer\n");
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed >= Duration::from_millis(34),
+        "a seen busy marker must floor the quiet window, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn busy_marker_above_the_bottom_scan_region_is_ignored() {
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    // The marker phrase sits in transcript content with more than
+    // BUSY_MARKER_SCAN_LINES lines below it: only the pane bottom is
+    // status-bar territory, so no post-busy floor may apply and the
+    // low-confidence window (20ms) converges well before 30ms.
+    let tall = std::iter::once("prompt echo\nnote: esc to interrupt is the busy hint".to_string())
+        .chain((0..16).map(|index| format!("line {index}")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fake.queue_pane_contents("%0", &["prompt echo", &tall]);
+    let options = fast_options();
+
+    let output = wait_with_busy_markers(&fake, &project, "alpha", &options)
+        .or_panic("busy_marker_above_the_bottom_scan_region_is_ignored");
+
+    assert!(
+        output.contains("line 15"),
+        "converged capture must be the tall frame"
+    );
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed <= Duration::from_millis(28),
+        "a transcript mention must not arm the post-busy floor, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn marker_seen_during_submission_arms_the_post_busy_floor() {
+    let fake = crate::test_support::FakeTmux::new();
+    let project = crate::test_support::test_project();
+    crate::test_support::setup_healthy_session(&fake, &project);
+    // The marker shows before the prompt echo renders and is gone on the
+    // acknowledging frame: the submission-phase sighting must carry into
+    // settling and floor the quiet window at 30ms — without the carry the
+    // low-confidence window (20ms) would converge at ~25ms.
+    fake.queue_pane_contents(
+        "%0",
+        &[
+            "ready\nworking\nesc to interrupt",
+            "prompt echo",
+            "prompt echo",
+            "prompt echo\nanswer",
+        ],
+    );
+    let options = fast_options();
+
+    let output = wait_with_busy_markers(&fake, &project, "alpha", &options)
+        .or_panic("marker_seen_during_submission_arms_the_post_busy_floor");
+
+    assert_eq!(output, "prompt echo\nanswer\n");
+    let elapsed = options.elapsed(Instant::now());
+    assert!(
+        elapsed >= Duration::from_millis(34),
+        "a submission-phase marker sighting must floor the quiet window, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn busy_marker_match_is_case_insensitive() {
+    let markers = vec!["esc to interrupt".to_string()];
+    assert!(busy_marker_visible(
+        "output\n( Esc To Interrupt )",
+        &markers
+    ));
+    assert!(!busy_marker_visible("output\nidle prompt", &markers));
+    assert!(!busy_marker_visible("output\nesc to interrupt", &[]));
 }
 
 #[test]

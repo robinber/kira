@@ -34,6 +34,7 @@ pub(crate) fn test_agent(id: &str) -> ResolvedAgent {
         prompt_template: None,
         submit: None,
         text_delivery: None,
+        busy_markers: None,
     }
 }
 

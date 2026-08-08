@@ -188,10 +188,12 @@ shell_command = "npm test -- --watch"
 - `mode = "shell"` runs `shell_command` through the configured shell
   (`args` are not used in shell mode and are rejected at config load)
 - Optional per-agent (or template) send overrides when the basename heuristic
-  is wrong: `submit = "single" | "double"`, `text_delivery = "paste" | "send-keys"`
+  is wrong: `submit = "single" | "double"`, `text_delivery = "paste" | "send-keys"`,
+  `busy_markers = ["…"]` (`send --wait` busy hints; `[]` disables)
 - **Default submit heuristics** (when `submit` / `text_delivery` are unset):
   basenames `codex`, `claude`, `opencode`, `qwen`, `grok` get **double Enter**;
-  `opencode` uses literal `send-keys` for multi-line text (others use paste)
+  `opencode` uses literal `send-keys` for multi-line text (others use paste);
+  `claude` and `codex` get the `esc to interrupt` busy marker for `send --wait`
 - `root` must be absolute or `~/...` (not process-CWD-relative) so session
   identity stays stable no matter where you invoke `kira-mux`
 - Agent `cwd` may still be relative to `root`
@@ -244,7 +246,8 @@ workspace.
 **Excluded on purpose** (cosmetic / non-topology — no drift):
 
 - project `name`, agent `label`
-- `capabilities`, `groups`, `prompt_template`, `submit`, `text_delivery`
+- `capabilities`, `groups`, `prompt_template`, `submit`, `text_delivery`,
+  `busy_markers`
 - `session_prefix`, `tmux_bin` — changing the prefix renames the session, so
   the old workspace shows as **stopped** (not drifted); `tmux_bin` only
   changes how tmux is invoked
@@ -320,6 +323,18 @@ timing flags. Use `send --wait --lines <N>` to widen the capture window
 be empty and wait could only fail at the hard timeout). Plain
 `capture --lines` defaults to **30**.
 
+**Busy markers.** Known agent TUIs (Claude Code, Codex) show a stable
+interrupt hint near the pane bottom while a turn runs (`esc to interrupt`).
+While that marker is visible in the bottom lines of the capture, the wait
+never converges — even on a frozen frame — and once a marker has been seen,
+every quiet window is floored at **15 s** after it disappears. That grace
+absorbs the common Claude Code pattern of backgrounding a long shell command:
+the marker drops and the pane looks idle for a moment before the agent wakes
+up to finish the reply. Markers are inferred from the agent command basename;
+set `busy_markers = ["…"]` on an agent or template to override the list
+(matched case-insensitively), or `busy_markers = []` to disable the
+heuristic for that agent.
+
 A pane that dies or vanishes mid-wait (killed window, lost session, or a
 stopped tmux server) fails with exit **6**; an internal hard timeout (~10 min)
 aborts with exit **7** and writes the last capture to stderr (stdout stays
@@ -328,8 +343,16 @@ reserved for confirmed-stable output).
 Known limits: activity perfectly synchronized with the 500 ms poll can be
 invisible; a reply that pauses longer than the active quiet window is cut
 short; a model that stays visually silent past the 30 s submission-only
-window is reported done with only the echo captured; and an idle monotonic
-counter (clock, watcher) never converges and reaches the hard timeout.
+window is reported done with only the echo captured; an idle monotonic
+counter (clock, watcher) never converges and reaches the hard timeout; an
+agent that backgrounds work and stays visually idle longer than the 15 s
+post-busy floor still converges early; a narrow pane can truncate the
+busy marker out of its status line, silently falling back to plain
+frame-diff convergence; and marker matching is text containment, not
+structure — a marker phrase inside the prompt is dropped for that send
+(the echo would pin the wait), but a **reply** whose bottom-visible tail
+mentions the phrase reads as busy until the hard timeout
+(`busy_markers = []` opts out).
 
 ### Capture depth and alternate-screen TUIs
 

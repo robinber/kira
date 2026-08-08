@@ -41,6 +41,9 @@ pub(crate) struct WaitSeed {
     pub(crate) pre_submit: String,
     /// History lines used for the pre-submit capture and subsequent wait polls.
     pub(crate) capture_lines: usize,
+    /// Lowercase busy-marker fragments for this agent; while one is visible
+    /// near the pane bottom the wait loop refuses to converge.
+    pub(crate) busy_markers: Vec<String>,
 }
 
 struct PreparedPrompt<'a> {
@@ -89,11 +92,37 @@ pub(crate) fn send_prompt_for_wait(
 ) -> Result<WaitSeed> {
     let prepared = prepare_prompt(tmux, project, agent_id, prompt, no_template)?;
     let pre_submit = capture_before_submit(tmux, &prepared.pane.pane_id, agent_id, capture_lines)?;
+    // Best-effort pane-command read: marker inference degrades to the agent
+    // config alone, and a genuinely broken pane fails typed during delivery.
+    let pane_command = tmux
+        .get_pane_option(&prepared.pane.pane_id, PANE_AGENT_COMMAND)
+        .unwrap_or(None);
+    let mut busy_markers =
+        super::policy::infer_busy_markers(prepared.agent, pane_command.as_deref());
+    // A marker phrase inside the prompt itself would match the prompt echo
+    // near the pane bottom and pin the wait to its hard timeout: drop those
+    // markers for this send and fall back to frame-diff convergence. Both
+    // sides are whitespace-collapsed so a marker with repeated internal
+    // whitespace still matches the prompt that will echo it (over-dropping
+    // is safe; under-matching would pin the wait).
+    let rendered_search = crate::tmux::normalize_search_text(&prepared.rendered).to_lowercase();
+    busy_markers.retain(|marker| {
+        let keep = !rendered_search.contains(&crate::tmux::normalize_search_text(marker));
+        if !keep {
+            tracing::debug!(
+                agent = agent_id,
+                marker,
+                "busy marker appears in the rendered prompt; disabled for this wait"
+            );
+        }
+        keep
+    });
     let delivered = deliver_prepared(tmux, agent_id, prepared)?;
     Ok(WaitSeed {
         delivered,
         pre_submit,
         capture_lines,
+        busy_markers,
     })
 }
 

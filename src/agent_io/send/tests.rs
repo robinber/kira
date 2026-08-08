@@ -512,3 +512,108 @@ fn send_prompt_text_delivery_override_forces_send_keys() {
         "text_delivery=send-keys must not paste, got: {ops:?}"
     );
 }
+
+#[test]
+fn send_for_wait_seeds_inferred_claude_busy_markers() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    project.agents[0].command = Some("claude".to_string());
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "do the thing",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_seeds_inferred_claude_busy_markers");
+
+    assert_eq!(seed.busy_markers, vec!["esc to interrupt".to_string()]);
+}
+
+#[test]
+fn send_for_wait_seeds_configured_markers_normalized() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    project.agents[0].busy_markers = Some(vec!["  Custom MARKER ".to_string()]);
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "do the thing",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_seeds_configured_markers_normalized");
+
+    assert_eq!(seed.busy_markers, vec!["custom marker".to_string()]);
+}
+
+#[test]
+fn send_for_wait_explicit_empty_markers_disable_inference() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    project.agents[0].command = Some("claude".to_string());
+    project.agents[0].busy_markers = Some(Vec::new());
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "do the thing",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_explicit_empty_markers_disable_inference");
+
+    assert!(seed.busy_markers.is_empty());
+}
+
+#[test]
+fn send_for_wait_drops_markers_contained_in_the_prompt() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    project.agents[0].command = Some("claude".to_string());
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    // The prompt echo would sit near the pane bottom and read as busy
+    // forever: a marker phrase inside the prompt disables that marker.
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "explain what Esc to Interrupt does in the TUI",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_drops_markers_contained_in_the_prompt");
+
+    assert!(seed.busy_markers.is_empty());
+}
+
+#[test]
+fn send_for_wait_drops_whitespace_variant_markers_in_prompt() {
+    let fake = crate::test_support::FakeTmux::new();
+    let mut project = crate::test_support::test_project();
+    // Repeated internal whitespace in the configured marker must not defeat
+    // the prompt guard: both sides are whitespace-collapsed for comparison.
+    project.agents[0].busy_markers = Some(vec!["busy  now".to_string()]);
+    crate::test_support::setup_healthy_session(&fake, &project);
+
+    let seed = send_prompt_for_wait(
+        &fake,
+        &project,
+        "alpha",
+        "the TUI will say busy now while working",
+        true,
+        DEFAULT_WAIT_CAPTURE_LINES,
+    )
+    .or_panic("send_for_wait_drops_whitespace_variant_markers_in_prompt");
+
+    assert!(seed.busy_markers.is_empty());
+}

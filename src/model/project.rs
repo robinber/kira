@@ -77,6 +77,9 @@ pub(crate) struct ResolvedAgent {
     pub submit: Option<SubmitPolicy>,
     /// Optional text delivery override; when set, bypasses basename heuristics.
     pub text_delivery: Option<TextDelivery>,
+    /// Optional `send --wait` busy-marker override; when set (including
+    /// empty), bypasses basename heuristics.
+    pub busy_markers: Option<Vec<String>>,
 }
 
 impl ResolvedAgent {

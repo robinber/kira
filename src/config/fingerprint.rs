@@ -11,10 +11,11 @@ use crate::model::{ResolvedAgent, ResolvedProject};
 /// Sanitized fingerprint material for one agent.
 ///
 /// Intentionally excludes `label`, `capabilities`, `prompt_template`,
-/// `submit`, `text_delivery`, and `groups`. These fields do not affect tmux
-/// pane topology (session/window/pane structure), so including them would
-/// cause false-positive drift detection when users change cosmetic or
-/// send-time agent metadata that does not require a workspace restart.
+/// `submit`, `text_delivery`, `busy_markers`, and `groups`. These fields do
+/// not affect tmux pane topology (session/window/pane structure), so
+/// including them would cause false-positive drift detection when users
+/// change cosmetic or send-time agent metadata that does not require a
+/// workspace restart.
 ///
 /// Env entries:
 /// - **Literal** values are hashed so secrets never appear in fingerprint
@@ -62,6 +63,7 @@ impl FingerprintAgentMaterial {
             prompt_template: _,
             submit: _,
             text_delivery: _,
+            busy_markers: _,
         } = agent;
         Self {
             id: id.clone(),
